@@ -131,7 +131,11 @@ Mock test: `CMockRestHttpClient` — gerçek HTTP gerekmez.
 
 MetaEditor derlemesi otomatik çalıştırılmadı. `TestRestCommandSource.mq5` ile doğrulayın.
 
-## 30.9 Sprint 5 için Kalan İş
+## 30.9 Sprint 5 — Tamamlandı
+
+Trade execution engine: `docs/architecture/31-sprint-5-trade-execution.md`
+
+## 30.10 Sprint 6 için Kalan İş
 
 - `CCommandProcessor` OnTimer fast loop wiring
 - `CPersistenceManager` + `FlushIfDue()`

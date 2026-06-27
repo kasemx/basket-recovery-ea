@@ -1,0 +1,50 @@
+#ifndef BASKET_RECOVERY_DOMAIN_STRATEGY_BREAK_EVEN_ACTION_TYPE_MQH
+#define BASKET_RECOVERY_DOMAIN_STRATEGY_BREAK_EVEN_ACTION_TYPE_MQH
+
+enum ENUM_BRE_BREAK_EVEN_ACTION_TYPE
+  {
+   BRE_BE_ACTION_NONE=0,
+   BRE_BE_ACTION_MOVE_SL_TO_AVERAGE,
+   BRE_BE_ACTION_MOVE_SL_WITH_OFFSET,
+   BRE_BE_ACTION_DISABLE_RECOVERY,
+   BRE_BE_ACTION_ENABLE_TRAILING,
+   BRE_BE_ACTION_LOCK_BASKET,
+   BRE_BE_ACTION_CLOSE_RECOVERY_POSITIONS
+  };
+
+class CBreakEvenActionTypeHelper
+  {
+public:
+   static string     ToString(const ENUM_BRE_BREAK_EVEN_ACTION_TYPE actionType)
+     {
+      switch(actionType)
+        {
+         case BRE_BE_ACTION_MOVE_SL_TO_AVERAGE: return "MOVE_SL_TO_AVERAGE";
+         case BRE_BE_ACTION_MOVE_SL_WITH_OFFSET: return "MOVE_SL_WITH_OFFSET";
+         case BRE_BE_ACTION_DISABLE_RECOVERY: return "DISABLE_RECOVERY";
+         case BRE_BE_ACTION_ENABLE_TRAILING: return "ENABLE_TRAILING";
+         case BRE_BE_ACTION_LOCK_BASKET: return "LOCK_BASKET";
+         case BRE_BE_ACTION_CLOSE_RECOVERY_POSITIONS: return "CLOSE_RECOVERY_POSITIONS";
+         default: return "NONE";
+        }
+     }
+
+   static ENUM_BRE_BREAK_EVEN_ACTION_TYPE FromString(const string value)
+     {
+      if(value=="MOVE_SL_TO_AVERAGE")
+         return BRE_BE_ACTION_MOVE_SL_TO_AVERAGE;
+      if(value=="MOVE_SL_WITH_OFFSET" || value=="MOVE_SL_OFFSET")
+         return BRE_BE_ACTION_MOVE_SL_WITH_OFFSET;
+      if(value=="DISABLE_RECOVERY")
+         return BRE_BE_ACTION_DISABLE_RECOVERY;
+      if(value=="ENABLE_TRAILING")
+         return BRE_BE_ACTION_ENABLE_TRAILING;
+      if(value=="LOCK_BASKET")
+         return BRE_BE_ACTION_LOCK_BASKET;
+      if(value=="CLOSE_RECOVERY_POSITIONS")
+         return BRE_BE_ACTION_CLOSE_RECOVERY_POSITIONS;
+      return BRE_BE_ACTION_NONE;
+     }
+  };
+
+#endif

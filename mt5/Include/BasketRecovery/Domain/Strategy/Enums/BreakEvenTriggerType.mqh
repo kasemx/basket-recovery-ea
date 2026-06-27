@@ -1,0 +1,54 @@
+#ifndef BASKET_RECOVERY_DOMAIN_STRATEGY_BREAK_EVEN_TRIGGER_TYPE_MQH
+#define BASKET_RECOVERY_DOMAIN_STRATEGY_BREAK_EVEN_TRIGGER_TYPE_MQH
+
+enum ENUM_BRE_BREAK_EVEN_TRIGGER_TYPE
+  {
+   BRE_BE_TRIGGER_NONE=0,
+   BRE_BE_TRIGGER_REALIZED_PROFIT,
+   BRE_BE_TRIGGER_FLOATING_PROFIT,
+   BRE_BE_TRIGGER_TARGET_RISK_REACHED,
+   BRE_BE_TRIGGER_SPECIFIC_PROFIT_LEVEL,
+   BRE_BE_TRIGGER_SPECIFIC_BASKET_STATE,
+   BRE_BE_TRIGGER_SPECIFIC_EVENT,
+   BRE_BE_TRIGGER_MANUAL
+  };
+
+class CBreakEvenTriggerTypeHelper
+  {
+public:
+   static string     ToString(const ENUM_BRE_BREAK_EVEN_TRIGGER_TYPE triggerType)
+     {
+      switch(triggerType)
+        {
+         case BRE_BE_TRIGGER_REALIZED_PROFIT: return "REALIZED_PROFIT";
+         case BRE_BE_TRIGGER_FLOATING_PROFIT: return "FLOATING_PROFIT";
+         case BRE_BE_TRIGGER_TARGET_RISK_REACHED: return "TARGET_RISK_REACHED";
+         case BRE_BE_TRIGGER_SPECIFIC_PROFIT_LEVEL: return "SPECIFIC_PROFIT_LEVEL";
+         case BRE_BE_TRIGGER_SPECIFIC_BASKET_STATE: return "SPECIFIC_BASKET_STATE";
+         case BRE_BE_TRIGGER_SPECIFIC_EVENT: return "SPECIFIC_EVENT";
+         case BRE_BE_TRIGGER_MANUAL: return "MANUAL";
+         default: return "NONE";
+        }
+     }
+
+   static ENUM_BRE_BREAK_EVEN_TRIGGER_TYPE FromString(const string value)
+     {
+      if(value=="REALIZED_PROFIT")
+         return BRE_BE_TRIGGER_REALIZED_PROFIT;
+      if(value=="FLOATING_PROFIT")
+         return BRE_BE_TRIGGER_FLOATING_PROFIT;
+      if(value=="TARGET_RISK_REACHED")
+         return BRE_BE_TRIGGER_TARGET_RISK_REACHED;
+      if(value=="SPECIFIC_PROFIT_LEVEL")
+         return BRE_BE_TRIGGER_SPECIFIC_PROFIT_LEVEL;
+      if(value=="SPECIFIC_BASKET_STATE")
+         return BRE_BE_TRIGGER_SPECIFIC_BASKET_STATE;
+      if(value=="SPECIFIC_EVENT")
+         return BRE_BE_TRIGGER_SPECIFIC_EVENT;
+      if(value=="MANUAL")
+         return BRE_BE_TRIGGER_MANUAL;
+      return BRE_BE_TRIGGER_NONE;
+     }
+  };
+
+#endif

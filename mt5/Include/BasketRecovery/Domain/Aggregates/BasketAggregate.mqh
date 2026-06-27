@@ -8,6 +8,8 @@
 #include <BasketRecovery/Domain/Enums/BasketMode.mqh>
 #include <BasketRecovery/Domain/Enums/TradeDirection.mqh>
 #include <BasketRecovery/Domain/Configuration/ProfileSnapshot.mqh>
+#include <BasketRecovery/Domain/Basket/BasketRuntimeState.mqh>
+#include <BasketRecovery/Domain/Strategy/Aggregates/StrategyProfileSnapshot.mqh>
 #include <BasketRecovery/Domain/ValueObjects/BasketVersion.mqh>
 #include <BasketRecovery/Domain/ValueObjects/SignalDetails.mqh>
 #include <BasketRecovery/Domain/ValueObjects/BasketMetadata.mqh>
@@ -29,6 +31,7 @@ private:
    CBasketModeFlags                  m_modeFlags;
    CProfileSnapshot                  m_profileSnapshot;
    bool                              m_hasProfileSnapshot;
+   CBasketRuntimeState               m_runtimeState;
    CBasketVersion                    m_versionState;
    CTradingSignal                    m_signal;
    CPositionSnapshot                *m_positionSnapshots[];
@@ -38,6 +41,7 @@ private:
    int                               m_commandHistoryCount;
    CAuditRecord                      m_eventHistory[];
    int                               m_eventHistoryCount;
+   bool                              m_creationBindingOpen;
 
    void              RecordAudit(const CCommandId &commandId,const CEventId &eventId,const CUtcTime timestampUtc)
      {
@@ -46,11 +50,9 @@ private:
       record.SetEventId(eventId);
       record.SetTimestampUtc(timestampUtc);
       record.SetVersion(m_versionState.Version());
-
       ArrayResize(m_commandHistory,m_commandHistoryCount+1);
       m_commandHistory[m_commandHistoryCount]=record;
       m_commandHistoryCount++;
-
       ArrayResize(m_eventHistory,m_eventHistoryCount+1);
       m_eventHistory[m_eventHistoryCount]=record;
       m_eventHistoryCount++;
@@ -77,52 +79,13 @@ public:
       m_positionSnapshotCount=0;
       m_commandHistoryCount=0;
       m_eventHistoryCount=0;
+      m_creationBindingOpen=true;
       ArrayResize(m_positionSnapshots,0);
       ArrayResize(m_commandHistory,0);
       ArrayResize(m_eventHistory,0);
      }
 
-                     CBasketAggregate(const CBasketAggregate &other)
-     {
-      m_id=other.m_id;
-      m_correlationKey=other.m_correlationKey;
-      m_direction=other.m_direction;
-      m_symbol=other.m_symbol;
-      m_lifecycleState=other.m_lifecycleState;
-      m_modeFlags=other.m_modeFlags;
-      m_profileSnapshot=other.m_profileSnapshot;
-      m_hasProfileSnapshot=other.m_hasProfileSnapshot;
-      m_versionState=other.m_versionState;
-      m_signal=other.m_signal;
-      m_metadata=other.m_metadata;
-      m_positionSnapshotCount=other.m_positionSnapshotCount;
-      m_commandHistoryCount=other.m_commandHistoryCount;
-      m_eventHistoryCount=other.m_eventHistoryCount;
-
-      ArrayResize(m_positionSnapshots,m_positionSnapshotCount);
-      for(int i=0;i<m_positionSnapshotCount;i++)
-        {
-         if(other.m_positionSnapshots[i]!=NULL)
-           {
-            m_positionSnapshots[i]=new CPositionSnapshot();
-            m_positionSnapshots[i].SetBasketId(other.m_positionSnapshots[i].BasketId());
-            m_positionSnapshots[i].SetVersion(other.m_positionSnapshots[i].Version());
-            m_positionSnapshots[i].SetUpdatedAt(other.m_positionSnapshots[i].UpdatedAt());
-            m_positionSnapshots[i].SetOpenCount(other.m_positionSnapshots[i].OpenCount());
-            m_positionSnapshots[i].SetTransactionCount(other.m_positionSnapshots[i].TransactionCount());
-           }
-         else
-            m_positionSnapshots[i]=NULL;
-        }
-
-      ArrayResize(m_commandHistory,m_commandHistoryCount);
-      for(int i=0;i<m_commandHistoryCount;i++)
-         m_commandHistory[i]=other.m_commandHistory[i];
-
-      ArrayResize(m_eventHistory,m_eventHistoryCount);
-      for(int i=0;i<m_eventHistoryCount;i++)
-         m_eventHistory[i]=other.m_eventHistory[i];
-     }
+                     CBasketAggregate(const CBasketAggregate &other);
 
                     ~CBasketAggregate(void)
      {
@@ -153,6 +116,40 @@ public:
    int                               PositionSnapshotCount(void) const { return m_positionSnapshotCount; }
    int                               CommandHistoryCount(void) const { return m_commandHistoryCount; }
    int                               EventHistoryCount(void) const { return m_eventHistoryCount; }
+   bool                              CreationBindingOpen(void) const { return m_creationBindingOpen; }
+
+   bool                              HasStrategyProfile(void) const { return m_runtimeState.HasStrategyProfile(); }
+   bool                              StrategyMigrationRequired(void) const { return m_runtimeState.StrategyMigrationRequired(); }
+   string                            StrategyId(void) const { return m_runtimeState.StrategyBinding().StrategyId(); }
+   int                               StrategySchemaVersion(void) const { return m_runtimeState.StrategyBinding().SchemaVersion(); }
+   string                            StrategyProfileHash(void) const { return m_runtimeState.StrategyBinding().ProfileHash(); }
+   CUtcTime                          BoundAtUtc(void) const { return m_runtimeState.StrategyBinding().BoundAtUtc(); }
+   int                               ProfitLevelProgressCount(void) const { return m_runtimeState.ProfitLevelCount(); }
+
+   bool                              StrategyProfile(CStrategyProfile &outProfile) const
+     {
+      return m_runtimeState.StrategyBinding().TryGetProfile(outProfile);
+     }
+
+   bool                              FindProfitLevelProgress(const string levelId,CBasketProfitLevelProgress &outProgress) const
+     {
+      return m_runtimeState.FindProfitLevel(levelId,outProgress);
+     }
+
+   bool                              ProfitLevelProgressAt(const int index,CBasketProfitLevelProgress &outProgress) const
+     {
+      return m_runtimeState.ProfitLevelAt(index,outProgress);
+     }
+
+   void                              CopyExecutedBreakEvenRuleIds(string &outRuleIds[],int &outCount) const
+     {
+      m_runtimeState.CopyExecutedBreakEvenRulesTo(outRuleIds,outCount);
+     }
+
+   bool                              HasExecutedBreakEvenRule(const string ruleId) const
+     {
+      return m_runtimeState.HasExecutedBreakEvenRule(ruleId);
+     }
 
    CPositionSnapshot*                PositionSnapshotAt(const int index) const
      {
@@ -161,24 +158,14 @@ public:
       return m_positionSnapshots[index];
      }
 
-   bool                              CommandHistoryAt(const int index,CAuditRecord &outRecord) const
+   CVoidResult                       BindStrategyProfile(const CStrategyProfileSnapshot &snapshot)
      {
-      if(index<0 || index>=m_commandHistoryCount)
-         return false;
-      outRecord=m_commandHistory[index];
-      return true;
+      if(!m_creationBindingOpen)
+         return CVoidResult::Fail(BRE_ERR_STRATEGY_ALREADY_BOUND,"Strategy binding is only allowed during basket creation");
+      return m_runtimeState.BindStrategyProfile(snapshot);
      }
 
-   bool                              EventHistoryAt(const int index,CAuditRecord &outRecord) const
-     {
-      if(index<0 || index>=m_eventHistoryCount)
-         return false;
-      outRecord=m_eventHistory[index];
-      return true;
-     }
-
-   bool                              InitializeFromFactory(const CBasketId &id,
-                                                           const string correlationKey,
+   bool                              InitializeFromFactory(const CBasketId &id,const string correlationKey,
                                                            const ENUM_BRE_TRADE_DIRECTION direction,
                                                            const string symbol,
                                                            const CProfileSnapshot &profileSnapshot,
@@ -189,9 +176,6 @@ public:
      {
       if(id.IsEmpty() || m_lifecycleState!=BRE_STATE_NONE)
          return false;
-      if(m_hasProfileSnapshot)
-         return false;
-
       m_id=id;
       m_correlationKey=correlationKey;
       m_direction=direction;
@@ -207,159 +191,86 @@ public:
       return true;
      }
 
+   void                              FinalizeCreationBinding(void) { m_creationBindingOpen=false; }
+
    bool                              ApplyLifecycleTransition(const CTransitionResult &transitionResult,
                                                                 const CCommandId &commandId,
                                                                 const CEventId &eventId,
                                                                 const CUtcTime timestampUtc)
      {
-      if(!transitionResult.Applied())
+      if(!transitionResult.Applied() || transitionResult.PreviousState()!=m_lifecycleState)
          return false;
-      if(transitionResult.PreviousState()!=m_lifecycleState)
-         return false;
-
       m_lifecycleState=transitionResult.NewState();
       BumpVersion(commandId,eventId,timestampUtc);
       return true;
      }
 
-   bool                              ApplySignalDetails(const CSignalDetails &details,
-                                                          const CCommandId &commandId,
-                                                          const CEventId &eventId,
-                                                          const CUtcTime timestampUtc)
+   CVoidResult                       ApplyProfitLevelReached(const string levelId,const CUtcTime timestampUtc,
+                                                             const CCommandId &commandId,const CEventId &eventId)
      {
-      m_signal.SetDetails(details);
+      CVoidResult result=m_runtimeState.MarkProfitLevelReached(levelId,timestampUtc,commandId,eventId);
+      if(result.IsFail())
+         return result;
       BumpVersion(commandId,eventId,timestampUtc);
-      return true;
+      return CVoidResult::Ok();
      }
 
-   bool                              ApplyStopLossUpdate(const CPrice &stopLoss,
-                                                         const CCommandId &commandId,
-                                                         const CEventId &eventId,
-                                                         const CUtcTime timestampUtc)
+   CVoidResult                       ApplyBreakEvenActivated(const string ruleId,const CCommandId &commandId,
+                                                             const CEventId &eventId,const CUtcTime timestampUtc)
      {
-      CSignalDetails details=m_signal.Details();
-      details.SetStopLoss(stopLoss);
-      details.SetHasDetails(true);
-      m_signal.SetDetails(details);
+      CVoidResult result=m_runtimeState.MarkBreakEvenRuleExecuted(ruleId);
+      if(result.IsFail())
+         return result;
+      m_modeFlags.SetBreakEvenActive(true);
       BumpVersion(commandId,eventId,timestampUtc);
-      return true;
+      return CVoidResult::Ok();
      }
 
-   bool                              ApplyTakeProfitUpdate(const CSignalDetails &details,
-                                                           const CCommandId &commandId,
-                                                           const CEventId &eventId,
+   void                              ApplyRecoveryDisabled(const CCommandId &commandId,const CEventId &eventId,
                                                            const CUtcTime timestampUtc)
      {
+      m_modeFlags.SetRecoveryPermanentlyDisabled(true);
+      m_modeFlags.SetRecoveryActive(false);
+      BumpVersion(commandId,eventId,timestampUtc);
+     }
+
+   bool                              ApplySignalDetails(const CSignalDetails &details,const CCommandId &commandId,
+                                                        const CEventId &eventId,const CUtcTime timestampUtc)
+     {
       m_signal.SetDetails(details);
       BumpVersion(commandId,eventId,timestampUtc);
       return true;
      }
 
-   bool                              ApplyCloseReason(const string closeReason)
-     {
-      m_metadata.SetCloseReason(closeReason);
-      return true;
-     }
+   bool                              RestoreFromDto(const CBasketPersistenceDto &dto);
 
-   bool                              AttachPositionSnapshot(CPositionSnapshot *snapshot)
-     {
-      if(snapshot==NULL)
-         return false;
-      ArrayResize(m_positionSnapshots,m_positionSnapshotCount+1);
-      m_positionSnapshots[m_positionSnapshotCount]=snapshot;
-      m_positionSnapshotCount++;
-      return true;
-     }
-
-   bool                              RestoreFromDto(const CBasketPersistenceDto &dto)
-     {
-      if(dto.basketId.IsEmpty())
-         return false;
-
-      for(int i=0;i<m_positionSnapshotCount;i++)
-        {
-         if(m_positionSnapshots[i]!=NULL)
-           {
-            delete m_positionSnapshots[i];
-            m_positionSnapshots[i]=NULL;
-           }
-        }
-
-      m_id=dto.basketId;
-      m_correlationKey=dto.correlationKey;
-      m_direction=dto.direction;
-      m_symbol=dto.symbol;
-      m_lifecycleState=dto.lifecycleState;
-      m_modeFlags.SetRecoveryActive(dto.recoveryActive);
-      m_modeFlags.SetRecoveryPermanentlyDisabled(dto.recoveryPermanentlyDisabled);
-      m_modeFlags.SetRiskReductionActive(dto.riskReductionActive);
-      m_modeFlags.SetMaxRiskLockout(dto.maxRiskLockout);
-      m_hasProfileSnapshot=dto.hasProfileSnapshot;
-      if(dto.hasProfileSnapshot)
-        {
-         m_profileSnapshot=CProfileSnapshot::Create(dto.profileName,
-                                                    dto.risk,
-                                                    dto.recovery,
-                                                    dto.takeProfit,
-                                                    dto.breakEven,
-                                                    dto.execution,
-                                                    dto.profileBoundAt);
-        }
-
-      m_versionState.SetVersion(dto.version);
-      m_versionState.SetLastCommandId(dto.lastCommandId);
-      m_versionState.SetLastEventId(dto.lastEventId);
-      m_versionState.SetLastModifiedUtc(dto.lastModifiedUtc);
-
-      m_signal.SetId(dto.signalId);
-      m_signal.SetCorrelationKey(dto.signalCorrelationKey);
-      m_signal.SetSequence(dto.signalSequence);
-      m_signal.SetDirection(dto.signalDirection);
-      m_signal.SetSymbol(dto.signalSymbol);
-      m_signal.SetReceivedAt(dto.signalReceivedAt);
-      m_signal.SetIsConsumed(dto.signalIsConsumed);
-
-      CSignalDetails details;
-      details.SetHasDetails(dto.signalDetails.hasDetails);
-      details.SetRangeLow(CPrice(dto.signalDetails.rangeLow));
-      details.SetRangeHigh(CPrice(dto.signalDetails.rangeHigh));
-      details.SetStopLoss(CPrice(dto.signalDetails.stopLoss));
-      details.SetTp1(CPrice(dto.signalDetails.tp1));
-      details.SetTp2(CPrice(dto.signalDetails.tp2));
-      details.SetTp3(CPrice(dto.signalDetails.tp3));
-      details.SetTp4(CPrice(dto.signalDetails.tp4));
-      details.SetTpOpen(dto.signalDetails.tpOpen);
-      m_signal.SetDetails(details);
-
-      m_metadata.SetCreatedAtUtc(dto.createdAtUtc);
-      m_metadata.SetUpdatedAtUtc(dto.updatedAtUtc);
-      m_metadata.SetRealizedProfit(dto.realizedProfit);
-      m_metadata.SetCloseReason(dto.closeReason);
-
-      m_positionSnapshotCount=ArraySize(dto.positionSnapshots);
-      ArrayResize(m_positionSnapshots,m_positionSnapshotCount);
-      for(int i=0;i<m_positionSnapshotCount;i++)
-        {
-         m_positionSnapshots[i]=new CPositionSnapshot();
-         m_positionSnapshots[i].SetBasketId(CBasketId(dto.positionSnapshots[i].basketId));
-         m_positionSnapshots[i].SetVersion(dto.positionSnapshots[i].version);
-         m_positionSnapshots[i].SetUpdatedAt(dto.positionSnapshots[i].updatedAt);
-         m_positionSnapshots[i].SetOpenCount(dto.positionSnapshots[i].openCount);
-         m_positionSnapshots[i].SetTransactionCount(dto.positionSnapshots[i].transactionCount);
-        }
-
-      m_commandHistoryCount=ArraySize(dto.commandHistory);
-      ArrayResize(m_commandHistory,m_commandHistoryCount);
-      for(int i=0;i<m_commandHistoryCount;i++)
-         m_commandHistory[i]=dto.commandHistory[i];
-
-      m_eventHistoryCount=ArraySize(dto.eventHistory);
-      ArrayResize(m_eventHistory,m_eventHistoryCount);
-      for(int i=0;i<m_eventHistoryCount;i++)
-         m_eventHistory[i]=dto.eventHistory[i];
-
-      return true;
-     }
+   void                              ClearForRestore(void);
+   void                              SetIdentity(const CBasketId &id,const string correlationKey,
+                                                 const ENUM_BRE_TRADE_DIRECTION direction,const string symbol);
+   void                              SetLifecycleState(const ENUM_BRE_BASKET_LIFECYCLE_STATE state) { m_lifecycleState=state; }
+   void                              SetModeFlagsFromDto(const CBasketPersistenceDto &dto);
+   void                              SetLegacyProfileSnapshot(const bool hasSnapshot,const string profileName,
+                                                                const CRiskProfileConfig &risk,
+                                                                const CRecoveryProfileConfig &recovery,
+                                                                const CTakeProfitProfileConfig &takeProfit,
+                                                                const CBreakEvenProfileConfig &breakEven,
+                                                                const CExecutionProfileConfig &execution,
+                                                                const CUtcTime boundAt);
+   void                              RestoreStrategyBinding(const CStrategyProfileSnapshot &snapshot,
+                                                            const bool migrationRequired);
+   void                              RestoreProfitLevels(const CBasketProfitLevelProgress &levels[],const int count);
+   void                              RestoreExecutedBreakEvenRules(const string ruleIds[]);
+   void                              SetVersionState(const long version,const CCommandId &commandId,
+                                                     const CEventId &eventId,const CUtcTime modifiedUtc);
+   void                              SetSignalFromDto(const CBasketPersistenceDto &dto);
+   void                              SetMetadataFromDto(const CBasketPersistenceDto &dto);
+   void                              SetPositionSnapshotsFromDto(const CBasketPersistenceDto &dto);
+   void                              SetAuditHistoryFromDto(const CBasketPersistenceDto &dto);
+   void                              CopyRuntimeStateToDto(CBasketPersistenceDto &dto) const;
+   void                              AppendEvaluationAudit(const CCommandId &commandId,const CEventId &eventId,
+                                                           const CUtcTime timestampUtc);
   };
+
+#include <BasketRecovery/Domain/Aggregates/BasketAggregateRestoreImpl.mqh>
 
 #endif

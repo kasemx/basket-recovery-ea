@@ -40,6 +40,11 @@ public:
       True(expected==actual,StringFormat("%s | expected=%s actual=%s",message,expected,actual));
      }
 
+   static void       EqualDouble(const double expected,const double actual,const double epsilon,const string &message)
+     {
+      True(MathAbs(expected-actual)<=epsilon,StringFormat("%s | expected=%.4f actual=%.4f",message,expected,actual));
+     }
+
    static int        FailedCount(void) { return s_failedCount; }
    static int        PassedCount(void) { return s_passedCount; }
 

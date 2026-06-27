@@ -1,0 +1,104 @@
+#ifndef BASKET_RECOVERY_DOMAIN_STRATEGY_EXECUTION_ZONE_EXPANSION_MODE_MQH
+#define BASKET_RECOVERY_DOMAIN_STRATEGY_EXECUTION_ZONE_EXPANSION_MODE_MQH
+
+enum ENUM_BRE_EXECUTION_ZONE_SOURCE
+  {
+   BRE_EXECUTION_ZONE_SOURCE_NONE=0,
+   BRE_EXECUTION_ZONE_SOURCE_SIGNAL_RANGE,
+   BRE_EXECUTION_ZONE_SOURCE_FIXED_RANGE
+  };
+
+enum ENUM_BRE_EXECUTION_ZONE_EXPANSION_MODE
+  {
+   BRE_ZONE_EXPANSION_NONE=0,
+   BRE_ZONE_EXPANSION_ABOVE_ONLY,
+   BRE_ZONE_EXPANSION_BELOW_ONLY,
+   BRE_ZONE_EXPANSION_SYMMETRIC,
+   BRE_ZONE_EXPANSION_ASYMMETRIC
+  };
+
+enum ENUM_BRE_PROFIT_LEVEL_SOURCE
+  {
+   BRE_PROFIT_LEVEL_SOURCE_NONE=0,
+   BRE_PROFIT_LEVEL_SOURCE_SIGNAL_TP,
+   BRE_PROFIT_LEVEL_SOURCE_FIXED_PRICE,
+   BRE_PROFIT_LEVEL_SOURCE_DYNAMIC
+  };
+
+enum ENUM_BRE_RISK_REDUCTION_MODE
+  {
+   BRE_RISK_REDUCTION_MODE_NONE=0,
+   BRE_RISK_REDUCTION_MODE_WORST_ENTRY,
+   BRE_RISK_REDUCTION_MODE_BEST_ENTRY,
+   BRE_RISK_REDUCTION_MODE_FIFO,
+   BRE_RISK_REDUCTION_MODE_PROFIT_BASED,
+   BRE_RISK_REDUCTION_MODE_RISK_BASED
+  };
+
+class CExecutionZoneSourceHelper
+  {
+public:
+   static ENUM_BRE_EXECUTION_ZONE_SOURCE FromString(const string value)
+     {
+      if(value=="SIGNAL_RANGE")
+         return BRE_EXECUTION_ZONE_SOURCE_SIGNAL_RANGE;
+      if(value=="FIXED_RANGE")
+         return BRE_EXECUTION_ZONE_SOURCE_FIXED_RANGE;
+      return BRE_EXECUTION_ZONE_SOURCE_NONE;
+     }
+  };
+
+class CExecutionZoneExpansionModeHelper
+  {
+public:
+   static ENUM_BRE_EXECUTION_ZONE_EXPANSION_MODE FromString(const string value)
+     {
+      if(value=="NONE")
+         return BRE_ZONE_EXPANSION_NONE;
+      if(value=="ABOVE_ONLY")
+         return BRE_ZONE_EXPANSION_ABOVE_ONLY;
+      if(value=="BELOW_ONLY")
+         return BRE_ZONE_EXPANSION_BELOW_ONLY;
+      if(value=="SYMMETRIC")
+         return BRE_ZONE_EXPANSION_SYMMETRIC;
+      if(value=="ASYMMETRIC")
+         return BRE_ZONE_EXPANSION_ASYMMETRIC;
+      return BRE_ZONE_EXPANSION_NONE;
+     }
+  };
+
+class CProfitLevelSourceHelper
+  {
+public:
+   static ENUM_BRE_PROFIT_LEVEL_SOURCE FromString(const string value)
+     {
+      if(value=="SIGNAL_TP")
+         return BRE_PROFIT_LEVEL_SOURCE_SIGNAL_TP;
+      if(value=="FIXED_PRICE")
+         return BRE_PROFIT_LEVEL_SOURCE_FIXED_PRICE;
+      if(value=="DYNAMIC")
+         return BRE_PROFIT_LEVEL_SOURCE_DYNAMIC;
+      return BRE_PROFIT_LEVEL_SOURCE_NONE;
+     }
+  };
+
+class CRiskReductionModeHelper
+  {
+public:
+   static ENUM_BRE_RISK_REDUCTION_MODE FromString(const string value)
+     {
+      if(value=="WORST_ENTRY" || value=="WORST_ENTRY_FIRST")
+         return BRE_RISK_REDUCTION_MODE_WORST_ENTRY;
+      if(value=="BEST_ENTRY" || value=="BEST_ENTRY_FIRST")
+         return BRE_RISK_REDUCTION_MODE_BEST_ENTRY;
+      if(value=="FIFO")
+         return BRE_RISK_REDUCTION_MODE_FIFO;
+      if(value=="PROFIT_BASED")
+         return BRE_RISK_REDUCTION_MODE_PROFIT_BASED;
+      if(value=="RISK_BASED")
+         return BRE_RISK_REDUCTION_MODE_RISK_BASED;
+      return BRE_RISK_REDUCTION_MODE_NONE;
+     }
+  };
+
+#endif

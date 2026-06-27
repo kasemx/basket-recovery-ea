@@ -1,0 +1,106 @@
+{
+  "schema_version": 2,
+  "strategy_id": "default-recovery-v1",
+  "metadata": {
+    "strategy_name": "Default Basket Recovery v1",
+    "description": "Legacy-compatible default recovery strategy with configurable profit levels and break-even rules",
+    "author": "BasketRecovery"
+  },
+  "execution_zone": {
+    "source": "SIGNAL_RANGE",
+    "expansion_mode": "SYMMETRIC",
+    "above_entry_pips": 3.0,
+    "below_entry_pips": 3.0,
+    "expansion_disabled": false
+  },
+  "recovery_plan": {
+    "algorithm": "CUSTOM",
+    "allow_during_profit_taking": true,
+    "disable_after_break_even": true,
+    "initial_position_count": 3,
+    "initial_lot_size": 0.01,
+    "steps": [
+      { "step_index": 1, "distance_pips": 0.2, "lot": 0.01 },
+      { "step_index": 2, "distance_pips": 0.4, "lot": 0.01 },
+      { "step_index": 3, "distance_pips": 0.6, "lot": 0.02 },
+      { "step_index": 4, "distance_pips": 1.0, "lot": 0.03 }
+    ]
+  },
+  "risk_plan": {
+    "target_risk_pct": 1.0,
+    "max_risk_pct": 1.2,
+    "risk_reduction_threshold_pct": 0.95,
+    "risk_reduction_mode": "WORST_ENTRY",
+    "wait_details_timeout_minutes": 30,
+    "risk_eval_debounce_ms": 100
+  },
+  "profit_distribution_plan": {
+    "require_floating_profit_positive": true,
+    "default_close_mode": "WORST_ENTRY_FIRST",
+    "levels": [
+      {
+        "level_id": "L1",
+        "level_index": 1,
+        "source": "SIGNAL_TP",
+        "close_percent": 33.0,
+        "close_mode": "WORST_ENTRY_FIRST",
+        "partial_close": true,
+        "enable_trailing": false,
+        "enabled": true
+      },
+      {
+        "level_id": "L2",
+        "level_index": 2,
+        "source": "SIGNAL_TP",
+        "close_percent": 66.0,
+        "close_mode": "WORST_ENTRY_FIRST",
+        "partial_close": true,
+        "enable_trailing": false,
+        "enabled": true
+      },
+      {
+        "level_id": "L3",
+        "level_index": 3,
+        "source": "SIGNAL_TP",
+        "close_percent": 100.0,
+        "close_mode": "WORST_ENTRY_FIRST",
+        "partial_close": false,
+        "enable_trailing": false,
+        "enabled": true
+      }
+    ]
+  },
+  "break_even_plan": {
+    "rules": [
+      {
+        "rule_id": "BE_AFTER_L1",
+        "enabled": true,
+        "priority": 10,
+        "run_once": true,
+        "trigger": {
+          "type": "SPECIFIC_PROFIT_LEVEL",
+          "profit_level_id": "L1"
+        },
+        "actions": [
+          {
+            "type": "MOVE_SL_TO_AVERAGE",
+            "buffer_pips": 0.5,
+            "include_spread": true
+          },
+          {
+            "type": "DISABLE_RECOVERY"
+          }
+        ]
+      }
+    ]
+  },
+  "execution_policy": {
+    "slippage_points": 10,
+    "max_trade_retries": 3,
+    "execution_timeout_ms": 5000,
+    "magic_number_base": 202606000,
+    "command_batch_size": 10,
+    "trade_request_batch_size": 5,
+    "rest_poll_interval_ms": 3000
+  }
+}

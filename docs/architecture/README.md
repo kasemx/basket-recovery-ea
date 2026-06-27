@@ -1,8 +1,8 @@
 # Basket Recovery Trading Engine — Mimari Dokümantasyon
 
-> **Durum:** Sprint 2 basket aggregate tamamlandı  
-> **Hedef:** 15.000+ satır, production-grade, Clean Architecture  
-> **Son güncelleme:** 2026-06-26 (S2)
+> **Durum:** Strategy Domain Refactor (mimari) — implementasyon durduruldu  
+> **Hedef:** Generic Basket Trading Engine — configuration-driven strategies  
+> **Son güncelleme:** 2026-06-26 (Strategy Refactor Sprint)
 
 ## Belge Haritası
 
@@ -43,6 +43,17 @@
 | 26 | [26-sprint-0.1-audit-fixes.md](./26-sprint-0.1-audit-fixes.md) | Sprint 0.1 audit düzeltmeleri + bağımlılık grafiği |
 | 27 | [27-sprint-1-kernel-foundation.md](./27-sprint-1-kernel-foundation.md) | Sprint 1 application kernel + test planı |
 | 28 | [28-sprint-2-basket-aggregate.md](./28-sprint-2-basket-aggregate.md) | Sprint 2 basket aggregate + domain handlers |
+| 29 | [29-sprint-3-persistence.md](./29-sprint-3-persistence.md) | Sprint 3 file-backed persistence |
+| 30 | [30-sprint-4-rest-ingestion.md](./30-sprint-4-rest-ingestion.md) | Sprint 4 REST command ingestion |
+| 31 | [31-sprint-5-trade-execution.md](./31-sprint-5-trade-execution.md) | Sprint 5 trade execution (paused) |
+
+### Strategy Refactor (Mandatory — Before Engine Implementation)
+
+| # | Belge | İçerik |
+|---|-------|--------|
+| 32 | [32-strategy-domain-refactor.md](./32-strategy-domain-refactor.md) | **Strategy Engine, Plans, JSON schema, migration** |
+| 33 | [33-sprint-r1-strategy-domain-foundation.md](./33-sprint-r1-strategy-domain-foundation.md) | Sprint R-1 Strategy Domain implementation |
+| 34 | [34-sprint-r2-strategy-engine.md](./34-sprint-r2-strategy-engine.md) | Sprint R-2 Strategy Engine pure evaluator |
 
 ## Sistem Özeti (v2)
 
@@ -63,8 +74,10 @@ Telegram → Python Parser → PostgreSQL → REST → Command Queue → Handler
 3. **Transition Rules** — Deklaratif state geçiş tablosu (current + event → next + rejected)
 4. **Trade Executor** — OrderSend/Modify/Close yalnızca bu sınıfta
 5. **Position Snapshot** — Risk Engine broker taramaz; snapshot okur
-6. **Configuration Profiles** — Risk/recovery/TP parametreleri JSON profile
+6. **Strategy Profile (v2)** — ExecutionZone, RecoveryPlan, ProfitDistribution, BreakEven, Risk — tek immutable profil ([doc 32](./32-strategy-domain-refactor.md))
 7. **Backtesting Adapter** — IExecutionEnvironment ile live/backtest aynı logic
+
+> **⚠️ Implementasyon durduruldu:** Trade Executor wiring, Risk/Recovery/TP engine — Strategy Refactor (R-1..R-3) tamamlanana kadar devam etmez.
 
 ## Kritik Mimari Uyarılar
 

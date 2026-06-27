@@ -35,6 +35,19 @@ struct SBasketSignalDetailsDto
    bool   tpOpen;
   };
 
+struct SBasketProfitLevelProgressDto
+  {
+   string levelId;
+   bool   reached;
+   bool   closeRequested;
+   bool   closeCompleted;
+   double realizedProfit;
+   long   reachedAtUtc;
+   long   completedAtUtc;
+   string executionCommandId;
+   string executionEventId;
+  };
+
 class CBasketPersistenceDto
   {
 public:
@@ -45,6 +58,9 @@ public:
    ENUM_BRE_BASKET_LIFECYCLE_STATE   lifecycleState;
    bool                              recoveryActive;
    bool                              recoveryPermanentlyDisabled;
+   bool                              breakEvenActive;
+   bool                              trailingActive;
+   bool                              locked;
    bool                              riskReductionActive;
    bool                              maxRiskLockout;
    bool                              hasProfileSnapshot;
@@ -55,6 +71,15 @@ public:
    CBreakEvenProfileConfig           breakEven;
    CExecutionProfileConfig           execution;
    CUtcTime                          profileBoundAt;
+   bool                              hasStrategySnapshot;
+   bool                              strategyMigrationRequired;
+   string                            strategyId;
+   int                               strategySchemaVersion;
+   string                            strategyProfileHash;
+   string                            strategyCanonicalJson;
+   CUtcTime                          strategyBoundAtUtc;
+   SBasketProfitLevelProgressDto     profitLevelProgress[];
+   string                            executedBreakEvenRuleIds[];
    long                              version;
    CCommandId                        lastCommandId;
    CEventId                          lastEventId;

@@ -1,6 +1,7 @@
 #ifndef BASKET_RECOVERY_INFRASTRUCTURE_BASKET_MIGRATION_MQH
 #define BASKET_RECOVERY_INFRASTRUCTURE_BASKET_MIGRATION_MQH
 
+#include <BasketRecovery/Infrastructure/Persistence/BasketSerializer.mqh>
 #include <BasketRecovery/Infrastructure/Persistence/Json/JsonReader.mqh>
 #include <BasketRecovery/Shared/Constants/PersistenceSchema.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
@@ -22,13 +23,19 @@ public:
       if(version>BRE_PERSISTENCE_SCHEMA_VERSION)
          return CResult<string>::Fail(BRE_ERR_PERSIST_SCHEMA_UNSUPPORTED,"Schema version is newer than supported");
 
-      switch(version)
-        {
-         case 1:
-            return CResult<string>::Fail(BRE_ERR_PERSIST_MIGRATION_FAILED,"No migration path from schema version 1");
-         default:
-            return CResult<string>::Fail(BRE_ERR_PERSIST_MIGRATION_FAILED,"Unsupported schema version for migration");
-        }
+      CBasketSerializer serializer;
+      CBasketPersistenceDto dto;
+      if(!serializer.FromReader(reader,dto,version))
+         return CResult<string>::Fail(BRE_ERR_PERSIST_MIGRATION_FAILED,"Failed to read legacy basket payload");
+
+      if(version<=BRE_PERSISTENCE_SCHEMA_VERSION_V2 && !dto.hasStrategySnapshot)
+         dto.strategyMigrationRequired=true;
+
+      CBasketAggregate aggregate;
+      if(!aggregate.RestoreFromDto(dto))
+         return CResult<string>::Fail(BRE_ERR_PERSIST_MIGRATION_FAILED,"Failed to restore basket during migration");
+
+      return CResult<string>::Ok(serializer.Serialize(aggregate));
      }
   };
 

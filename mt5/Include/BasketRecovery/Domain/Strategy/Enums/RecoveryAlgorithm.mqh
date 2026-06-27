@@ -1,0 +1,50 @@
+#ifndef BASKET_RECOVERY_DOMAIN_STRATEGY_RECOVERY_ALGORITHM_MQH
+#define BASKET_RECOVERY_DOMAIN_STRATEGY_RECOVERY_ALGORITHM_MQH
+
+enum ENUM_BRE_RECOVERY_ALGORITHM
+  {
+   BRE_RECOVERY_ALGORITHM_NONE=0,
+   BRE_RECOVERY_ALGORITHM_CONSTANT,
+   BRE_RECOVERY_ALGORITHM_LINEAR,
+   BRE_RECOVERY_ALGORITHM_PROGRESSIVE,
+   BRE_RECOVERY_ALGORITHM_CUSTOM,
+   BRE_RECOVERY_ALGORITHM_ATR,
+   BRE_RECOVERY_ALGORITHM_VOLATILITY
+  };
+
+class CRecoveryAlgorithmHelper
+  {
+public:
+   static string     ToString(const ENUM_BRE_RECOVERY_ALGORITHM algorithm)
+     {
+      switch(algorithm)
+        {
+         case BRE_RECOVERY_ALGORITHM_CONSTANT: return "CONSTANT";
+         case BRE_RECOVERY_ALGORITHM_LINEAR: return "LINEAR";
+         case BRE_RECOVERY_ALGORITHM_PROGRESSIVE: return "PROGRESSIVE";
+         case BRE_RECOVERY_ALGORITHM_CUSTOM: return "CUSTOM";
+         case BRE_RECOVERY_ALGORITHM_ATR: return "ATR";
+         case BRE_RECOVERY_ALGORITHM_VOLATILITY: return "VOLATILITY";
+         default: return "NONE";
+        }
+     }
+
+   static ENUM_BRE_RECOVERY_ALGORITHM FromString(const string value)
+     {
+      if(value=="CONSTANT")
+         return BRE_RECOVERY_ALGORITHM_CONSTANT;
+      if(value=="LINEAR")
+         return BRE_RECOVERY_ALGORITHM_LINEAR;
+      if(value=="PROGRESSIVE")
+         return BRE_RECOVERY_ALGORITHM_PROGRESSIVE;
+      if(value=="CUSTOM")
+         return BRE_RECOVERY_ALGORITHM_CUSTOM;
+      if(value=="ATR")
+         return BRE_RECOVERY_ALGORITHM_ATR;
+      if(value=="VOLATILITY" || value=="VOLATILITY_BASED")
+         return BRE_RECOVERY_ALGORITHM_VOLATILITY;
+      return BRE_RECOVERY_ALGORITHM_NONE;
+     }
+  };
+
+#endif

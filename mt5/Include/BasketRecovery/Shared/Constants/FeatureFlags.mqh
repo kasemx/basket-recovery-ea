@@ -3,6 +3,10 @@
 
 #define BRE_FEATURE_SIGNALS             false
 #define BRE_FEATURE_ACTIVATION          false
+#define BRE_FEATURE_EXECUTION           false
+#define BRE_FEATURE_DRY_RUN             false
+#define BRE_FEATURE_MOCK_EXECUTION      false
+#define BRE_FEATURE_SIMULATION_MODE     false
 #define BRE_FEATURE_RISK_ENGINE         false
 #define BRE_FEATURE_RECOVERY            false
 #define BRE_FEATURE_RISK_REDUCTION      false

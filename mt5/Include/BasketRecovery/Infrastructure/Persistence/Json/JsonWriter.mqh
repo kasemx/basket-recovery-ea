@@ -142,6 +142,19 @@ public:
       return json;
      }
 
+   string            DoubleArrayField(const string key,const double values[],const int count) const
+     {
+      string json="\""+key+"\":[";
+      for(int i=0;i<count;i++)
+        {
+         if(i>0)
+            json+=",";
+         json+=DoubleToString(values[i],8);
+        }
+      json+="]";
+      return json;
+     }
+
    CVoidResult       EnsureDirectoryChain(const string relativePath) const
      {
       int lastSlash=-1;

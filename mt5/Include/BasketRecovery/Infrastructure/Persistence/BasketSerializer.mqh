@@ -5,6 +5,7 @@
 #include <BasketRecovery/Domain/Persistence/BasketPersistenceDto.mqh>
 #include <BasketRecovery/Infrastructure/Persistence/Json/JsonWriter.mqh>
 #include <BasketRecovery/Infrastructure/Persistence/Json/JsonReader.mqh>
+#include <BasketRecovery/Domain/Enums/BasketLifecycleState.mqh>
 #include <BasketRecovery/Shared/Constants/PersistenceSchema.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
@@ -22,6 +23,9 @@ private:
       dto.lifecycleState=aggregate.LifecycleState();
       dto.recoveryActive=aggregate.ModeFlags().RecoveryActive();
       dto.recoveryPermanentlyDisabled=aggregate.ModeFlags().RecoveryPermanentlyDisabled();
+      dto.breakEvenActive=aggregate.ModeFlags().BreakEvenActive();
+      dto.trailingActive=aggregate.ModeFlags().TrailingActive();
+      dto.locked=aggregate.ModeFlags().Locked();
       dto.riskReductionActive=aggregate.ModeFlags().RiskReductionActive();
       dto.maxRiskLockout=aggregate.ModeFlags().MaxRiskLockout();
       dto.hasProfileSnapshot=aggregate.HasProfileSnapshot();
@@ -36,13 +40,12 @@ private:
          dto.execution=profile.Execution();
          dto.profileBoundAt=profile.BoundAt();
         }
-
+      aggregate.CopyRuntimeStateToDto(dto);
       CBasketVersion versionState=aggregate.VersionState();
       dto.version=versionState.Version();
       dto.lastCommandId=versionState.LastCommandId();
       dto.lastEventId=versionState.LastEventId();
       dto.lastModifiedUtc=versionState.LastModifiedUtc();
-
       CTradingSignal signal=aggregate.Signal();
       dto.signalId=signal.Id();
       dto.signalCorrelationKey=signal.CorrelationKey();
@@ -51,7 +54,6 @@ private:
       dto.signalSymbol=signal.Symbol();
       dto.signalReceivedAt=signal.ReceivedAt();
       dto.signalIsConsumed=signal.IsConsumed();
-
       CSignalDetails details=signal.Details();
       dto.signalDetails.hasDetails=details.HasDetails();
       dto.signalDetails.rangeLow=details.RangeLow().Value();
@@ -62,13 +64,11 @@ private:
       dto.signalDetails.tp3=details.Tp3().Value();
       dto.signalDetails.tp4=details.Tp4().Value();
       dto.signalDetails.tpOpen=details.TpOpen();
-
       CBasketMetadata metadata=aggregate.Metadata();
       dto.createdAtUtc=metadata.CreatedAtUtc();
       dto.updatedAtUtc=metadata.UpdatedAtUtc();
       dto.realizedProfit=metadata.RealizedProfit();
       dto.closeReason=metadata.CloseReason();
-
       int positionCount=aggregate.PositionSnapshotCount();
       ArrayResize(dto.positionSnapshots,positionCount);
       for(int i=0;i<positionCount;i++)
@@ -82,7 +82,6 @@ private:
          dto.positionSnapshots[i].openCount=snapshot.OpenCount();
          dto.positionSnapshots[i].transactionCount=snapshot.TransactionCount();
         }
-
       int commandCount=aggregate.CommandHistoryCount();
       ArrayResize(dto.commandHistory,commandCount);
       for(int i=0;i<commandCount;i++)
@@ -91,7 +90,6 @@ private:
          if(aggregate.CommandHistoryAt(i,record))
             dto.commandHistory[i]=record;
         }
-
       int eventCount=aggregate.EventHistoryCount();
       ArrayResize(dto.eventHistory,eventCount);
       for(int i=0;i<eventCount;i++)
@@ -112,6 +110,9 @@ private:
       fields+=m_writer.FieldInt("lifecycle_state",(long)dto.lifecycleState)+",";
       fields+=m_writer.FieldBool("recovery_active",dto.recoveryActive)+",";
       fields+=m_writer.FieldBool("recovery_permanently_disabled",dto.recoveryPermanentlyDisabled)+",";
+      fields+=m_writer.FieldBool("break_even_active",dto.breakEvenActive)+",";
+      fields+=m_writer.FieldBool("trailing_active",dto.trailingActive)+",";
+      fields+=m_writer.FieldBool("locked",dto.locked)+",";
       fields+=m_writer.FieldBool("risk_reduction_active",dto.riskReductionActive)+",";
       fields+=m_writer.FieldBool("max_risk_lockout",dto.maxRiskLockout)+",";
       fields+=m_writer.FieldBool("has_profile_snapshot",dto.hasProfileSnapshot)+",";
@@ -122,6 +123,74 @@ private:
       fields+=m_writer.FieldDouble("recovery_lot_size",dto.recovery.RecoveryLotSize())+",";
       fields+=m_writer.FieldInt("recovery_initial_position_count",(long)dto.recovery.InitialPositionCount())+",";
       fields+=m_writer.FieldInt("profile_bound_at",(long)dto.profileBoundAt.Value())+",";
+      fields+=m_writer.FieldBool("has_strategy_snapshot",dto.hasStrategySnapshot)+",";
+      fields+=m_writer.FieldBool("strategy_migration_required",dto.strategyMigrationRequired)+",";
+      fields+=m_writer.FieldString("strategy_id",dto.strategyId)+",";
+      fields+=m_writer.FieldInt("strategy_schema_version",dto.strategySchemaVersion)+",";
+      fields+=m_writer.FieldString("strategy_profile_hash",dto.strategyProfileHash)+",";
+      fields+=m_writer.FieldString("strategy_canonical_json",dto.strategyCanonicalJson)+",";
+      fields+=m_writer.FieldInt("strategy_bound_at_utc",(long)dto.strategyBoundAtUtc.Value())+",";
+      fields+=BuildProfitLevelFields(dto)+",";
+      fields+=BuildExecutedBreakEvenFields(dto)+",";
+      fields+=BuildVersionAndSignalFields(dto);
+      return fields;
+     }
+
+   string            BuildProfitLevelFields(const CBasketPersistenceDto &dto) const
+     {
+      int levelCount=ArraySize(dto.profitLevelProgress);
+      string levelIds[];
+      long reachedFlags[];
+      long closeRequestedFlags[];
+      long closeCompletedFlags[];
+      double realizedProfits[];
+      long reachedAt[];
+      long completedAt[];
+      string commandIds[];
+      string eventIds[];
+      ArrayResize(levelIds,levelCount);
+      ArrayResize(reachedFlags,levelCount);
+      ArrayResize(closeRequestedFlags,levelCount);
+      ArrayResize(closeCompletedFlags,levelCount);
+      ArrayResize(realizedProfits,levelCount);
+      ArrayResize(reachedAt,levelCount);
+      ArrayResize(completedAt,levelCount);
+      ArrayResize(commandIds,levelCount);
+      ArrayResize(eventIds,levelCount);
+      for(int i=0;i<levelCount;i++)
+        {
+         levelIds[i]=dto.profitLevelProgress[i].levelId;
+         reachedFlags[i]=dto.profitLevelProgress[i].reached ? 1 : 0;
+         closeRequestedFlags[i]=dto.profitLevelProgress[i].closeRequested ? 1 : 0;
+         closeCompletedFlags[i]=dto.profitLevelProgress[i].closeCompleted ? 1 : 0;
+         realizedProfits[i]=dto.profitLevelProgress[i].realizedProfit;
+         reachedAt[i]=dto.profitLevelProgress[i].reachedAtUtc;
+         completedAt[i]=dto.profitLevelProgress[i].completedAtUtc;
+         commandIds[i]=dto.profitLevelProgress[i].executionCommandId;
+         eventIds[i]=dto.profitLevelProgress[i].executionEventId;
+        }
+      string fields="";
+      fields+=m_writer.StringArrayField("profit_level_ids",levelIds,levelCount)+",";
+      fields+=m_writer.LongArrayField("profit_level_reached",reachedFlags,levelCount)+",";
+      fields+=m_writer.LongArrayField("profit_level_close_requested",closeRequestedFlags,levelCount)+",";
+      fields+=m_writer.LongArrayField("profit_level_close_completed",closeCompletedFlags,levelCount)+",";
+      fields+=m_writer.DoubleArrayField("profit_level_realized_profit",realizedProfits,levelCount)+",";
+      fields+=m_writer.LongArrayField("profit_level_reached_at",reachedAt,levelCount)+",";
+      fields+=m_writer.LongArrayField("profit_level_completed_at",completedAt,levelCount)+",";
+      fields+=m_writer.StringArrayField("profit_level_command_ids",commandIds,levelCount)+",";
+      fields+=m_writer.StringArrayField("profit_level_event_ids",eventIds,levelCount);
+      return fields;
+     }
+
+   string            BuildExecutedBreakEvenFields(const CBasketPersistenceDto &dto) const
+     {
+      return m_writer.StringArrayField("executed_break_even_rule_ids",dto.executedBreakEvenRuleIds,
+                                       ArraySize(dto.executedBreakEvenRuleIds));
+     }
+
+   string            BuildVersionAndSignalFields(const CBasketPersistenceDto &dto) const
+     {
+      string fields="";
       fields+=m_writer.FieldInt("version",dto.version)+",";
       fields+=m_writer.FieldString("last_command_id",dto.lastCommandId.Value())+",";
       fields+=m_writer.FieldString("last_event_id",dto.lastEventId.Value())+",";
@@ -144,7 +213,12 @@ private:
       fields+=m_writer.FieldInt("updated_at_utc",(long)dto.updatedAtUtc.Value())+",";
       fields+=m_writer.FieldDouble("realized_profit",dto.realizedProfit.Amount())+",";
       fields+=m_writer.FieldString("close_reason",dto.closeReason)+",";
+      fields+=BuildPositionAndAuditFields(dto);
+      return fields;
+     }
 
+   string            BuildPositionAndAuditFields(const CBasketPersistenceDto &dto) const
+     {
       int positionCount=ArraySize(dto.positionSnapshots);
       long positionVersions[];
       long positionUpdatedAt[];
@@ -161,11 +235,11 @@ private:
          positionOpenCounts[i]=dto.positionSnapshots[i].openCount;
          positionTxCounts[i]=dto.positionSnapshots[i].transactionCount;
         }
+      string fields="";
       fields+=m_writer.LongArrayField("position_versions",positionVersions,positionCount)+",";
       fields+=m_writer.LongArrayField("position_updated_at",positionUpdatedAt,positionCount)+",";
       fields+=m_writer.LongArrayField("position_open_counts",positionOpenCounts,positionCount)+",";
       fields+=m_writer.LongArrayField("position_tx_counts",positionTxCounts,positionCount)+",";
-
       int commandCount=ArraySize(dto.commandHistory);
       string commandIds[];
       string eventIds[];
@@ -189,104 +263,9 @@ private:
       return fields;
      }
 
-   string            BuildPayloadForCrc(const CBasketPersistenceDto &dto) const
-     {
-      return "\"schema_version\":"+IntegerToString(BRE_PERSISTENCE_SCHEMA_VERSION)+","+BuildBodyFields(dto);
-     }
-
-   bool              FromReader(const CJsonReader &reader,CBasketPersistenceDto &dto) const
-     {
-      dto.basketId=CBasketId(reader.ReadString("basket_id",""));
-      dto.correlationKey=reader.ReadString("correlation_key","");
-      dto.direction=(ENUM_BRE_TRADE_DIRECTION)reader.ReadInt("direction",BRE_DIRECTION_NONE);
-      dto.symbol=reader.ReadString("symbol","");
-      dto.lifecycleState=(ENUM_BRE_BASKET_LIFECYCLE_STATE)reader.ReadInt("lifecycle_state",BRE_STATE_NONE);
-      dto.recoveryActive=reader.ReadBool("recovery_active",false);
-      dto.recoveryPermanentlyDisabled=reader.ReadBool("recovery_permanently_disabled",false);
-      dto.riskReductionActive=reader.ReadBool("risk_reduction_active",false);
-      dto.maxRiskLockout=reader.ReadBool("max_risk_lockout",false);
-      dto.hasProfileSnapshot=reader.ReadBool("has_profile_snapshot",false);
-      dto.profileName=reader.ReadString("profile_name","default");
-
-      dto.risk.SetProfileName(dto.profileName);
-      dto.risk.SetTargetRiskPct(reader.ReadDouble("risk_target_pct",1.0));
-      dto.risk.SetMaxRiskPct(reader.ReadDouble("risk_max_pct",1.2));
-      dto.recovery.SetProfileName(dto.profileName);
-      dto.recovery.SetRecoveryStepPips(reader.ReadDouble("recovery_step_pips",0.2));
-      dto.recovery.SetRecoveryLotSize(reader.ReadDouble("recovery_lot_size",0.01));
-      dto.recovery.SetInitialPositionCount(reader.ReadInt("recovery_initial_position_count",3));
-      dto.takeProfit.SetProfileName(dto.profileName);
-      dto.breakEven.SetProfileName(dto.profileName);
-      dto.execution.SetProfileName(dto.profileName);
-      dto.profileBoundAt=CUtcTime((datetime)reader.ReadLong("profile_bound_at",0));
-
-      dto.version=reader.ReadLong("version",0);
-      dto.lastCommandId=CCommandId(reader.ReadString("last_command_id",""));
-      dto.lastEventId=CEventId(reader.ReadString("last_event_id",""));
-      dto.lastModifiedUtc=CUtcTime((datetime)reader.ReadLong("last_modified_utc",0));
-
-      dto.signalId=CSignalId(reader.ReadString("signal_id",""));
-      dto.signalCorrelationKey=reader.ReadString("signal_correlation_key","");
-      dto.signalSequence=reader.ReadString("signal_sequence","");
-      dto.signalDirection=(ENUM_BRE_TRADE_DIRECTION)reader.ReadInt("signal_direction",BRE_DIRECTION_NONE);
-      dto.signalSymbol=reader.ReadString("signal_symbol","");
-      dto.signalDetails.hasDetails=reader.ReadBool("signal_has_details",false);
-      dto.signalDetails.stopLoss=reader.ReadDouble("signal_stop_loss",0.0);
-      dto.signalDetails.tp1=reader.ReadDouble("signal_tp1",0.0);
-      dto.signalDetails.tp2=reader.ReadDouble("signal_tp2",0.0);
-      dto.signalDetails.tp3=reader.ReadDouble("signal_tp3",0.0);
-      dto.signalDetails.tp4=reader.ReadDouble("signal_tp4",0.0);
-      dto.signalDetails.tpOpen=reader.ReadBool("signal_tp_open",false);
-      dto.signalReceivedAt=(datetime)reader.ReadLong("signal_received_at",0);
-      dto.signalIsConsumed=reader.ReadBool("signal_is_consumed",false);
-
-      dto.createdAtUtc=CUtcTime((datetime)reader.ReadLong("created_at_utc",0));
-      dto.updatedAtUtc=CUtcTime((datetime)reader.ReadLong("updated_at_utc",0));
-      dto.realizedProfit=CMoney(reader.ReadDouble("realized_profit",0.0));
-      dto.closeReason=reader.ReadString("close_reason","");
-
-      long positionVersions[];
-      long positionUpdatedAt[];
-      long positionOpenCounts[];
-      long positionTxCounts[];
-      int positionCount=reader.ReadLongArray("position_versions",positionVersions);
-      reader.ReadLongArray("position_updated_at",positionUpdatedAt);
-      reader.ReadLongArray("position_open_counts",positionOpenCounts);
-      reader.ReadLongArray("position_tx_counts",positionTxCounts);
-      ArrayResize(dto.positionSnapshots,positionCount);
-      for(int i=0;i<positionCount;i++)
-        {
-         dto.positionSnapshots[i].version=(int)positionVersions[i];
-         dto.positionSnapshots[i].basketId=dto.basketId.Value();
-         dto.positionSnapshots[i].updatedAt=(datetime)positionUpdatedAt[i];
-         dto.positionSnapshots[i].openCount=(int)positionOpenCounts[i];
-         dto.positionSnapshots[i].transactionCount=(int)positionTxCounts[i];
-        }
-
-      string commandIds[];
-      string eventIds[];
-      long auditVersions[];
-      long auditTimestamps[];
-      int auditCount=reader.ReadStringArray("audit_command_ids",commandIds);
-      reader.ReadStringArray("audit_event_ids",eventIds);
-      reader.ReadLongArray("audit_versions",auditVersions);
-      reader.ReadLongArray("audit_timestamps",auditTimestamps);
-      ArrayResize(dto.commandHistory,auditCount);
-      ArrayResize(dto.eventHistory,auditCount);
-      for(int i=0;i<auditCount;i++)
-        {
-         CAuditRecord record;
-         record.SetCommandId(CCommandId(commandIds[i]));
-         record.SetEventId(CEventId(eventIds[i]));
-         record.SetVersion(auditVersions[i]);
-         record.SetTimestampUtc(CUtcTime((datetime)auditTimestamps[i]));
-         dto.commandHistory[i]=record;
-         dto.eventHistory[i]=record;
-        }
-      return !dto.basketId.IsEmpty();
-     }
-
 public:
+   bool              FromReader(const CJsonReader &reader,CBasketPersistenceDto &dto,const int schemaVersion) const;
+
    string            Serialize(const CBasketAggregate &aggregate) const
      {
       CBasketPersistenceDto dto;
@@ -300,16 +279,18 @@ public:
       CJsonReader reader;
       reader.SetRecoveryMode(recoveryMode);
       reader.SetContent(jsonContent);
-
-      if(reader.ValidateSchemaVersion(BRE_PERSISTENCE_SCHEMA_VERSION).IsFail())
+      int schemaVersion=reader.ReadSchemaVersion();
+      if(schemaVersion<=0)
+         return CResult<CBasketAggregate>::Fail(BRE_ERR_PERSIST_CORRUPT,"Schema version is missing");
+      if(schemaVersion>BRE_PERSISTENCE_SCHEMA_VERSION)
          return CResult<CBasketAggregate>::Fail(BRE_ERR_PERSIST_SCHEMA_UNSUPPORTED,"Unsupported basket schema version");
 
       CBasketPersistenceDto dto;
-      if(!FromReader(reader,dto))
+      if(!FromReader(reader,dto,schemaVersion))
          return CResult<CBasketAggregate>::Fail(BRE_ERR_PERSIST_CORRUPT,"Basket payload is invalid");
 
       string payloadForCrc="\"schema_version\":"+IntegerToString(BRE_PERSISTENCE_SCHEMA_VERSION)+","+BuildBodyFields(dto);
-      if(reader.ValidateCrc(payloadForCrc).IsFail())
+      if(schemaVersion==BRE_PERSISTENCE_SCHEMA_VERSION && reader.ValidateCrc(payloadForCrc).IsFail())
          return CResult<CBasketAggregate>::Fail(BRE_ERR_PERSIST_CRC_MISMATCH,"Basket CRC validation failed");
 
       CBasketAggregate aggregate;
@@ -319,5 +300,7 @@ public:
       return CResult<CBasketAggregate>::Ok(aggregate);
      }
   };
+
+#include <BasketRecovery/Infrastructure/Persistence/BasketSerializerReader.mqh>
 
 #endif

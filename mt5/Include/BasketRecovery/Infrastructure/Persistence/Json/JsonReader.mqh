@@ -241,6 +241,36 @@ public:
         }
       return count;
      }
+
+   int               ReadDoubleArray(const string key,double &values[]) const
+     {
+      int start=FindKeyValueStart(key);
+      if(start<0)
+        {
+         ArrayResize(values,0);
+         return 0;
+        }
+
+      int arrayStart=StringFind(m_content,"[",start);
+      int arrayEnd=StringFind(m_content,"]",arrayStart);
+      if(arrayStart<0 || arrayEnd<0)
+        {
+         ArrayResize(values,0);
+         return 0;
+        }
+
+      string body=StringSubstr(m_content,arrayStart+1,arrayEnd-arrayStart-1);
+      string parts[];
+      int count=StringSplit(body,',',parts);
+      ArrayResize(values,count);
+      for(int i=0;i<count;i++)
+        {
+         StringTrimLeft(parts[i]);
+         StringTrimRight(parts[i]);
+         values[i]=StringToDouble(parts[i]);
+        }
+      return count;
+     }
   };
 
 #endif
