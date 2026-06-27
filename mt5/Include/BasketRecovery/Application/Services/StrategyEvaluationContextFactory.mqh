@@ -7,6 +7,7 @@
 #include <BasketRecovery/Domain/Strategy/Context/RiskRuntimeContext.mqh>
 #include <BasketRecovery/Domain/Strategy/Context/ProfitLevelRuntimeState.mqh>
 #include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
+#include <BasketRecovery/Domain/Snapshots/PositionSnapshotEntry.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 #include <BasketRecovery/Shared/Types/Result.mqh>
 
@@ -45,25 +46,53 @@ private:
       if(snapshot==NULL)
          return;
 
-      int openCount=snapshot.OpenCount();
-      if(openCount<=0)
+      int entryCount=snapshot.EntryCount();
+      if(entryCount<=0)
          return;
 
-      ArrayResize(outViews,openCount);
-      CSignalDetails details=basket.SignalDetails();
-      double anchor=details.StopLoss().Value();
-      for(int i=0;i<openCount;i++)
+      ArrayResize(outViews,entryCount);
+      for(int i=0;i<entryCount;i++)
         {
-         outViews[i]=CPositionRuntimeView::Create((ulong)(i+1),
-                                                anchor,
-                                                0.01,
-                                                0.0,
-                                                0.0,
-                                                basket.Metadata().CreatedAtUtc().Value(),
-                                                basket.Direction(),
-                                                BRE_TRADE_ROLE_INITIAL);
+         CPositionSnapshotEntry entry;
+         if(!snapshot.EntryAt(i,entry))
+            continue;
+         if(entry.Status()!=BRE_POSITION_SNAPSHOT_OPEN)
+            continue;
+
+         outViews[outCount]=CPositionRuntimeView::Create(entry.Ticket(),
+                                                         entry.EntryPrice(),
+                                                         entry.Volume(),
+                                                         entry.FloatingProfit(),
+                                                         0.0,
+                                                         entry.OpenTimeUtc(),
+                                                         entry.Direction(),
+                                                         entry.Role());
+         outCount++;
         }
-      outCount=openCount;
+
+      if(outCount!=entryCount)
+         ArrayResize(outViews,outCount);
+     }
+
+   static double     SumFloatingProfit(IPositionSnapshotStore *snapshotStore,const CBasketId &basketId)
+     {
+      if(snapshotStore==NULL)
+         return 0.0;
+
+      CPositionSnapshot *snapshot=snapshotStore.Get(basketId);
+      if(snapshot==NULL)
+         return 0.0;
+
+      double total=0.0;
+      for(int i=0;i<snapshot.EntryCount();i++)
+        {
+         CPositionSnapshotEntry entry;
+         if(!snapshot.EntryAt(i,entry))
+            continue;
+         if(entry.Status()==BRE_POSITION_SNAPSHOT_OPEN)
+            total+=entry.FloatingProfit();
+        }
+      return total;
      }
 
 public:
@@ -106,10 +135,11 @@ public:
 
       double mid=(market.Bid()+market.Ask())*0.5;
       double adverseMovePips=MathAbs(mid-details.StopLoss().Value())/MathMax(market.PipSize(),0.0000001);
+      double floatingProfitUsd=SumFloatingProfit(snapshotStore,basket.Id());
 
       return CResult<CStrategyEvaluationContext>::Ok(
          CStrategyEvaluationContext::Create(profile,market,basketState,riskContext,profitStates,profitStateCount,
-                                          positions,positionCount,adverseMovePips,0.0));
+                                          positions,positionCount,adverseMovePips,floatingProfitUsd));
      }
 
    static CStrategyEvaluationContext FromBasket(const CBasketAggregate &basket,

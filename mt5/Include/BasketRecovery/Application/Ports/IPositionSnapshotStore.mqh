@@ -4,6 +4,7 @@
 #include <BasketRecovery/Shared/Types/Result.mqh>
 #include <BasketRecovery/Shared/Types/Identifiers.mqh>
 #include <BasketRecovery/Shared/DTOs/NormalizedTradeTransaction.mqh>
+#include <BasketRecovery/Domain/Snapshots/PositionSnapshotEntry.mqh>
 #include <BasketRecovery/Domain/Snapshots/PositionSnapshot.mqh>
 
 class IPositionSnapshotStore
@@ -14,6 +15,9 @@ public:
    virtual CVoidResult        CreateEmpty(const CBasketId &basketId)=0;
    virtual CVoidResult        ApplyNormalizedTransaction(const CNormalizedTradeTransaction &transaction)=0;
    virtual CVoidResult        Remove(const CBasketId &basketId)=0;
+   virtual CVoidResult        ReplaceEntries(const CBasketId &basketId,
+                                             const CPositionSnapshotEntry &entries[],
+                                             const int count)=0;
    virtual int                Count(void) const=0;
    virtual int                TotalTransactionCount(void) const=0;
   };

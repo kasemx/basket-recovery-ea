@@ -11,7 +11,7 @@ public:
    virtual          ~IMarketContextProvider(void) {}
    virtual bool      TryBuildForBasket(const CBasketAggregate &basket,
                                        CMarketContext &outMarket,
-                                       CRiskRuntimeContext &outRiskContext) const=0;
+                                       CRiskRuntimeContext &outRiskContext)=0;
   };
 
 #endif

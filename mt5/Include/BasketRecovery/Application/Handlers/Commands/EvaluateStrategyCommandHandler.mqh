@@ -43,9 +43,9 @@ public:
       CMarketContext market;
       CRiskRuntimeContext riskContext;
       if(m_marketProvider==NULL || !m_marketProvider.TryBuildForBasket(basket,market,riskContext))
-         return CResult<CCommandExecutionResult>::Fail(BRE_ERR_COMMAND_INVALID,"Market context unavailable for evaluation");
+         return CResult<CCommandExecutionResult>::EmptyOk();
 
-      CResult<int> result=m_useCase.Execute(*evaluateCommand,market,riskContext,0.0,0.0);
+      CResult<int> result=m_useCase.Execute(*evaluateCommand,market,riskContext);
       if(result.IsFail())
          return CResult<CCommandExecutionResult>::Fail(result.ErrorCode(),result.ErrorMessage());
 

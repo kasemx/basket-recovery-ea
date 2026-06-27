@@ -136,6 +136,27 @@ public:
       return CVoidResult::Ok();
      }
 
+   virtual CVoidResult ReplaceEntries(const CBasketId &basketId,
+                                      const CPositionSnapshotEntry &entries[],
+                                      const int count)
+     {
+      if(basketId.IsEmpty())
+         return CVoidResult::Fail(BRE_ERR_SNAPSHOT_NOT_FOUND,"Basket id is empty");
+
+      CVoidResult ensureResult=EnsureSnapshot(basketId);
+      if(ensureResult.IsFail())
+         return ensureResult;
+
+      int index=FindIndex(basketId);
+      if(index<0 || m_snapshots[index]==NULL)
+         return CVoidResult::Fail(BRE_ERR_SNAPSHOT_NOT_FOUND,"Snapshot not found");
+
+      m_snapshots[index].ReplaceEntries(entries,count);
+      m_snapshots[index].IncrementVersion();
+      m_snapshots[index].SetUpdatedAt(CurrentTimestamp());
+      return CVoidResult::Ok();
+     }
+
    virtual int Count(void) const
      {
       return m_count;

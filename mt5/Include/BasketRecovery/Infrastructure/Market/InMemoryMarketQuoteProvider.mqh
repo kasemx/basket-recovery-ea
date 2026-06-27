@@ -33,7 +33,7 @@ public:
 
    virtual bool      TryBuildForBasket(const CBasketAggregate &basket,
                                        CMarketContext &outMarket,
-                                       CRiskRuntimeContext &outRiskContext) const
+                                       CRiskRuntimeContext &outRiskContext)
      {
       if(!m_hasQuote || basket.Symbol()!=m_symbol)
          return false;
