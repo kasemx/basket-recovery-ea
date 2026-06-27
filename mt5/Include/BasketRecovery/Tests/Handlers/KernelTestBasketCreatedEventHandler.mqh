@@ -1,5 +1,5 @@
-#ifndef BASKET_RECOVERY_TESTS_KERNEL_TEST_BASKET_CREATED_EVENT_HANDLER_MQH
-#define BASKET_RECOVERY_TESTS_KERNEL_TEST_BASKET_CREATED_EVENT_HANDLER_MQH
+#ifndef BRE_TEST_KERNEL_BASKET_CREATED_EVT_H_MQH
+#define BRE_TEST_KERNEL_BASKET_CREATED_EVT_H_MQH
 
 #include <BasketRecovery/Application/Ports/IEventHandler.mqh>
 #include <BasketRecovery/Application/Commands/ActivateBasketCommand.mqh>
@@ -26,7 +26,7 @@ public:
       command.SetCorrelationKey(domainEvent.CorrelationId());
       command.SetPriority(50);
       handlingResult.AddCommand(command);
-      return CResult<CEventHandlingResult>::Ok(handlingResult);
+      return BreResultOkAdopting(handlingResult);
      }
   };
 

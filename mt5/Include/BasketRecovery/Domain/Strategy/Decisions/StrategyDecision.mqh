@@ -20,9 +20,20 @@ private:
    CReduceRiskDecision             m_reduceRisk;
    CNoActionDecision               m_noAction;
 
+public:
                      CStrategyDecision(void) { m_type=BRE_STRATEGY_DECISION_NONE; }
 
-public:
+                     CStrategyDecision(const CStrategyDecision &other)
+     {
+      m_type=other.m_type;
+      m_openRecovery=other.m_openRecovery;
+      m_closePositions=other.m_closePositions;
+      m_moveBreakEven=other.m_moveBreakEven;
+      m_disableRecovery=other.m_disableRecovery;
+      m_reduceRisk=other.m_reduceRisk;
+      m_noAction=other.m_noAction;
+     }
+
    ENUM_BRE_STRATEGY_DECISION_TYPE Type(void) const { return m_type; }
    COpenRecoveryPositionDecision   OpenRecovery(void) const { return m_openRecovery; }
    CClosePositionsDecision         ClosePositions(void) const { return m_closePositions; }

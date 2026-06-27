@@ -104,7 +104,7 @@ public:
          m_profitLevels[i]=levels[i];
      }
 
-   void              RestoreExecutedBreakEvenRules(const string ruleIds[],const int count)
+   void              RestoreExecutedBreakEvenRules(const string &ruleIds[],const int count)
      {
       m_executedBreakEvenRuleCount=count;
       ArrayResize(m_executedBreakEvenRuleIds,count);
@@ -113,7 +113,7 @@ public:
      }
 
    CVoidResult       MarkProfitLevelReached(const string levelId,
-                                            const CUtcTime reachedAtUtc,
+                                            const CUtcTime &reachedAtUtc,
                                             const CCommandId &commandId,
                                             const CEventId &eventId)
      {
@@ -141,6 +141,39 @@ public:
       m_executedBreakEvenRuleIds[m_executedBreakEvenRuleCount]=ruleId;
       m_executedBreakEvenRuleCount++;
       return CVoidResult::Ok();
+     }
+
+   CVoidResult       MarkProfitLevelCloseRequested(const string levelId,
+                                                   const CUtcTime &timestampUtc,
+                                                   const CCommandId &commandId)
+     {
+      int index=FindProfitLevelIndex(levelId);
+      if(index<0 || !m_profitLevels[index].Reached())
+         return CVoidResult::Fail(BRE_ERR_PROFIT_LEVEL_ALREADY_REACHED,"Profit level must be reached first");
+      if(m_profitLevels[index].CloseCompleted())
+         return CVoidResult::Fail(BRE_ERR_PROFIT_LEVEL_ALREADY_CLOSED,"Profit level close already completed");
+      m_profitLevels[index]=m_profitLevels[index].WithCloseRequested(timestampUtc,commandId);
+      return CVoidResult::Ok();
+     }
+
+   CVoidResult       MarkProfitLevelCloseCompleted(const string levelId,
+                                                   const CMoney &realizedProfit,
+                                                   const CUtcTime &completedAtUtc,
+                                                   const CEventId &eventId)
+     {
+      int index=FindProfitLevelIndex(levelId);
+      if(index<0 || !m_profitLevels[index].Reached())
+         return CVoidResult::Fail(BRE_ERR_PROFIT_LEVEL_ALREADY_REACHED,"Profit level must be reached first");
+      if(m_profitLevels[index].CloseCompleted())
+         return CVoidResult::Fail(BRE_ERR_PROFIT_LEVEL_ALREADY_CLOSED,"Profit level close already completed");
+      m_profitLevels[index]=m_profitLevels[index].WithCloseCompleted(realizedProfit,completedAtUtc,eventId);
+      return CVoidResult::Ok();
+     }
+
+   void              CompleteStrategyMigration(const CStrategyProfileSnapshot &snapshot)
+     {
+      m_strategyBinding.Restore(snapshot);
+      m_strategyMigrationRequired=false;
      }
 
    void              CopyProfitLevelsTo(CBasketProfitLevelProgress &outLevels[],int &outCount) const

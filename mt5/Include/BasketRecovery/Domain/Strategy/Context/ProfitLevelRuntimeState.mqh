@@ -10,9 +10,18 @@ private:
    double m_triggerPrice;
    bool   m_hasTriggerPrice;
 
+public:
                      CProfitLevelRuntimeState(void) {}
 
-public:
+                     CProfitLevelRuntimeState(const CProfitLevelRuntimeState &other)
+     {
+      m_levelId=other.m_levelId;
+      m_reached=other.m_reached;
+      m_executed=other.m_executed;
+      m_triggerPrice=other.m_triggerPrice;
+      m_hasTriggerPrice=other.m_hasTriggerPrice;
+     }
+
    string            LevelId(void) const { return m_levelId; }
    bool              Reached(void) const { return m_reached; }
    bool              Executed(void) const { return m_executed; }

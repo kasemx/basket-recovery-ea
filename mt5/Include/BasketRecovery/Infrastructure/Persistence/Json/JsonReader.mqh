@@ -4,6 +4,7 @@
 #include <BasketRecovery/Shared/Constants/PersistenceSchema.mqh>
 #include <BasketRecovery/Shared/Utils/Crc32.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
+#include <BasketRecovery/Shared/Types/Result.mqh>
 
 class CJsonReader
   {

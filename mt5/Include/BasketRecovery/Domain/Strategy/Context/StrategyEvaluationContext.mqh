@@ -20,9 +20,27 @@ private:
    double                      m_adverseMovePips;
    double                      m_floatingProfitUsd;
 
+public:
                      CStrategyEvaluationContext(void) {}
 
-public:
+                     CStrategyEvaluationContext(const CStrategyEvaluationContext &other)
+     {
+      m_profile=other.m_profile;
+      m_market=other.m_market;
+      m_basketState=other.m_basketState;
+      m_riskContext=other.m_riskContext;
+      m_adverseMovePips=other.m_adverseMovePips;
+      m_floatingProfitUsd=other.m_floatingProfitUsd;
+      int profitLevelCount=ArraySize(other.m_profitLevelStates);
+      ArrayResize(m_profitLevelStates,profitLevelCount);
+      for(int i=0;i<profitLevelCount;i++)
+         m_profitLevelStates[i]=other.m_profitLevelStates[i];
+      int positionCount=ArraySize(other.m_positions);
+      ArrayResize(m_positions,positionCount);
+      for(int i=0;i<positionCount;i++)
+         m_positions[i]=other.m_positions[i];
+     }
+
    CStrategyProfile            Profile(void) const { return m_profile; }
    CMarketContext              Market(void) const { return m_market; }
    CBasketStrategyState        BasketState(void) const { return m_basketState; }

@@ -1,5 +1,5 @@
-#ifndef BASKET_RECOVERY_INFRASTRUCTURE_STRATEGY_PROFILE_CANONICAL_SERIALIZER_MQH
-#define BASKET_RECOVERY_INFRASTRUCTURE_STRATEGY_PROFILE_CANONICAL_SERIALIZER_MQH
+#ifndef BRE_INF_STRATEGY_PROFILE_CANONICAL_SER_MQH
+#define BRE_INF_STRATEGY_PROFILE_CANONICAL_SER_MQH
 
 #include <BasketRecovery/Domain/Strategy/Aggregates/StrategyProfile.mqh>
 #include <BasketRecovery/Domain/Strategy/Aggregates/StrategyProfileSnapshot.mqh>
@@ -18,7 +18,7 @@ public:
 
    static CStrategyProfileSnapshot CreateSnapshot(const CStrategyProfile &profile,
                                                     const string canonicalJson,
-                                                    const CUtcTime boundAtUtc)
+                                                    const CUtcTime &boundAtUtc)
      {
       string hash=ComputeHash(canonicalJson);
       return CStrategyProfileSnapshot::Create(profile,canonicalJson,hash,boundAtUtc);

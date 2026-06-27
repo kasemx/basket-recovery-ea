@@ -87,7 +87,7 @@ public:
       ICommand *loaded[];
       CResult<int> loadResult=m_persistence.LoadPendingCommands(loaded);
       if(loadResult.IsFail())
-         return CVoidResult::Fail(loadResult.ErrorCode(),loadResult.Message());
+         return CVoidResult::Fail(loadResult.ErrorCode(),loadResult.ErrorMessage());
 
       int loadedCount=0;
       loadResult.TryGetValue(loadedCount);

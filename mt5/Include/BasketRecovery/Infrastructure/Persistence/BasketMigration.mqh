@@ -35,7 +35,8 @@ public:
       if(!aggregate.RestoreFromDto(dto))
          return CResult<string>::Fail(BRE_ERR_PERSIST_MIGRATION_FAILED,"Failed to restore basket during migration");
 
-      return CResult<string>::Ok(serializer.Serialize(aggregate));
+      string migratedJson=serializer.Serialize(aggregate);
+      return CResult<string>::Ok(migratedJson);
      }
   };
 

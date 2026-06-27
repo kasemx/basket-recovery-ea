@@ -23,7 +23,7 @@ public:
       event.SetBasketId(command.BasketId());
       event.SetCorrelationId(command.CorrelationKey());
       executionResult.AddEvent(event);
-      return CResult<CCommandExecutionResult>::Ok(executionResult);
+      return BreResultOkAdopting(executionResult);
      }
   };
 

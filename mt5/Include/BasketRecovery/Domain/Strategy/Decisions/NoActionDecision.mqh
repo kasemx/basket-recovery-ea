@@ -7,9 +7,15 @@ private:
    string m_idempotencyKey;
    string m_reason;
 
+public:
                      CNoActionDecision(void) {}
 
-public:
+                     CNoActionDecision(const CNoActionDecision &other)
+     {
+      m_idempotencyKey=other.m_idempotencyKey;
+      m_reason=other.m_reason;
+     }
+
    string            IdempotencyKey(void) const { return m_idempotencyKey; }
    string            Reason(void) const { return m_reason; }
 

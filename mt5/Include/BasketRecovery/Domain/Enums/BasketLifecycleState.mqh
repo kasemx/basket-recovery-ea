@@ -42,33 +42,25 @@ public:
 
    static ENUM_BRE_BASKET_LIFECYCLE_STATE FromLegacyInt(const int rawState)
      {
-      switch(rawState)
-        {
-         case BRE_STATE_NONE:
-         case BRE_STATE_PENDING_OPEN:
-         case BRE_STATE_WAIT_DETAILS:
-         case BRE_STATE_ACTIVE:
-         case BRE_STATE_SUSPENDED:
-         case BRE_STATE_CLOSING:
-         case BRE_STATE_FINISHED:
-         case BRE_STATE_ERROR:
-            return (ENUM_BRE_BASKET_LIFECYCLE_STATE)rawState;
-         case BRE_LEGACY_STATE_TP1:
-         case BRE_LEGACY_STATE_BREAK_EVEN:
-         case BRE_LEGACY_STATE_TP2:
-         case BRE_LEGACY_STATE_TP3:
-            return BRE_STATE_ACTIVE;
-         case BRE_LEGACY_STATE_CLOSING_V1:
-            return BRE_STATE_CLOSING;
-         case BRE_LEGACY_STATE_SUSPENDED_V1:
-            return BRE_STATE_SUSPENDED;
-         case BRE_LEGACY_STATE_FINISHED_V1:
-            return BRE_STATE_FINISHED;
-         case BRE_LEGACY_STATE_ERROR_V1:
-            return BRE_STATE_ERROR;
-         default:
-            return BRE_STATE_NONE;
-        }
+      if(rawState==BRE_STATE_NONE || rawState==BRE_STATE_PENDING_OPEN || rawState==BRE_STATE_WAIT_DETAILS ||
+         rawState==BRE_STATE_ACTIVE || rawState==BRE_STATE_SUSPENDED || rawState==BRE_STATE_CLOSING ||
+         rawState==BRE_STATE_FINISHED || rawState==BRE_STATE_ERROR)
+         return (ENUM_BRE_BASKET_LIFECYCLE_STATE)rawState;
+
+      if(rawState==BRE_LEGACY_STATE_TP1 || rawState==BRE_LEGACY_STATE_BREAK_EVEN ||
+         rawState==BRE_LEGACY_STATE_TP2 || rawState==BRE_LEGACY_STATE_TP3)
+         return BRE_STATE_ACTIVE;
+
+      if(rawState==BRE_LEGACY_STATE_CLOSING_V1)
+         return BRE_STATE_CLOSING;
+      if(rawState==BRE_LEGACY_STATE_SUSPENDED_V1)
+         return BRE_STATE_SUSPENDED;
+      if(rawState==BRE_LEGACY_STATE_FINISHED_V1)
+         return BRE_STATE_FINISHED;
+      if(rawState==BRE_LEGACY_STATE_ERROR_V1)
+         return BRE_STATE_ERROR;
+
+      return BRE_STATE_NONE;
      }
 
    static bool       WasLegacyProfitState(const int rawState)

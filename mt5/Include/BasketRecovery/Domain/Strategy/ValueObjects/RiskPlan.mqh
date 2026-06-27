@@ -16,9 +16,22 @@ private:
    int                         m_waitDetailsTimeoutMinutes;
    int                         m_riskEvalDebounceMs;
 
+public:
                      CRiskPlan(void) {}
 
-public:
+                     CRiskPlan(const CRiskPlan &other)
+     {
+      m_targetRiskPct=other.m_targetRiskPct;
+      m_maxRiskPct=other.m_maxRiskPct;
+      m_riskReductionThresholdPct=other.m_riskReductionThresholdPct;
+      m_hasRiskReductionThreshold=other.m_hasRiskReductionThreshold;
+      m_riskReductionMode=other.m_riskReductionMode;
+      m_accountRiskCapPct=other.m_accountRiskCapPct;
+      m_hasAccountRiskCap=other.m_hasAccountRiskCap;
+      m_waitDetailsTimeoutMinutes=other.m_waitDetailsTimeoutMinutes;
+      m_riskEvalDebounceMs=other.m_riskEvalDebounceMs;
+     }
+
    double                      TargetRiskPct(void) const { return m_targetRiskPct; }
    double                      MaxRiskPct(void) const { return m_maxRiskPct; }
    bool                        HasRiskReductionThreshold(void) const { return m_hasRiskReductionThreshold; }

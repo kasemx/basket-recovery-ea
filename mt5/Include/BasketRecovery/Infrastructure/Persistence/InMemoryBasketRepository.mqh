@@ -105,6 +105,14 @@ public:
      }
 
    virtual int       Count(void) const { return m_count; }
+
+   virtual int       LoadAll(CBasketAggregate &aggregates[]) const
+     {
+      ArrayResize(aggregates,m_count);
+      for(int i=0;i<m_count;i++)
+         aggregates[i]=*m_items[i];
+      return m_count;
+     }
   };
 
 #endif

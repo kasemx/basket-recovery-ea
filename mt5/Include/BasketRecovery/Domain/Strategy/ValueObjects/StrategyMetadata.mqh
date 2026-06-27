@@ -8,9 +8,16 @@ private:
    string m_description;
    string m_author;
 
+public:
                      CStrategyMetadata(void) {}
 
-public:
+                     CStrategyMetadata(const CStrategyMetadata &other)
+     {
+      m_strategyName=other.m_strategyName;
+      m_description=other.m_description;
+      m_author=other.m_author;
+     }
+
    string            StrategyName(void) const { return m_strategyName; }
    string            Description(void) const { return m_description; }
    string            Author(void) const { return m_author; }

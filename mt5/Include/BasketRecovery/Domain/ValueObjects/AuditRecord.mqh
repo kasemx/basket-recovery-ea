@@ -25,7 +25,7 @@ public:
 
    void              SetCommandId(const CCommandId &value) { m_commandId=value; }
    void              SetEventId(const CEventId &value) { m_eventId=value; }
-   void              SetTimestampUtc(const CUtcTime value) { m_timestampUtc=value; }
+   void              SetTimestampUtc(const CUtcTime &value) { m_timestampUtc=value; }
    void              SetVersion(const long value) { m_version=value; }
   };
 

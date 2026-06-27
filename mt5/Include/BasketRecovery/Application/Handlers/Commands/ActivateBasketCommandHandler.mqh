@@ -99,7 +99,7 @@ public:
       if(lifecycleResult.TryGetValue(lifecycleExecution))
          TransferEvents(executionResult,lifecycleExecution);
 
-      return CResult<CCommandExecutionResult>::Ok(executionResult);
+      return BreResultOkAdopting(executionResult);
      }
   };
 

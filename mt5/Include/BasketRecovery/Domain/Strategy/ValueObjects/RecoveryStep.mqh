@@ -8,9 +8,16 @@ private:
    double m_distancePips;
    double m_lot;
 
+public:
                      CRecoveryStep(void) {}
 
-public:
+                     CRecoveryStep(const CRecoveryStep &other)
+     {
+      m_stepIndex=other.m_stepIndex;
+      m_distancePips=other.m_distancePips;
+      m_lot=other.m_lot;
+     }
+
    int               StepIndex(void) const { return m_stepIndex; }
    double            DistancePips(void) const { return m_distancePips; }
    double            Lot(void) const { return m_lot; }

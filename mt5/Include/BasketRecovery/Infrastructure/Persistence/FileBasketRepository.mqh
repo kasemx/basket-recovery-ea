@@ -55,7 +55,7 @@ public:
 
       CResult<string> migrated=CBasketMigration::MigrateToCurrent(content);
       if(migrated.IsFail())
-         return CResult<CBasketAggregate>::Fail(migrated.ErrorCode(),migrated.Message());
+         return CResult<CBasketAggregate>::Fail(migrated.ErrorCode(),migrated.ErrorMessage());
 
       string migratedContent;
       if(!migrated.TryGetValue(migratedContent))

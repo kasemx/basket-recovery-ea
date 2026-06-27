@@ -54,11 +54,11 @@ public:
          m_idempotencyPersistence.SetRecoveryMode(value);
      }
 
-   IBasketRepository&            BasketRepository(void) { return *m_basketRepository; }
-   ICommandQueue&                CommandQueue(void) { return *m_commandQueue; }
-   IIdempotencyStore&            IdempotencyStore(void) { return *m_idempotencyStore; }
-   IIdempotencyPersistence&      IdempotencyPersistence(void) { return *m_idempotencyPersistence; }
-   CPersistenceSaveQueue&        SaveQueue(void) { return *m_saveQueue; }
+   IBasketRepository*            BasketRepository(void) { return m_basketRepository; }
+   ICommandQueue*                CommandQueue(void) { return m_commandQueue; }
+   IIdempotencyStore*            IdempotencyStore(void) { return m_idempotencyStore; }
+   IIdempotencyPersistence*      IdempotencyPersistence(void) { return m_idempotencyPersistence; }
+   CPersistenceSaveQueue*        SaveQueue(void) { return m_saveQueue; }
 
    CVoidResult       QueueSaveBasket(const CBasketAggregate &aggregate)
      {
@@ -102,6 +102,11 @@ public:
       if(m_saveQueue.ShouldFlush())
          return Flush();
       return CVoidResult::Ok();
+     }
+
+   int               LoadAll(CBasketAggregate &aggregates[]) const
+     {
+      return m_basketRepository.LoadAll(aggregates);
      }
 
    CVoidResult       RecoverOnStartup(void)

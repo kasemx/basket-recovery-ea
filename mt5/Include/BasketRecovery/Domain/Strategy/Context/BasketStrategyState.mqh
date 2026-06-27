@@ -18,9 +18,26 @@ private:
    bool                      m_manualBreakEvenRequested;
    string                    m_executedBreakEvenRuleIds[];
 
+public:
                      CBasketStrategyState(void) {}
 
-public:
+                     CBasketStrategyState(const CBasketStrategyState &other)
+     {
+      m_basketId=other.m_basketId;
+      m_direction=other.m_direction;
+      m_signalRangeLow=other.m_signalRangeLow;
+      m_signalRangeHigh=other.m_signalRangeHigh;
+      m_anchorPrice=other.m_anchorPrice;
+      m_currentRecoveryStepIndex=other.m_currentRecoveryStepIndex;
+      m_recoveryDisabled=other.m_recoveryDisabled;
+      m_breakEvenActivated=other.m_breakEvenActivated;
+      m_manualBreakEvenRequested=other.m_manualBreakEvenRequested;
+      int ruleCount=ArraySize(other.m_executedBreakEvenRuleIds);
+      ArrayResize(m_executedBreakEvenRuleIds,ruleCount);
+      for(int i=0;i<ruleCount;i++)
+         m_executedBreakEvenRuleIds[i]=other.m_executedBreakEvenRuleIds[i];
+     }
+
    CBasketId                 BasketId(void) const { return m_basketId; }
    ENUM_BRE_TRADE_DIRECTION  Direction(void) const { return m_direction; }
    double                    SignalRangeLow(void) const { return m_signalRangeLow; }

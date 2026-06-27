@@ -13,9 +13,22 @@ private:
    bool                m_partialClose;
    ulong               m_tickets[];
 
+public:
                      CClosePositionsDecision(void) {}
 
-public:
+                     CClosePositionsDecision(const CClosePositionsDecision &other)
+     {
+      m_idempotencyKey=other.m_idempotencyKey;
+      m_levelId=other.m_levelId;
+      m_closePercent=other.m_closePercent;
+      m_closeMode=other.m_closeMode;
+      m_partialClose=other.m_partialClose;
+      int ticketCount=ArraySize(other.m_tickets);
+      ArrayResize(m_tickets,ticketCount);
+      for(int i=0;i<ticketCount;i++)
+         m_tickets[i]=other.m_tickets[i];
+     }
+
    string              IdempotencyKey(void) const { return m_idempotencyKey; }
    string              LevelId(void) const { return m_levelId; }
    double              ClosePercent(void) const { return m_closePercent; }

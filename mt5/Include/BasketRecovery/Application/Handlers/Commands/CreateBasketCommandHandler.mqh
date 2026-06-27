@@ -86,7 +86,7 @@ public:
       event.SetCorrelationId(aggregate.CorrelationKey());
       event.SetOccurredAt(timestampUtc.Value());
       executionResult.AddEvent(event);
-      return CResult<CCommandExecutionResult>::Ok(executionResult);
+      return BreResultOkAdopting(executionResult);
      }
   };
 

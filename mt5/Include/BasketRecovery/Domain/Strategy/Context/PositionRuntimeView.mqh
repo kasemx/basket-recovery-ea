@@ -16,9 +16,21 @@ private:
    ENUM_BRE_TRADE_DIRECTION  m_direction;
    ENUM_BRE_TRADE_ROLE       m_tradeRole;
 
+public:
                      CPositionRuntimeView(void) {}
 
-public:
+                     CPositionRuntimeView(const CPositionRuntimeView &other)
+     {
+      m_ticket=other.m_ticket;
+      m_entryPrice=other.m_entryPrice;
+      m_lot=other.m_lot;
+      m_floatingProfit=other.m_floatingProfit;
+      m_positionRiskUsd=other.m_positionRiskUsd;
+      m_openTime=other.m_openTime;
+      m_direction=other.m_direction;
+      m_tradeRole=other.m_tradeRole;
+     }
+
    ulong                     Ticket(void) const { return m_ticket; }
    double                    EntryPrice(void) const { return m_entryPrice; }
    double                    Lot(void) const { return m_lot; }

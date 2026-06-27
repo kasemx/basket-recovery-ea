@@ -4,6 +4,7 @@
 #include <BasketRecovery/Shared/Types/Result.mqh>
 #include <BasketRecovery/Application/Commands/ICommand.mqh>
 #include <BasketRecovery/Application/DTOs/CommandExecutionResult.mqh>
+#include <BasketRecovery/Shared/Types/ResultValueTransfer.mqh>
 
 class ICommandHandler
   {

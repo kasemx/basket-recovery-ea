@@ -2,13 +2,14 @@
 #define BASKET_RECOVERY_INTERFACES_BOOTSTRAPPER_MQH
 
 #include <BasketRecovery/Application/Kernel/ApplicationContext.mqh>
+#include <BasketRecovery/Application/Kernel/ApplicationKernel.mqh>
 #include <BasketRecovery/Application/Kernel/ServiceContainer.mqh>
 #include <BasketRecovery/Application/Configuration/ProfileSnapshotFactory.mqh>
 #include <BasketRecovery/Infrastructure/Configuration/Mt5ConfigurationLoader.mqh>
 #include <BasketRecovery/Infrastructure/Logging/FileLogger.mqh>
 #include <BasketRecovery/Infrastructure/MT5/Mt5Clock.mqh>
 #include <BasketRecovery/Infrastructure/MT5/Mt5UniqueIdGenerator.mqh>
-#include <BasketRecovery/Infrastructure/Commands/InMemoryCommandQueue.mqh>
+#include <BasketRecovery/Infrastructure/Persistence/PersistenceManager.mqh>
 #include <BasketRecovery/Infrastructure/Events/InMemoryEventBus.mqh>
 #include <BasketRecovery/Infrastructure/TradeRequests/InMemoryTradeRequestQueue.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/InMemorySnapshotStore.mqh>
@@ -34,10 +35,15 @@ public:
                                          const string accountLabel,
                                          const string apiBaseUrl,
                                          const string apiKey,
-                                         const int restPollIntervalMs)
+                                         const int restPollIntervalMs,
+                                         const int applicationTimerIntervalMs,
+                                         const int strategyEvalIntervalMs,
+                                         const int maxBasketsPerEvalCycle)
      {
       CResult<CEAConfiguration> configurationResult=
-         CMt5ConfigurationLoader::LoadFromInputs(profileName,logFilePath,logLevel,accountLabel,apiBaseUrl,apiKey,restPollIntervalMs);
+         CMt5ConfigurationLoader::LoadFromInputs(profileName,logFilePath,logLevel,accountLabel,apiBaseUrl,apiKey,
+                                                 restPollIntervalMs,applicationTimerIntervalMs,
+                                                 strategyEvalIntervalMs,maxBasketsPerEvalCycle);
 
       if(configurationResult.IsFail())
         {
@@ -123,8 +129,6 @@ public:
       CServiceContainer *container=new CServiceContainer();
       container.RegisterLogger(logger,true);
       container.RegisterClock(clock,true);
-      ICommandQueue *commandQueue=new CInMemoryCommandQueue();
-      container.RegisterCommandQueue(commandQueue,true);
       container.RegisterEventBus(new CInMemoryEventBus(),true);
       container.RegisterTradeRequestQueue(new CInMemoryTradeRequestQueue(),true);
       container.RegisterSnapshotStore(snapshotStore,true);
@@ -133,6 +137,15 @@ public:
       container.RegisterReconciliationService(reconciliationService,true);
       container.RegisterUniqueIdGenerator(new CMt5UniqueIdGenerator(),true);
       container.SetEAConfiguration(configuration);
+
+      CPersistenceManager *persistenceManager=new CPersistenceManager(false,500);
+      if(persistenceManager.RecoverOnStartup().IsFail())
+        {
+         delete persistenceManager;
+         delete container;
+         return NULL;
+        }
+      container.RegisterCommandQueue(persistenceManager.CommandQueue(),false);
 
       CRestClientConfig restConfig;
       restConfig.SetBaseUrl(configuration.ApiBaseUrl());
@@ -144,7 +157,7 @@ public:
       CRestClient *restClient=new CRestClient(new CRestWebRequestClient(restConfig.TimeoutMs()),true);
       CRestCommandSource *commandSource=new CRestCommandSource(restClient,restConfig,true);
       CCommandIngestionService *commandIngestionService=
-         new CCommandIngestionService(commandSource,commandQueue,logger);
+         new CCommandIngestionService(commandSource,persistenceManager.CommandQueue(),logger);
       container.RegisterCommandSource(commandSource,true);
       container.RegisterCommandIngestionService(commandIngestionService,true);
 
@@ -152,14 +165,28 @@ public:
       if(reconciliationResult.IsFail())
         {
          logger.Error("SYSTEM","Bootstrap","","Startup reconciliation failed",reconciliationResult.ErrorCode());
+         delete persistenceManager;
+         delete container;
+         return NULL;
+        }
+
+      CApplicationKernel *kernel=new CApplicationKernel();
+      if(!kernel.Initialize(transitionRuleRegistry,clock,container.UniqueIdGenerator(),
+                             commandIngestionService,profileSnapshot,persistenceManager,
+                             effectivePollIntervalMs,configuration.StrategyEvalIntervalMs(),
+                             configuration.MaxBasketsPerEvalCycle()))
+        {
+         delete kernel;
          delete container;
          return NULL;
         }
 
       CApplicationContext *context=new CApplicationContext();
-      if(!context.Initialize(container))
+      if(!context.Initialize(container,kernel))
         {
          delete context;
+         delete kernel;
+         delete container;
          return NULL;
         }
 

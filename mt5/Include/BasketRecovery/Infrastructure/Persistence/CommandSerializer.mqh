@@ -7,6 +7,7 @@
 #include <BasketRecovery/Application/Commands/UpdateSLCommand.mqh>
 #include <BasketRecovery/Application/Commands/UpdateTPCommand.mqh>
 #include <BasketRecovery/Application/Commands/CloseBasketCommand.mqh>
+#include <BasketRecovery/Infrastructure/Persistence/CommandSerializerStrategy.mqh>
 #include <BasketRecovery/Infrastructure/Persistence/Json/JsonWriter.mqh>
 #include <BasketRecovery/Infrastructure/Persistence/Json/JsonReader.mqh>
 #include <BasketRecovery/Shared/Constants/PersistenceSchema.mqh>
@@ -17,7 +18,7 @@ class CCommandSerializer
 private:
    CJsonWriter m_writer;
 
-   string            SerializeCommandFields(const ICommand *command) const
+   string            SerializeCommandFields(ICommand *command) const
      {
       if(command==NULL)
          return "";
@@ -79,8 +80,16 @@ private:
             break;
            }
          default:
-            fields+=m_writer.FieldString("payload","");
+           {
+            if(CCommandSerializerStrategy::IsStrategyCommandType(command.Type()))
+              {
+               fields+=CCommandSerializerStrategy::AppendStrategyFields(m_writer,(CStrategyCommandBase*)command);
+               fields+=CCommandSerializerStrategy::AppendPayloadFields(m_writer,command);
+              }
+            else
+               fields+=m_writer.FieldString("payload","");
             break;
+           }
         }
       return fields;
      }
@@ -143,7 +152,11 @@ private:
             break;
            }
          default:
-            return NULL;
+           {
+            if(CCommandSerializerStrategy::IsStrategyCommandType(commandType))
+               command=CCommandSerializerStrategy::CreateStrategyCommand(commandType,blockReader);
+            break;
+           }
         }
 
       if(command==NULL)
@@ -164,7 +177,7 @@ private:
      }
 
 public:
-   string            SerializePendingCommands(ICommand *commands[],const int count) const
+   string            SerializePendingCommands(ICommand* &commands[],const int count) const
      {
       string body="\"pending_count\":"+IntegerToString(count)+",\"commands\":[";
       for(int i=0;i<count;i++)

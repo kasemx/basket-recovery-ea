@@ -13,9 +13,19 @@ private:
    double                m_expectedEntryPrice;
    ENUM_BRE_TRADE_ROLE   m_tradeRole;
 
+public:
                      COpenRecoveryPositionDecision(void) {}
 
-public:
+                     COpenRecoveryPositionDecision(const COpenRecoveryPositionDecision &other)
+     {
+      m_idempotencyKey=other.m_idempotencyKey;
+      m_stepIndex=other.m_stepIndex;
+      m_distancePips=other.m_distancePips;
+      m_lot=other.m_lot;
+      m_expectedEntryPrice=other.m_expectedEntryPrice;
+      m_tradeRole=other.m_tradeRole;
+     }
+
    string                IdempotencyKey(void) const { return m_idempotencyKey; }
    int                   StepIndex(void) const { return m_stepIndex; }
    double                DistancePips(void) const { return m_distancePips; }

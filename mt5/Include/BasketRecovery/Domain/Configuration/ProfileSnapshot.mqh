@@ -21,9 +21,20 @@ private:
    CExecutionProfileConfig  m_execution;
    CUtcTime                 m_boundAt;
 
+public:
                      CProfileSnapshot(void) {}
 
-public:
+                     CProfileSnapshot(const CProfileSnapshot &other)
+     {
+      m_profileName=other.m_profileName;
+      m_risk=other.m_risk;
+      m_recovery=other.m_recovery;
+      m_takeProfit=other.m_takeProfit;
+      m_breakEven=other.m_breakEven;
+      m_execution=other.m_execution;
+      m_boundAt=other.m_boundAt;
+     }
+
    string                   ProfileName(void) const { return m_profileName; }
    CRiskProfileConfig       Risk(void) const { return m_risk; }
    CRecoveryProfileConfig   Recovery(void) const { return m_recovery; }
@@ -38,7 +49,7 @@ public:
                                    const CTakeProfitProfileConfig &takeProfit,
                                    const CBreakEvenProfileConfig &breakEven,
                                    const CExecutionProfileConfig &execution,
-                                   const CUtcTime boundAt)
+                                   const CUtcTime &boundAt)
      {
       CProfileSnapshot snapshot;
       snapshot.m_profileName=profileName;

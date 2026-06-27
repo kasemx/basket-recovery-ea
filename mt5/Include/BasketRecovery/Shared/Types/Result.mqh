@@ -6,14 +6,13 @@
 template<typename T>
 class CResult
   {
-private:
+public:
    bool   m_success;
    T      m_value;
    int    m_errorCode;
    string m_errorMessage;
    bool   m_hasValue;
 
-public:
                      CResult(void)
      {
       m_success=false;
@@ -22,16 +21,33 @@ public:
       m_hasValue=false;
      }
 
+                     CResult(const CResult &other)
+     {
+      m_success=other.m_success;
+      m_value=other.m_value;
+      m_errorCode=other.m_errorCode;
+      m_errorMessage=other.m_errorMessage;
+      m_hasValue=other.m_hasValue;
+     }
+
    static CResult    Ok(const T &value)
      {
       CResult<T> result;
       result.m_success=true;
+      result.m_hasValue=true;
       result.m_value=value;
+      return result;
+     }
+
+   static CResult    EmptyOk(void)
+     {
+      CResult<T> result;
+      result.m_success=true;
       result.m_hasValue=true;
       return result;
      }
 
-   static CResult    Fail(const int errorCode,const string &message)
+   static CResult    Fail(const int errorCode,const string message)
      {
       CResult<T> result;
       result.m_success=false;
@@ -52,11 +68,6 @@ public:
          return false;
       outValue=m_value;
       return true;
-     }
-
-   T                 ValueOr(const T &defaultValue) const
-     {
-      return HasValue() ? m_value : defaultValue;
      }
   };
 
@@ -82,7 +93,7 @@ public:
       return result;
      }
 
-   static CVoidResult Fail(const int errorCode,const string &message)
+   static CVoidResult Fail(const int errorCode,const string message)
      {
       CVoidResult result;
       result.m_success=false;

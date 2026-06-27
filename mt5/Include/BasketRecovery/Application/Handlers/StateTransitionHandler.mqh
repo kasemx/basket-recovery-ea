@@ -7,7 +7,7 @@
 #include <BasketRecovery/Domain/Requests/TransitionRequest.mqh>
 #include <BasketRecovery/Domain/Events/DomainEvent.mqh>
 #include <BasketRecovery/Shared/Types/UtcTime.mqh>
-#include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
+#include <BasketRecovery/Shared/Types/ResultValueTransfer.mqh>
 
 class CStateTransitionHandler
   {
@@ -43,7 +43,7 @@ public:
 
    CResult<CCommandExecutionResult> ProcessLifecycle(CBasketAggregate &aggregate,
                                                        const CTransitionRequest &request,
-                                                       const CUtcTime timestampUtc)
+                                                       const CUtcTime &timestampUtc)
      {
       if(m_engine==NULL)
          return CResult<CCommandExecutionResult>::Fail(BRE_ERR_SERVICE_NOT_REGISTERED,"Transition engine is not registered");
@@ -75,12 +75,12 @@ public:
          aggregate.ApplyCloseReason(request.CloseReason());
 
       AppendTransitionEvent(executionResult,aggregate,outcome);
-      return CResult<CCommandExecutionResult>::Ok(executionResult);
+      return BreResultOkAdopting(executionResult);
      }
 
    CResult<CCommandExecutionResult> ProcessSignalDetails(CBasketAggregate &aggregate,
                                                            const CTransitionRequest &request,
-                                                           const CUtcTime timestampUtc)
+                                                           const CUtcTime &timestampUtc)
      {
       if(!request.HasSignalDetails())
          return CResult<CCommandExecutionResult>::Fail(BRE_ERR_TRANSITION_REQUEST_INVALID,"Signal details payload is required");
@@ -93,12 +93,12 @@ public:
       event.SetEventType(BRE_EVENT_BASKET_ACTIVATED);
       event.SetBasketId(aggregate.Id());
       executionResult.AddEvent(event);
-      return CResult<CCommandExecutionResult>::Ok(executionResult);
+      return BreResultOkAdopting(executionResult);
      }
 
    CResult<CCommandExecutionResult> ProcessStopLoss(CBasketAggregate &aggregate,
                                                       const CTransitionRequest &request,
-                                                      const CUtcTime timestampUtc)
+                                                      const CUtcTime &timestampUtc)
      {
       if(!request.HasStopLoss())
          return CResult<CCommandExecutionResult>::Fail(BRE_ERR_TRANSITION_REQUEST_INVALID,"Stop loss payload is required");
@@ -106,12 +106,12 @@ public:
       if(!aggregate.ApplyStopLossUpdate(request.StopLoss(),request.CommandId(),request.EventId(),timestampUtc))
          return CResult<CCommandExecutionResult>::Fail(BRE_ERR_BASKET_INVALID,"Failed to apply stop loss update");
 
-      return CResult<CCommandExecutionResult>::Ok(CCommandExecutionResult());
+      return CResult<CCommandExecutionResult>::EmptyOk();
      }
 
    CResult<CCommandExecutionResult> ProcessTakeProfit(CBasketAggregate &aggregate,
                                                         const CTransitionRequest &request,
-                                                        const CUtcTime timestampUtc)
+                                                        const CUtcTime &timestampUtc)
      {
       if(!request.HasSignalDetails())
          return CResult<CCommandExecutionResult>::Fail(BRE_ERR_TRANSITION_REQUEST_INVALID,"Take profit payload is required");
@@ -119,7 +119,7 @@ public:
       if(!aggregate.ApplyTakeProfitUpdate(request.SignalDetailsPayload(),request.CommandId(),request.EventId(),timestampUtc))
          return CResult<CCommandExecutionResult>::Fail(BRE_ERR_BASKET_INVALID,"Failed to apply take profit update");
 
-      return CResult<CCommandExecutionResult>::Ok(CCommandExecutionResult());
+      return CResult<CCommandExecutionResult>::EmptyOk();
      }
   };
 

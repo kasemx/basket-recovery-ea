@@ -27,6 +27,7 @@ enum ENUM_BRE_EVENT_TYPE
    BRE_EVENT_RECOVERY_DISABLED,
    BRE_EVENT_RISK_REDUCTION_REQUESTED,
    BRE_EVENT_BASKET_LOCKED,
+   BRE_EVENT_EXECUTION_PENDING,
    BRE_EVENT_TP1_REACHED,
    BRE_EVENT_TP2_REACHED,
    BRE_EVENT_TP3_REACHED,
@@ -66,6 +67,7 @@ public:
          case BRE_EVENT_RECOVERY_DISABLED: return "RecoveryDisabled";
          case BRE_EVENT_RISK_REDUCTION_REQUESTED: return "RiskReductionRequested";
          case BRE_EVENT_BASKET_LOCKED: return "BasketLocked";
+         case BRE_EVENT_EXECUTION_PENDING: return "ExecutionPending";
          case BRE_EVENT_TP1_REACHED: return "TP1Reached";
          case BRE_EVENT_TP2_REACHED: return "TP2Reached";
          case BRE_EVENT_TP3_REACHED: return "TP3Reached";

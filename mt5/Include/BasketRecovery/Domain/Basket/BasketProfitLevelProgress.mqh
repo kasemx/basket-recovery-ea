@@ -18,9 +18,22 @@ private:
    CCommandId m_executionCommandId;
    CEventId   m_executionEventId;
 
+public:
                      CBasketProfitLevelProgress(void) {}
 
-public:
+                     CBasketProfitLevelProgress(const CBasketProfitLevelProgress &other)
+     {
+      m_levelId=other.m_levelId;
+      m_reached=other.m_reached;
+      m_closeRequested=other.m_closeRequested;
+      m_closeCompleted=other.m_closeCompleted;
+      m_realizedProfit=other.m_realizedProfit;
+      m_reachedAtUtc=other.m_reachedAtUtc;
+      m_completedAtUtc=other.m_completedAtUtc;
+      m_executionCommandId=other.m_executionCommandId;
+      m_executionEventId=other.m_executionEventId;
+     }
+
    string     LevelId(void) const { return m_levelId; }
    bool       Reached(void) const { return m_reached; }
    bool       CloseRequested(void) const { return m_closeRequested; }
@@ -39,7 +52,7 @@ public:
      }
 
    static CBasketProfitLevelProgress CreateReached(const string levelId,
-                                                   const CUtcTime reachedAtUtc,
+                                                   const CUtcTime &reachedAtUtc,
                                                    const CCommandId &commandId,
                                                    const CEventId &eventId)
      {
@@ -52,7 +65,7 @@ public:
       return progress;
      }
 
-   CBasketProfitLevelProgress WithCloseRequested(const CUtcTime timestampUtc,
+   CBasketProfitLevelProgress WithCloseRequested(const CUtcTime &timestampUtc,
                                                  const CCommandId &commandId) const
      {
       CBasketProfitLevelProgress copy;
@@ -69,7 +82,7 @@ public:
      }
 
    CBasketProfitLevelProgress WithCloseCompleted(const CMoney &realizedProfit,
-                                                   const CUtcTime completedAtUtc,
+                                                   const CUtcTime &completedAtUtc,
                                                    const CEventId &eventId) const
      {
       CBasketProfitLevelProgress copy;

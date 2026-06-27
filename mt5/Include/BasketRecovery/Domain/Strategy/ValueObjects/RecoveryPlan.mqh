@@ -22,9 +22,30 @@ private:
    double                      m_initialLotSize;
    CRecoveryStep               m_steps[];
 
+public:
                      CRecoveryPlan(void) {}
 
-public:
+                     CRecoveryPlan(const CRecoveryPlan &other)
+     {
+      m_algorithm=other.m_algorithm;
+      m_maxSteps=other.m_maxSteps;
+      m_hasMaxSteps=other.m_hasMaxSteps;
+      m_constantDistancePips=other.m_constantDistancePips;
+      m_constantLot=other.m_constantLot;
+      m_linearDistanceIncrement=other.m_linearDistanceIncrement;
+      m_linearLotIncrement=other.m_linearLotIncrement;
+      m_progressiveDistanceFactor=other.m_progressiveDistanceFactor;
+      m_progressiveLotFactor=other.m_progressiveLotFactor;
+      m_allowDuringProfitTaking=other.m_allowDuringProfitTaking;
+      m_disableAfterBreakEven=other.m_disableAfterBreakEven;
+      m_initialPositionCount=other.m_initialPositionCount;
+      m_initialLotSize=other.m_initialLotSize;
+      int stepCount=ArraySize(other.m_steps);
+      ArrayResize(m_steps,stepCount);
+      for(int i=0;i<stepCount;i++)
+         m_steps[i]=other.m_steps[i];
+     }
+
    ENUM_BRE_RECOVERY_ALGORITHM Algorithm(void) const { return m_algorithm; }
    int                         MaxSteps(void) const { return m_maxSteps; }
    bool                        HasMaxSteps(void) const { return m_hasMaxSteps; }

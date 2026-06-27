@@ -12,9 +12,17 @@ private:
    CRecoveryStep  m_step;
    string         m_reason;
 
+public:
                      CRecoveryPlanResolution(void) {}
 
-public:
+                     CRecoveryPlanResolution(const CRecoveryPlanResolution &other)
+     {
+      m_supported=other.m_supported;
+      m_hasStep=other.m_hasStep;
+      m_step=other.m_step;
+      m_reason=other.m_reason;
+     }
+
    bool           Supported(void) const { return m_supported; }
    bool           HasStep(void) const { return m_hasStep; }
    CRecoveryStep  Step(void) const { return m_step; }

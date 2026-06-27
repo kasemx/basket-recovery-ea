@@ -1,5 +1,5 @@
-#ifndef BASKET_RECOVERY_INFRASTRUCTURE_BROKER_RECONCILIATION_SERVICE_MQH
-#define BASKET_RECOVERY_INFRASTRUCTURE_BROKER_RECONCILIATION_SERVICE_MQH
+#ifndef BRE_INF_BROKER_RECONCILIATION_SERVICE_MQH
+#define BRE_INF_BROKER_RECONCILIATION_SERVICE_MQH
 
 #include <BasketRecovery/Application/Ports/IBrokerReconciliationService.mqh>
 #include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>

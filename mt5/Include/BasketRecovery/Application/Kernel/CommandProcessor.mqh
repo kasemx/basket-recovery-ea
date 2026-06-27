@@ -17,9 +17,10 @@ private:
    IIdempotencyStore   *m_idempotencyStore;
    int                  m_maxIterations;
    int                  m_maxCommandsPerPhase;
+   CBasketId            m_lastProcessedBasketId;
 
    void              EnqueueGeneratedEvents(CCommandExecutionResult &executionResult,
-                                            CDomainEvent *phaseEvents[],
+                                            CDomainEvent* &phaseEvents[],
                                             int &phaseEventCount)
      {
       int eventCount=executionResult.EventCount();
@@ -34,7 +35,7 @@ private:
         }
      }
 
-   CVoidResult       ProcessPhaseTwo(CDomainEvent *phaseEvents[],
+   CVoidResult       ProcessPhaseTwo(CDomainEvent* &phaseEvents[],
                                      const int phaseEventCount,
                                      int &commandsGenerated)
      {
@@ -76,7 +77,7 @@ private:
 
    CVoidResult       ProcessPhaseOne(int &commandsProcessed,
                                      int &eventsGenerated,
-                                     CDomainEvent *phaseEvents[])
+                                     CDomainEvent* &phaseEvents[])
      {
       commandsProcessed=0;
       eventsGenerated=0;
@@ -86,6 +87,8 @@ private:
          ICommand *command=m_commandQueue.DequeueNext();
          if(command==NULL)
             break;
+
+         m_lastProcessedBasketId=command.BasketId();
 
          string idempotencyKey=command.IdempotencyKey();
          if(idempotencyKey!="" && m_idempotencyStore!=NULL && m_idempotencyStore.IsProcessed(idempotencyKey))
@@ -97,7 +100,8 @@ private:
          CResult<CCommandExecutionResult> dispatchResult=m_commandDispatcher.Dispatch(command);
          if(dispatchResult.IsFail())
            {
-            m_commandQueue.MarkFailed(command.Id(),dispatchResult.ErrorCode(),dispatchResult.ErrorMessage());
+            string failMessage=dispatchResult.ErrorMessage();
+            m_commandQueue.MarkFailed(command.Id(),dispatchResult.ErrorCode(),failMessage);
             continue;
            }
 
@@ -136,6 +140,7 @@ public:
       m_idempotencyStore=idempotencyStore;
       m_maxIterations=8;
       m_maxCommandsPerPhase=16;
+      m_lastProcessedBasketId=CBasketId("");
      }
 
    void              SetMaxIterations(const int value)
@@ -151,6 +156,7 @@ public:
      }
 
    int               MaxIterations(void) const { return m_maxIterations; }
+   CBasketId         LastProcessedBasketId(void) const { return m_lastProcessedBasketId; }
 
    CVoidResult       RunCycle(int &totalCommandsProcessed,int &totalEventsProcessed)
      {

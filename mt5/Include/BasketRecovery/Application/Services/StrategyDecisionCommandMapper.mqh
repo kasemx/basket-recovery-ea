@@ -1,5 +1,5 @@
-#ifndef BASKET_RECOVERY_APPLICATION_STRATEGY_DECISION_COMMAND_MAPPER_MQH
-#define BASKET_RECOVERY_APPLICATION_STRATEGY_DECISION_COMMAND_MAPPER_MQH
+#ifndef BRE_APP_STRATEGY_DECISION_CMD_MAPPER_MQH
+#define BRE_APP_STRATEGY_DECISION_CMD_MAPPER_MQH
 
 #include <BasketRecovery/Application/Commands/ICommand.mqh>
 #include <BasketRecovery/Application/Commands/StrategyCommands.mqh>
@@ -125,7 +125,7 @@ public:
                                      const long expectedBasketVersion,
                                      const string strategyProfileHash,
                                      const string correlationId,
-                                     ICommand *outCommands[])
+                                     ICommand* &outCommands[])
      {
       if(strategyProfileHash=="")
          return CResult<int>::Fail(BRE_ERR_STRATEGY_HASH_MISMATCH,"Strategy profile hash is required");

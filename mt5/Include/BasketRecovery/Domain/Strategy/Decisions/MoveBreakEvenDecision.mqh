@@ -11,9 +11,19 @@ private:
    double m_slOffsetPips;
    bool   m_useOffset;
 
+public:
                      CMoveBreakEvenDecision(void) {}
 
-public:
+                     CMoveBreakEvenDecision(const CMoveBreakEvenDecision &other)
+     {
+      m_idempotencyKey=other.m_idempotencyKey;
+      m_ruleId=other.m_ruleId;
+      m_bufferPips=other.m_bufferPips;
+      m_includeSpread=other.m_includeSpread;
+      m_slOffsetPips=other.m_slOffsetPips;
+      m_useOffset=other.m_useOffset;
+     }
+
    string            IdempotencyKey(void) const { return m_idempotencyKey; }
    string            RuleId(void) const { return m_ruleId; }
    double            BufferPips(void) const { return m_bufferPips; }

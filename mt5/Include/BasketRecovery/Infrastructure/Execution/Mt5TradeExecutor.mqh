@@ -23,7 +23,7 @@ private:
       return OrderSend(request,result);
      }
 
-   bool              BrokerCheckOrder(MqlTradeRequest &request,MqlTradeResult &result) const
+   bool              BrokerCheckOrder(MqlTradeRequest &request,MqlTradeCheckResult &result) const
      {
       return OrderCheck(request,result);
      }
@@ -67,7 +67,7 @@ private:
 
          m_audit.LogRequest(context,operation,request,attempt);
 
-         MqlTradeResult checkResult;
+         MqlTradeCheckResult checkResult;
          ZeroMemory(checkResult);
          if(!BrokerCheckOrder(request,checkResult))
            {
@@ -118,11 +118,11 @@ private:
 
 public:
                      CMt5TradeExecutor(ILogger *logger=NULL)
+     : m_builder(m_policy)
      {
       m_policy.SetEnableExecution(BRE_FEATURE_EXECUTION);
       m_policy.SetDryRunMode(BRE_FEATURE_DRY_RUN);
       m_policy.SetSimulationMode(BRE_FEATURE_SIMULATION_MODE);
-      m_builder=CTradeRequestBuilder(m_policy);
       m_audit=CExecutionAuditLogger(logger);
      }
 
@@ -133,7 +133,7 @@ public:
       m_audit=CExecutionAuditLogger(logger);
      }
 
-   CExecutionPolicy& Policy(void) { return m_policy; }
+   CExecutionPolicy *Policy(void) { return GetPointer(m_policy); }
 
    virtual CResult<CExecutionResult> OpenPosition(const CTradeContext &context,
                                                   const SOpenPositionParams &params,

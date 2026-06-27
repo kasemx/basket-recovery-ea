@@ -19,7 +19,7 @@ public:
    virtual CResult<CEventHandlingResult> Handle(CDomainEvent *domainEvent)
      {
       CEventHandlingResult result;
-      return CResult<CEventHandlingResult>::Ok(result);
+      return CResult<CEventHandlingResult>::EmptyOk();
      }
   };
 

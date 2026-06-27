@@ -12,7 +12,7 @@
 class CStrategyProfileJsonParser
   {
 public:
-   CResult<CStrategyProfile> Parse(const string content,const CUtcTime boundAt) const
+   CResult<CStrategyProfile> Parse(const string content,const CUtcTime &boundAt) const
      {
       if(content=="")
          return CResult<CStrategyProfile>::Fail(BRE_ERR_STRATEGY_SCHEMA_INVALID,"Strategy JSON content is empty");

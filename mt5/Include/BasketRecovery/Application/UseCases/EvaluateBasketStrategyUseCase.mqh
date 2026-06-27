@@ -1,5 +1,5 @@
-#ifndef BASKET_RECOVERY_APPLICATION_EVALUATE_BASKET_STRATEGY_USE_CASE_MQH
-#define BASKET_RECOVERY_APPLICATION_EVALUATE_BASKET_STRATEGY_USE_CASE_MQH
+#ifndef BRE_APP_EVALUATE_BASKET_STRATEGY_UC_MQH
+#define BRE_APP_EVALUATE_BASKET_STRATEGY_UC_MQH
 
 #include <BasketRecovery/Application/Ports/IBasketRepository.mqh>
 #include <BasketRecovery/Application/Ports/IStrategyEngine.mqh>
@@ -9,6 +9,7 @@
 #include <BasketRecovery/Application/Services/StrategyEvaluationContextFactory.mqh>
 #include <BasketRecovery/Application/Services/StrategyDecisionCommandMapper.mqh>
 #include <BasketRecovery/Application/Commands/StrategyCommands.mqh>
+#include <BasketRecovery/Application/Commands/CommandBase.mqh>
 #include <BasketRecovery/Domain/Basket/BasketRuntimeGuard.mqh>
 #include <BasketRecovery/Domain/Strategy/Context/MarketContext.mqh>
 #include <BasketRecovery/Domain/Strategy/Context/RiskRuntimeContext.mqh>
@@ -22,6 +23,9 @@ private:
    ICommandQueue      *m_queue;
    IClock             *m_clock;
    IUniqueIdGenerator *m_idGenerator;
+
+public:
+   IBasketRepository* Repository(void) const { return m_repository; }
 
 public:
                      CEvaluateBasketStrategyUseCase(IBasketRepository *repository,
@@ -83,8 +87,9 @@ public:
            {
             if(mappedCommands[i]==NULL)
                continue;
-            mappedCommands[i].SetId(CCommandId(m_idGenerator.NewGuid()));
-            mappedCommands[i].SetEnqueuedAt(m_clock!=NULL ? m_clock.Now() : 0);
+            CCommandBase *commandBase=(CCommandBase*)mappedCommands[i];
+            commandBase.SetId(CCommandId(m_idGenerator.NewGuid()));
+            commandBase.SetEnqueuedAt(m_clock!=NULL ? m_clock.Now() : 0);
             m_queue.Enqueue(mappedCommands[i]);
            }
         }

@@ -8,9 +8,17 @@ class CBreakEvenPlan
 private:
    CBreakEvenRule m_rules[];
 
+public:
                      CBreakEvenPlan(void) {}
 
-public:
+                     CBreakEvenPlan(const CBreakEvenPlan &other)
+     {
+      int ruleCount=ArraySize(other.m_rules);
+      ArrayResize(m_rules,ruleCount);
+      for(int i=0;i<ruleCount;i++)
+         m_rules[i]=other.m_rules[i];
+     }
+
    int            RuleCount(void) const { return ArraySize(m_rules); }
 
    CBreakEvenRule RuleAt(const int index) const

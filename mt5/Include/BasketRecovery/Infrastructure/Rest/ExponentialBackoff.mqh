@@ -14,7 +14,7 @@ public:
       ArrayResize(m_delaysMs,0);
      }
 
-   void              SetDelaysMs(const int delaysMs[],const int count)
+   void              SetDelaysMs(const int &delaysMs[],const int count)
      {
       ArrayResize(m_delaysMs,count);
       for(int i=0;i<count;i++)

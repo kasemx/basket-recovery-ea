@@ -45,7 +45,7 @@ private:
      }
 
    bool IsStateInSet(const ENUM_BRE_BASKET_LIFECYCLE_STATE state,
-                     const ENUM_BRE_BASKET_LIFECYCLE_STATE states[],
+                     const ENUM_BRE_BASKET_LIFECYCLE_STATE &states[],
                      const int stateCount) const
      {
       for(int i=0;i<stateCount;i++)

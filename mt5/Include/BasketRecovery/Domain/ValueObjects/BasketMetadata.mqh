@@ -20,8 +20,8 @@ public:
    CMoney            RealizedProfit(void) const { return m_realizedProfit; }
    string            CloseReason(void) const { return m_closeReason; }
 
-   void              SetCreatedAtUtc(const CUtcTime value) { m_createdAtUtc=value; }
-   void              SetUpdatedAtUtc(const CUtcTime value) { m_updatedAtUtc=value; }
+   void              SetCreatedAtUtc(const CUtcTime &value) { m_createdAtUtc=value; }
+   void              SetUpdatedAtUtc(const CUtcTime &value) { m_updatedAtUtc=value; }
    void              SetRealizedProfit(const CMoney &value) { m_realizedProfit=value; }
    void              SetCloseReason(const string value) { m_closeReason=value; }
   };

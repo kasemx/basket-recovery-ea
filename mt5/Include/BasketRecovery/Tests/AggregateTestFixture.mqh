@@ -72,12 +72,12 @@ public:
       return true;
      }
 
-   CTestClock&                   Clock(void) { return m_clock; }
-   CInMemoryBasketRepository&    Repository(void) { return m_repository; }
-   CStateTransitionHandler&      TransitionHandler(void) { return *m_transitionHandler; }
-   CCreateBasketCommandHandler&  CreateHandler(void) { return *m_createHandler; }
-   CActivateBasketCommandHandler& ActivateHandler(void) { return *m_activateHandler; }
-   CCloseBasketCommandHandler&   CloseHandler(void) { return *m_closeHandler; }
+   CTestClock                   *Clock(void) { return GetPointer(m_clock); }
+   CInMemoryBasketRepository    *Repository(void) { return GetPointer(m_repository); }
+   CStateTransitionHandler      *TransitionHandler(void) { return m_transitionHandler; }
+   CCreateBasketCommandHandler  *CreateHandler(void) { return m_createHandler; }
+   CActivateBasketCommandHandler *ActivateHandler(void) { return m_activateHandler; }
+   CCloseBasketCommandHandler   *CloseHandler(void) { return m_closeHandler; }
 
    CProfileSnapshot              BuildProfileSnapshot(void)
      {

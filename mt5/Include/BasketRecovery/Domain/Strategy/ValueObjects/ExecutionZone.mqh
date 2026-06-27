@@ -17,9 +17,23 @@ private:
    bool                                  m_hasMaxRecoveryDistance;
    bool                                  m_expansionDisabled;
 
+public:
                      CExecutionZone(void) {}
 
-public:
+                     CExecutionZone(const CExecutionZone &other)
+     {
+      m_source=other.m_source;
+      m_expansionMode=other.m_expansionMode;
+      m_fixedRangeLow=other.m_fixedRangeLow;
+      m_fixedRangeHigh=other.m_fixedRangeHigh;
+      m_hasFixedRange=other.m_hasFixedRange;
+      m_aboveEntryPips=other.m_aboveEntryPips;
+      m_belowEntryPips=other.m_belowEntryPips;
+      m_maxRecoveryDistancePips=other.m_maxRecoveryDistancePips;
+      m_hasMaxRecoveryDistance=other.m_hasMaxRecoveryDistance;
+      m_expansionDisabled=other.m_expansionDisabled;
+     }
+
    ENUM_BRE_EXECUTION_ZONE_SOURCE        Source(void) const { return m_source; }
    ENUM_BRE_EXECUTION_ZONE_EXPANSION_MODE ExpansionMode(void) const { return m_expansionMode; }
    bool                                  HasFixedRange(void) const { return m_hasFixedRange; }

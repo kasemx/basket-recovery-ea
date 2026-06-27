@@ -2,6 +2,7 @@
 #define BASKET_RECOVERY_APPLICATION_APPLICATION_CONTEXT_MQH
 
 #include <BasketRecovery/Application/Kernel/ServiceContainer.mqh>
+#include <BasketRecovery/Application/Kernel/ApplicationKernel.mqh>
 #include <BasketRecovery/Application/Services/CommandIngestionService.mqh>
 #include <BasketRecovery/Shared/DTOs/NormalizedTradeTransaction.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
@@ -9,13 +10,15 @@
 class CApplicationContext
   {
 private:
-   CServiceContainer *m_container;
-   bool               m_initialized;
+   CServiceContainer  *m_container;
+   CApplicationKernel *m_kernel;
+   bool                m_initialized;
 
 public:
                      CApplicationContext(void)
      {
       m_container=NULL;
+      m_kernel=NULL;
       m_initialized=false;
      }
 
@@ -24,18 +27,23 @@ public:
       Shutdown();
      }
 
-   bool              Initialize(CServiceContainer *container)
+   bool              Initialize(CServiceContainer *container,CApplicationKernel *kernel)
      {
-      if(container==NULL)
+      if(container==NULL || kernel==NULL)
          return false;
-
       m_container=container;
+      m_kernel=kernel;
       m_initialized=true;
       return true;
      }
 
    void              Shutdown(void)
      {
+      if(m_kernel!=NULL)
+        {
+         delete m_kernel;
+         m_kernel=NULL;
+        }
       if(m_container!=NULL)
         {
          m_container.Shutdown();
@@ -59,16 +67,26 @@ public:
       return snapshotStore.ApplyNormalizedTransaction(transaction);
      }
 
+   CVoidResult       OnApplicationTimer(int &commandsProcessed,int &eventsProcessed,int &evaluationsScheduled)
+     {
+      if(!m_initialized || m_kernel==NULL)
+         return CVoidResult::Ok();
+      return m_kernel.TimerPipeline().OnTimer(commandsProcessed,eventsProcessed,evaluationsScheduled);
+     }
+
    CVoidResult       OnRestPollTimer(void)
      {
-      if(!m_initialized || m_container==NULL)
-         return CVoidResult::Ok();
+      int commandsProcessed=0;
+      int eventsProcessed=0;
+      int evaluationsScheduled=0;
+      return OnApplicationTimer(commandsProcessed,eventsProcessed,evaluationsScheduled);
+     }
 
-      CCommandIngestionService *ingestionService=m_container.CommandIngestionService();
-      if(ingestionService==NULL)
-         return CVoidResult::Ok();
-
-      return ingestionService.PollAndEnqueue();
+   int               ApplicationTimerIntervalMs(void) const
+     {
+      if(m_container==NULL)
+         return 250;
+      return m_container.EAConfiguration().ApplicationTimerIntervalMs();
      }
 
    int               RestPollIntervalMs(void) const
@@ -88,22 +106,22 @@ public:
       return m_container.EAConfiguration().ApiBaseUrl()!="";
      }
 
+   CApplicationKernel* Kernel(void) const { return m_kernel; }
+
    int               CommandQueuePendingCount(void) const
      {
-      if(m_container==NULL || m_container.CommandQueue()==NULL)
+      if(m_kernel==NULL)
          return 0;
-      return m_container.CommandQueue().PendingCount();
+      return m_kernel.PersistenceManager().CommandQueue().PendingCount();
      }
 
    void              LogShutdown(const int reason)
      {
       if(m_container==NULL)
          return;
-
       ILogger *logger=m_container.Logger();
       if(logger==NULL)
          return;
-
       logger.Info("SYSTEM","Shutdown","",StringFormat("BasketRecoveryEA stopped | reason=%d",reason));
      }
 
@@ -111,11 +129,9 @@ public:
      {
       if(m_container==NULL)
          return 0;
-
       IPositionSnapshotStore *snapshotStore=m_container.SnapshotStore();
       if(snapshotStore==NULL)
          return 0;
-
       return snapshotStore.Count();
      }
   };

@@ -19,7 +19,7 @@ public:
                                            const ENUM_BRE_TRADE_DIRECTION direction,
                                            const string symbol,
                                            const CSignalId &signalId,
-                                           const CUtcTime createdAtUtc,
+                                           const CUtcTime &createdAtUtc,
                                            const CCommandId &commandId,
                                            const CEventId &eventId)
      {
@@ -34,7 +34,7 @@ public:
                                                        const ENUM_BRE_TRADE_DIRECTION direction,
                                                        const string symbol,
                                                        const CSignalId &signalId,
-                                                       const CUtcTime createdAtUtc,
+                                                       const CUtcTime &createdAtUtc,
                                                        const CCommandId &commandId,
                                                        const CEventId &eventId)
      {

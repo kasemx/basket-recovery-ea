@@ -19,7 +19,7 @@ public:
          case TRADE_RETCODE_TOO_MANY_REQUESTS:
          case TRADE_RETCODE_SERVER_DISABLES_AT:
          case TRADE_RETCODE_CLIENT_DISABLES_AT:
-         case TRADE_RETCODE_TRADE_TOO_MANY_ORDERS:
+         case TRADE_RETCODE_LIMIT_ORDERS:
             return true;
          default:
             return false;

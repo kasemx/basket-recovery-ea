@@ -16,16 +16,6 @@ public:
       ArrayResize(m_commands,0);
      }
 
-                     CEventHandlingResult(const CEventHandlingResult &other)
-     {
-      m_commandCount=other.m_commandCount;
-      ArrayResize(m_commands,m_commandCount);
-      for(int i=0;i<m_commandCount;i++)
-         m_commands[i]=other.m_commands[i];
-      ((CEventHandlingResult&)other).m_commandCount=0;
-      ArrayResize(((CEventHandlingResult&)other).m_commands,0);
-     }
-
                     ~CEventHandlingResult(void)
      {
       ClearCommands();

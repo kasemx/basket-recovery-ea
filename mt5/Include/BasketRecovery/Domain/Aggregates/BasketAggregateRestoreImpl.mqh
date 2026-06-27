@@ -51,7 +51,7 @@ void CBasketAggregate::SetLegacyProfileSnapshot(const bool hasSnapshot,const str
                                                 const CTakeProfitProfileConfig &takeProfit,
                                                 const CBreakEvenProfileConfig &breakEven,
                                                 const CExecutionProfileConfig &execution,
-                                                const CUtcTime boundAt)
+                                                const CUtcTime &boundAt)
   {
    m_hasProfileSnapshot=hasSnapshot;
    if(hasSnapshot)
@@ -69,13 +69,13 @@ void CBasketAggregate::RestoreProfitLevels(const CBasketProfitLevelProgress &lev
    m_runtimeState.RestoreProfitLevels(levels,count);
   }
 
-void CBasketAggregate::RestoreExecutedBreakEvenRules(const string ruleIds[])
+void CBasketAggregate::RestoreExecutedBreakEvenRules(const string &ruleIds[])
   {
    m_runtimeState.RestoreExecutedBreakEvenRules(ruleIds,ArraySize(ruleIds));
   }
 
 void CBasketAggregate::SetVersionState(const long version,const CCommandId &commandId,
-                                       const CEventId &eventId,const CUtcTime modifiedUtc)
+                                       const CEventId &eventId,const CUtcTime &modifiedUtc)
   {
    m_versionState.SetVersion(version);
    m_versionState.SetLastCommandId(commandId);
@@ -176,7 +176,7 @@ void CBasketAggregate::CopyRuntimeStateToDto(CBasketPersistenceDto &dto) const
   }
 
 void CBasketAggregate::AppendEvaluationAudit(const CCommandId &commandId,const CEventId &eventId,
-                                             const CUtcTime timestampUtc)
+                                             const CUtcTime &timestampUtc)
   {
    BumpVersion(commandId,eventId,timestampUtc);
   }

@@ -14,9 +14,19 @@ private:
    string           m_profileHash;
    CUtcTime         m_boundAtUtc;
 
+public:
                      CStrategyProfileSnapshot(void) {}
 
-public:
+                     CStrategyProfileSnapshot(const CStrategyProfileSnapshot &other)
+     {
+      m_profile=other.m_profile;
+      m_strategyId=other.m_strategyId;
+      m_schemaVersion=other.m_schemaVersion;
+      m_canonicalJson=other.m_canonicalJson;
+      m_profileHash=other.m_profileHash;
+      m_boundAtUtc=other.m_boundAtUtc;
+     }
+
    CStrategyProfile Profile(void) const { return m_profile; }
    string           StrategyId(void) const { return m_strategyId; }
    int              SchemaVersion(void) const { return m_schemaVersion; }
@@ -27,7 +37,7 @@ public:
    static CStrategyProfileSnapshot Create(const CStrategyProfile &profile,
                                           const string canonicalJson,
                                           const string profileHash,
-                                          const CUtcTime boundAtUtc)
+                                          const CUtcTime &boundAtUtc)
      {
       CStrategyProfileSnapshot snapshot;
       snapshot.m_profile=profile;

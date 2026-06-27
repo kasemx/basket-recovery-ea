@@ -14,7 +14,7 @@ private:
    CJsonWriter m_writer;
    bool        m_recoveryMode;
 
-   bool          KeyExists(const string &idempotencyKey,const string keys[],const int count) const
+   bool          KeyExists(const string &idempotencyKey,const string &keys[],const int count) const
      {
       for(int i=0;i<count;i++)
         {

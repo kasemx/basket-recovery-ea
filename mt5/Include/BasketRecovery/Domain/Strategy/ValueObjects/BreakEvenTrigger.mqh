@@ -18,9 +18,24 @@ private:
    string                           m_eventType;
    string                           m_manualToken;
 
+public:
                      CBreakEvenTrigger(void) {}
 
-public:
+                     CBreakEvenTrigger(const CBreakEvenTrigger &other)
+     {
+      m_type=other.m_type;
+      m_realizedProfitUsd=other.m_realizedProfitUsd;
+      m_hasRealizedProfitUsd=other.m_hasRealizedProfitUsd;
+      m_floatingProfitUsd=other.m_floatingProfitUsd;
+      m_hasFloatingProfitUsd=other.m_hasFloatingProfitUsd;
+      m_percentOfTargetRisk=other.m_percentOfTargetRisk;
+      m_hasPercentOfTargetRisk=other.m_hasPercentOfTargetRisk;
+      m_profitLevelId=other.m_profitLevelId;
+      m_basketState=other.m_basketState;
+      m_eventType=other.m_eventType;
+      m_manualToken=other.m_manualToken;
+     }
+
    ENUM_BRE_BREAK_EVEN_TRIGGER_TYPE Type(void) const { return m_type; }
    bool                             HasRealizedProfitUsd(void) const { return m_hasRealizedProfitUsd; }
    double                           RealizedProfitUsd(void) const { return m_realizedProfitUsd; }

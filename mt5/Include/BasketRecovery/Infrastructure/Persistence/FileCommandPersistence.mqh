@@ -25,7 +25,7 @@ public:
 
    void              SetRecoveryMode(const bool value) { m_recoveryMode=value; }
 
-   virtual CVoidResult SavePendingCommands(ICommand *commands[],const int count)
+   virtual CVoidResult SavePendingCommands(ICommand* &commands[],const int count)
      {
       string jsonContent=m_serializer.SerializePendingCommands(commands,count);
       return m_writer.WriteAtomic(m_relativePath,jsonContent);

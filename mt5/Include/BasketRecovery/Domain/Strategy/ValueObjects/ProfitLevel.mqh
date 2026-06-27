@@ -18,9 +18,23 @@ private:
    bool                        m_enableTrailing;
    bool                        m_enabled;
 
+public:
                      CProfitLevel(void) {}
 
-public:
+                     CProfitLevel(const CProfitLevel &other)
+     {
+      m_levelId=other.m_levelId;
+      m_levelIndex=other.m_levelIndex;
+      m_source=other.m_source;
+      m_price=other.m_price;
+      m_hasPrice=other.m_hasPrice;
+      m_closePercent=other.m_closePercent;
+      m_closeMode=other.m_closeMode;
+      m_partialClose=other.m_partialClose;
+      m_enableTrailing=other.m_enableTrailing;
+      m_enabled=other.m_enabled;
+     }
+
    string                      LevelId(void) const { return m_levelId; }
    int                         LevelIndex(void) const { return m_levelIndex; }
    ENUM_BRE_PROFIT_LEVEL_SOURCE Source(void) const { return m_source; }

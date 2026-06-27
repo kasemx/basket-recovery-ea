@@ -12,9 +12,18 @@ private:
    bool                            m_includeSpread;
    bool                            m_enableTrailing;
 
+public:
                      CBreakEvenAction(void) {}
 
-public:
+                     CBreakEvenAction(const CBreakEvenAction &other)
+     {
+      m_type=other.m_type;
+      m_slOffsetPips=other.m_slOffsetPips;
+      m_bufferPips=other.m_bufferPips;
+      m_includeSpread=other.m_includeSpread;
+      m_enableTrailing=other.m_enableTrailing;
+     }
+
    ENUM_BRE_BREAK_EVEN_ACTION_TYPE Type(void) const { return m_type; }
    double                          SlOffsetPips(void) const { return m_slOffsetPips; }
    double                          BufferPips(void) const { return m_bufferPips; }

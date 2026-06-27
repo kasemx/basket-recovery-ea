@@ -1,17 +1,20 @@
 #property copyright "Basket Recovery EA"
 #property link      "https://github.com/basket-recovery-ea"
-#property version   "0.0.2"
+#property version   "0.0.3"
 
 #include <BasketRecovery/Interfaces/Bootstrapper.mqh>
 #include <BasketRecovery/Infrastructure/MT5/Mt5TradeTransactionNormalizer.mqh>
 
-input string InpProfileName        = "default";
-input string InpLogFilePath        = "BasketRecovery/logs/basket_recovery.log";
-input int    InpLogLevel           = 2;
-input string InpAccountLabel       = "primary";
-input string InpApiBaseUrl         = "";
-input string InpApiKey             = "";
-input int    InpRestPollIntervalMs = 0;
+input string InpProfileName               = "default";
+input string InpLogFilePath               = "BasketRecovery/logs/basket_recovery.log";
+input int    InpLogLevel                  = 2;
+input string InpAccountLabel              = "primary";
+input string InpApiBaseUrl                = "";
+input string InpApiKey                    = "";
+input int    InpRestPollIntervalMs        = 0;
+input int    InpApplicationTimerIntervalMs = 250;
+input int    InpStrategyEvalIntervalMs    = 5000;
+input int    InpMaxBasketsPerEvalCycle    = 5;
 
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
@@ -26,7 +29,10 @@ int OnInit()
                                                  InpAccountLabel,
                                                  InpApiBaseUrl,
                                                  InpApiKey,
-                                                 InpRestPollIntervalMs);
+                                                 InpRestPollIntervalMs,
+                                                 InpApplicationTimerIntervalMs,
+                                                 InpStrategyEvalIntervalMs,
+                                                 InpMaxBasketsPerEvalCycle);
    if(g_applicationContext==NULL)
      {
       Print("BasketRecoveryEA initialization failed");
@@ -35,19 +41,17 @@ int OnInit()
 
    g_tradeTransactionNormalizer=new CMt5TradeTransactionNormalizer(NULL);
 
-   if(g_applicationContext.IsRestIngestionConfigured())
+   int timerIntervalMs=g_applicationContext.ApplicationTimerIntervalMs();
+   if(!EventSetMillisecondTimer(timerIntervalMs))
      {
-      int pollIntervalMs=g_applicationContext.RestPollIntervalMs();
-      if(!EventSetMillisecondTimer(pollIntervalMs))
-        {
-         Print("BasketRecoveryEA failed to start REST poll timer | interval_ms=",pollIntervalMs);
-         return INIT_FAILED;
-        }
+      Print("BasketRecoveryEA failed to start application timer | interval_ms=",timerIntervalMs);
+      return INIT_FAILED;
      }
 
-   Print("BasketRecoveryEA v0.0.2 started | profile=",InpProfileName,
+   Print("BasketRecoveryEA v0.0.3 started | profile=",InpProfileName,
          " | account=",AccountInfoInteger(ACCOUNT_LOGIN),
-         " | rest_poll_ms=",g_applicationContext.RestPollIntervalMs());
+         " | app_timer_ms=",timerIntervalMs,
+         " | strategy_eval_ms=",InpStrategyEvalIntervalMs);
 
    return INIT_SUCCEEDED;
   }
@@ -80,7 +84,10 @@ void OnTimer()
    if(g_applicationContext==NULL)
       return;
 
-   g_applicationContext.OnRestPollTimer();
+   int commandsProcessed=0;
+   int eventsProcessed=0;
+   int evaluationsScheduled=0;
+   g_applicationContext.OnApplicationTimer(commandsProcessed,eventsProcessed,evaluationsScheduled);
   }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,

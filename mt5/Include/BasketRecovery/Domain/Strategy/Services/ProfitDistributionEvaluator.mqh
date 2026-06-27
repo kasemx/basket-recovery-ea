@@ -1,5 +1,5 @@
-#ifndef BASKET_RECOVERY_DOMAIN_STRATEGY_PROFIT_DISTRIBUTION_EVALUATOR_MQH
-#define BASKET_RECOVERY_DOMAIN_STRATEGY_PROFIT_DISTRIBUTION_EVALUATOR_MQH
+#ifndef BRE_DOM_PROFIT_DISTRIBUTION_EVALUATOR_MQH
+#define BRE_DOM_PROFIT_DISTRIBUTION_EVALUATOR_MQH
 
 #include <BasketRecovery/Domain/Strategy/Context/StrategyEvaluationContext.mqh>
 #include <BasketRecovery/Domain/Strategy/Decisions/StrategyDecisionSet.mqh>

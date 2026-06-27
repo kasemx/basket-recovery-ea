@@ -10,9 +10,15 @@ private:
    double m_low;
    double m_high;
 
+public:
                      CEffectiveRecoveryZone(void) {}
 
-public:
+                     CEffectiveRecoveryZone(const CEffectiveRecoveryZone &other)
+     {
+      m_low=other.m_low;
+      m_high=other.m_high;
+     }
+
    double            Low(void) const { return m_low; }
    double            High(void) const { return m_high; }
 

@@ -103,9 +103,11 @@ public:
       if(m_restClient==NULL)
          return CResult<int>::Fail(BRE_ERR_REST_NETWORK_ERROR,"REST client is not configured");
 
-      CResult<CRestHttpResponse> responseResult=m_restClient.GetWithRetry(BuildPendingUrl(),BuildHeaders());
+      string pendingUrl=BuildPendingUrl();
+      string headers=BuildHeaders();
+      CResult<CRestHttpResponse> responseResult=m_restClient.GetWithRetry(pendingUrl,headers);
       if(responseResult.IsFail())
-         return CResult<int>::Fail(responseResult.ErrorCode(),responseResult.Message());
+         return CResult<int>::Fail(responseResult.ErrorCode(),responseResult.ErrorMessage());
 
       CRestHttpResponse response;
       if(!responseResult.TryGetValue(response))
@@ -137,11 +139,13 @@ public:
       if(m_restClient==NULL)
          return CVoidResult::Fail(BRE_ERR_REST_NETWORK_ERROR,"REST client is not configured");
 
-      CResult<CRestHttpResponse> responseResult=
-         m_restClient.PostWithRetry(BuildAckUrl(commandId),BuildHeaders()+"Content-Type: application/json\r\n",BuildAckBody());
+      string ackUrl=BuildAckUrl(commandId);
+      string ackHeaders=BuildHeaders()+"Content-Type: application/json\r\n";
+      string ackBody=BuildAckBody();
+      CResult<CRestHttpResponse> responseResult=m_restClient.PostWithRetry(ackUrl,ackHeaders,ackBody);
 
       if(responseResult.IsFail())
-         return CVoidResult::Fail(responseResult.ErrorCode(),responseResult.Message());
+         return CVoidResult::Fail(responseResult.ErrorCode(),responseResult.ErrorMessage());
 
       return CVoidResult::Ok();
      }

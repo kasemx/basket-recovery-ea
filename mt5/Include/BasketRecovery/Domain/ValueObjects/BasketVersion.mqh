@@ -26,7 +26,7 @@ public:
    void              SetVersion(const long value) { m_version=value; }
    void              SetLastCommandId(const CCommandId &value) { m_lastCommandId=value; }
    void              SetLastEventId(const CEventId &value) { m_lastEventId=value; }
-   void              SetLastModifiedUtc(const CUtcTime value) { m_lastModifiedUtc=value; }
+   void              SetLastModifiedUtc(const CUtcTime &value) { m_lastModifiedUtc=value; }
   };
 
 #endif

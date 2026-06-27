@@ -14,9 +14,22 @@ private:
    CBreakEvenTrigger m_trigger;
    CBreakEvenAction  m_actions[];
 
+public:
                      CBreakEvenRule(void) {}
 
-public:
+                     CBreakEvenRule(const CBreakEvenRule &other)
+     {
+      m_ruleId=other.m_ruleId;
+      m_enabled=other.m_enabled;
+      m_priority=other.m_priority;
+      m_runOnce=other.m_runOnce;
+      m_trigger=other.m_trigger;
+      int actionCount=ArraySize(other.m_actions);
+      ArrayResize(m_actions,actionCount);
+      for(int i=0;i<actionCount;i++)
+         m_actions[i]=other.m_actions[i];
+     }
+
    string            RuleId(void) const { return m_ruleId; }
    bool              Enabled(void) const { return m_enabled; }
    int               Priority(void) const { return m_priority; }

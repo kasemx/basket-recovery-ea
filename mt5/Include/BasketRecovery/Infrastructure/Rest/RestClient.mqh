@@ -48,7 +48,7 @@ public:
 
    bool              AuthFailed(void) const { return m_authFailed; }
    bool              IsCircuitOpen(void) const { return m_circuitBreaker.IsOpen(); }
-   CRestCircuitBreaker& CircuitBreaker(void) { return m_circuitBreaker; }
+   CRestCircuitBreaker* CircuitBreaker(void) { return &m_circuitBreaker; }
 
    CResult<CRestHttpResponse> GetWithRetry(const string &url,const string &headers)
      {

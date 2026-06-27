@@ -56,16 +56,29 @@ private:
          return CVoidResult::Fail(BRE_ERR_PERSIST_WRITE_FAILED,"Failed to open source temp file");
 
       uchar buffer[];
-      int bytes=FileReadArray(sourceHandle,buffer,0,FileSize(sourceHandle));
-      FileClose(sourceHandle);
-      if(bytes<=0)
+      ulong fileSize=(ulong)FileSize(sourceHandle);
+      if(fileSize==0)
+        {
+         FileClose(sourceHandle);
          return CVoidResult::Fail(BRE_ERR_PERSIST_WRITE_FAILED,"Temp file is empty");
+        }
+      if(fileSize>(ulong)2147483647)
+        {
+         FileClose(sourceHandle);
+         return CVoidResult::Fail(BRE_ERR_PERSIST_WRITE_FAILED,"Temp file exceeds supported size");
+        }
+
+      int readSize=(int)fileSize;
+      uint bytesRead=FileReadArray(sourceHandle,buffer,0,readSize);
+      FileClose(sourceHandle);
+      if(bytesRead<=0)
+        return CVoidResult::Fail(BRE_ERR_PERSIST_WRITE_FAILED,"Temp file is empty");
 
       int targetHandle=FileOpen(targetRelativePath,FILE_WRITE|FILE_BIN|FILE_COMMON);
       if(targetHandle==INVALID_HANDLE)
          return CVoidResult::Fail(BRE_ERR_PERSIST_WRITE_FAILED,"Failed to open target file");
 
-      FileWriteArray(targetHandle,buffer,0,bytes);
+      FileWriteArray(targetHandle,buffer,0,(int)bytesRead);
       FileFlush(targetHandle);
       FileClose(targetHandle);
       return CVoidResult::Ok();
@@ -116,7 +129,7 @@ public:
       return "\""+key+"\":"+(value ? "true" : "false");
      }
 
-   string            StringArrayField(const string key,const string values[],const int count) const
+   string            StringArrayField(const string key,const string &values[],const int count) const
      {
       string json="\""+key+"\":[";
       for(int i=0;i<count;i++)
@@ -129,7 +142,7 @@ public:
       return json;
      }
 
-   string            LongArrayField(const string key,const long values[],const int count) const
+   string            LongArrayField(const string key,const long &values[],const int count) const
      {
       string json="\""+key+"\":[";
       for(int i=0;i<count;i++)
@@ -142,7 +155,7 @@ public:
       return json;
      }
 
-   string            DoubleArrayField(const string key,const double values[],const int count) const
+   string            DoubleArrayField(const string key,const double &values[],const int count) const
      {
       string json="\""+key+"\":[";
       for(int i=0;i<count;i++)

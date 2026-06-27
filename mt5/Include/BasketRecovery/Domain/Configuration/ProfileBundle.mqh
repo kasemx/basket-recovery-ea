@@ -39,7 +39,7 @@ public:
    void                    SetTakeProfit(const CTakeProfitProfileConfig &value) { m_takeProfit=value; }
    void                    SetBreakEven(const CBreakEvenProfileConfig &value) { m_breakEven=value; }
    void                    SetExecution(const CExecutionProfileConfig &value) { m_execution=value; }
-   void                    SetBoundAt(const CUtcTime value) { m_boundAt=value; }
+   void                    SetBoundAt(const CUtcTime &value) { m_boundAt=value; }
   };
 
 #endif

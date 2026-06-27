@@ -11,9 +11,19 @@ private:
    ENUM_BRE_CLOSE_MODE m_defaultCloseMode;
    CProfitLevel   m_levels[];
 
+public:
                      CProfitDistributionPlan(void) {}
 
-public:
+                     CProfitDistributionPlan(const CProfitDistributionPlan &other)
+     {
+      m_requireFloatingProfitPositive=other.m_requireFloatingProfitPositive;
+      m_defaultCloseMode=other.m_defaultCloseMode;
+      int levelCount=ArraySize(other.m_levels);
+      ArrayResize(m_levels,levelCount);
+      for(int i=0;i<levelCount;i++)
+         m_levels[i]=other.m_levels[i];
+     }
+
    bool           RequireFloatingProfitPositive(void) const { return m_requireFloatingProfitPositive; }
    ENUM_BRE_CLOSE_MODE DefaultCloseMode(void) const { return m_defaultCloseMode; }
    int            LevelCount(void) const { return ArraySize(m_levels); }

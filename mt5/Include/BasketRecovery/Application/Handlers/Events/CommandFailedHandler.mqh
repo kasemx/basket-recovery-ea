@@ -70,7 +70,7 @@ public:
          return CResult<CEventHandlingResult>::Fail(saveResult.ErrorCode(),saveResult.ErrorMessage());
 
       CEventHandlingResult handlingResult;
-      return CResult<CEventHandlingResult>::Ok(handlingResult);
+      return BreResultOkAdopting(handlingResult);
      }
   };
 

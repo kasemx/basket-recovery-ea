@@ -43,7 +43,7 @@ private:
    int                               m_eventHistoryCount;
    bool                              m_creationBindingOpen;
 
-   void              RecordAudit(const CCommandId &commandId,const CEventId &eventId,const CUtcTime timestampUtc)
+   void              RecordAudit(const CCommandId &commandId,const CEventId &eventId,const CUtcTime &timestampUtc)
      {
       CAuditRecord record;
       record.SetCommandId(commandId);
@@ -58,7 +58,7 @@ private:
       m_eventHistoryCount++;
      }
 
-   void              BumpVersion(const CCommandId &commandId,const CEventId &eventId,const CUtcTime timestampUtc)
+   void              BumpVersion(const CCommandId &commandId,const CEventId &eventId,const CUtcTime &timestampUtc)
      {
       m_versionState.SetVersion(m_versionState.Version()+1);
       m_versionState.SetLastCommandId(commandId);
@@ -116,6 +116,46 @@ public:
    int                               PositionSnapshotCount(void) const { return m_positionSnapshotCount; }
    int                               CommandHistoryCount(void) const { return m_commandHistoryCount; }
    int                               EventHistoryCount(void) const { return m_eventHistoryCount; }
+   bool                              CommandHistoryAt(const int index,CAuditRecord &outRecord) const
+     {
+      if(index<0 || index>=m_commandHistoryCount)
+         return false;
+      outRecord=m_commandHistory[index];
+      return true;
+     }
+
+   bool                              EventHistoryAt(const int index,CAuditRecord &outRecord) const
+     {
+      if(index<0 || index>=m_eventHistoryCount)
+         return false;
+      outRecord=m_eventHistory[index];
+      return true;
+     }
+
+   void                              ApplyCloseReason(const string closeReason)
+     {
+      m_metadata.SetCloseReason(closeReason);
+     }
+
+   bool                              ApplyStopLossUpdate(const CPrice &stopLoss,
+                                                         const CCommandId &commandId,
+                                                         const CEventId &eventId,
+                                                         const CUtcTime &timestampUtc)
+     {
+      CSignalDetails details=m_signal.Details();
+      details.SetStopLoss(stopLoss);
+      details.SetHasDetails(true);
+      return ApplySignalDetails(details,commandId,eventId,timestampUtc);
+     }
+
+   bool                              ApplyTakeProfitUpdate(const CSignalDetails &details,
+                                                           const CCommandId &commandId,
+                                                           const CEventId &eventId,
+                                                           const CUtcTime &timestampUtc)
+     {
+      return ApplySignalDetails(details,commandId,eventId,timestampUtc);
+     }
+
    bool                              CreationBindingOpen(void) const { return m_creationBindingOpen; }
 
    bool                              HasStrategyProfile(void) const { return m_runtimeState.HasStrategyProfile(); }
@@ -170,7 +210,7 @@ public:
                                                            const string symbol,
                                                            const CProfileSnapshot &profileSnapshot,
                                                            const CTradingSignal &signal,
-                                                           const CUtcTime createdAtUtc,
+                                                           const CUtcTime &createdAtUtc,
                                                            const CCommandId &commandId,
                                                            const CEventId &eventId)
      {
@@ -196,7 +236,7 @@ public:
    bool                              ApplyLifecycleTransition(const CTransitionResult &transitionResult,
                                                                 const CCommandId &commandId,
                                                                 const CEventId &eventId,
-                                                                const CUtcTime timestampUtc)
+                                                                const CUtcTime &timestampUtc)
      {
       if(!transitionResult.Applied() || transitionResult.PreviousState()!=m_lifecycleState)
          return false;
@@ -205,7 +245,7 @@ public:
       return true;
      }
 
-   CVoidResult                       ApplyProfitLevelReached(const string levelId,const CUtcTime timestampUtc,
+   CVoidResult                       ApplyProfitLevelReached(const string levelId,const CUtcTime &timestampUtc,
                                                              const CCommandId &commandId,const CEventId &eventId)
      {
       CVoidResult result=m_runtimeState.MarkProfitLevelReached(levelId,timestampUtc,commandId,eventId);
@@ -216,7 +256,7 @@ public:
      }
 
    CVoidResult                       ApplyBreakEvenActivated(const string ruleId,const CCommandId &commandId,
-                                                             const CEventId &eventId,const CUtcTime timestampUtc)
+                                                             const CEventId &eventId,const CUtcTime &timestampUtc)
      {
       CVoidResult result=m_runtimeState.MarkBreakEvenRuleExecuted(ruleId);
       if(result.IsFail())
@@ -226,8 +266,64 @@ public:
       return CVoidResult::Ok();
      }
 
+   CVoidResult                       ApplyProfitLevelCloseRequested(const string levelId,
+                                                                    const CCommandId &commandId,
+                                                                    const CEventId &eventId,
+                                                                    const CUtcTime &timestampUtc)
+     {
+      CVoidResult result=m_runtimeState.MarkProfitLevelCloseRequested(levelId,timestampUtc,commandId);
+      if(result.IsFail())
+         return result;
+      BumpVersion(commandId,eventId,timestampUtc);
+      return CVoidResult::Ok();
+     }
+
+   CVoidResult                       ApplyProfitLevelCloseCompleted(const string levelId,
+                                                                   const CMoney &realizedProfit,
+                                                                   const CCommandId &commandId,
+                                                                   const CEventId &eventId,
+                                                                   const CUtcTime &timestampUtc)
+     {
+      CVoidResult result=m_runtimeState.MarkProfitLevelCloseCompleted(levelId,realizedProfit,timestampUtc,eventId);
+      if(result.IsFail())
+         return result;
+      BumpVersion(commandId,eventId,timestampUtc);
+      return CVoidResult::Ok();
+     }
+
+   CVoidResult                       ApplyBasketLocked(const CCommandId &commandId,const CEventId &eventId,
+                                                     const CUtcTime &timestampUtc)
+     {
+      m_modeFlags.SetLocked(true);
+      BumpVersion(commandId,eventId,timestampUtc);
+      return CVoidResult::Ok();
+     }
+
+   CVoidResult                       ApplyRiskReductionRequested(const CCommandId &commandId,
+                                                                 const CEventId &eventId,
+                                                                 const CUtcTime &timestampUtc)
+     {
+      m_modeFlags.SetRiskReductionActive(true);
+      BumpVersion(commandId,eventId,timestampUtc);
+      return CVoidResult::Ok();
+     }
+
+   CVoidResult                       CompleteStrategyMigration(const CStrategyProfileSnapshot &snapshot,
+                                                               const CCommandId &commandId,
+                                                               const CEventId &eventId,
+                                                               const CUtcTime &timestampUtc)
+     {
+      if(!m_runtimeState.StrategyMigrationRequired())
+         return CVoidResult::Fail(BRE_ERR_STRATEGY_ALREADY_BOUND,"Basket does not require strategy migration");
+      if(m_runtimeState.HasStrategyProfile())
+         return CVoidResult::Fail(BRE_ERR_STRATEGY_ALREADY_BOUND,"Strategy profile is already bound");
+      m_runtimeState.CompleteStrategyMigration(snapshot);
+      BumpVersion(commandId,eventId,timestampUtc);
+      return CVoidResult::Ok();
+     }
+
    void                              ApplyRecoveryDisabled(const CCommandId &commandId,const CEventId &eventId,
-                                                           const CUtcTime timestampUtc)
+                                                           const CUtcTime &timestampUtc)
      {
       m_modeFlags.SetRecoveryPermanentlyDisabled(true);
       m_modeFlags.SetRecoveryActive(false);
@@ -235,7 +331,7 @@ public:
      }
 
    bool                              ApplySignalDetails(const CSignalDetails &details,const CCommandId &commandId,
-                                                        const CEventId &eventId,const CUtcTime timestampUtc)
+                                                        const CEventId &eventId,const CUtcTime &timestampUtc)
      {
       m_signal.SetDetails(details);
       BumpVersion(commandId,eventId,timestampUtc);
@@ -255,20 +351,20 @@ public:
                                                                 const CTakeProfitProfileConfig &takeProfit,
                                                                 const CBreakEvenProfileConfig &breakEven,
                                                                 const CExecutionProfileConfig &execution,
-                                                                const CUtcTime boundAt);
+                                                                const CUtcTime &boundAt);
    void                              RestoreStrategyBinding(const CStrategyProfileSnapshot &snapshot,
                                                             const bool migrationRequired);
    void                              RestoreProfitLevels(const CBasketProfitLevelProgress &levels[],const int count);
-   void                              RestoreExecutedBreakEvenRules(const string ruleIds[]);
+   void                              RestoreExecutedBreakEvenRules(const string &ruleIds[]);
    void                              SetVersionState(const long version,const CCommandId &commandId,
-                                                     const CEventId &eventId,const CUtcTime modifiedUtc);
+                                                     const CEventId &eventId,const CUtcTime &modifiedUtc);
    void                              SetSignalFromDto(const CBasketPersistenceDto &dto);
    void                              SetMetadataFromDto(const CBasketPersistenceDto &dto);
    void                              SetPositionSnapshotsFromDto(const CBasketPersistenceDto &dto);
    void                              SetAuditHistoryFromDto(const CBasketPersistenceDto &dto);
    void                              CopyRuntimeStateToDto(CBasketPersistenceDto &dto) const;
    void                              AppendEvaluationAudit(const CCommandId &commandId,const CEventId &eventId,
-                                                           const CUtcTime timestampUtc);
+                                                           const CUtcTime &timestampUtc);
   };
 
 #include <BasketRecovery/Domain/Aggregates/BasketAggregateRestoreImpl.mqh>

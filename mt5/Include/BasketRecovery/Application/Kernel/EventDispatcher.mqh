@@ -2,7 +2,7 @@
 #define BASKET_RECOVERY_APPLICATION_EVENT_DISPATCHER_MQH
 
 #include <BasketRecovery/Application/Ports/IEventHandler.mqh>
-#include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
+#include <BasketRecovery/Shared/Types/ResultValueTransfer.mqh>
 
 struct SEventDispatcherRegistration
   {
@@ -72,11 +72,11 @@ public:
             return handlerResult;
 
          CEventHandlingResult partial;
-         if(handlerResult.TryGetValue(partial))
+         if(BreResultTryAdoptValue(handlerResult,partial))
             partial.TransferCommandsTo(aggregateResult);
         }
 
-      return CResult<CEventHandlingResult>::Ok(aggregateResult);
+      return BreResultOkAdopting(aggregateResult);
      }
   };
 

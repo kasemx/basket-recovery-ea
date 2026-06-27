@@ -19,6 +19,7 @@ credentials.json
 **/secrets/
 
 # Build / temp
+build/
 *.tmp
 *.bak
 *.obj

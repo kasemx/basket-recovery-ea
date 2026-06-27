@@ -14,6 +14,7 @@ public:
    virtual bool      Exists(const CBasketId &basketId) const=0;
    virtual CVoidResult Delete(const CBasketId &basketId)=0;
    virtual int       Count(void) const=0;
+   virtual int       LoadAll(CBasketAggregate &aggregates[]) const=0;
   };
 
 #endif

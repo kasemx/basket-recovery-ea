@@ -14,7 +14,10 @@ public:
                                                  const string accountLabel,
                                                  const string apiBaseUrl,
                                                  const string apiKey,
-                                                 const int restPollIntervalMs)
+                                                 const int restPollIntervalMs,
+                                                 const int applicationTimerIntervalMs,
+                                                 const int strategyEvalIntervalMs,
+                                                 const int maxBasketsPerEvalCycle)
      {
       CEAConfiguration configuration;
       configuration.SetProfileName(profileName);
@@ -25,6 +28,9 @@ public:
       configuration.SetApiBaseUrl(apiBaseUrl);
       configuration.SetApiKey(apiKey);
       configuration.SetRestPollIntervalMs(restPollIntervalMs);
+      configuration.SetApplicationTimerIntervalMs(applicationTimerIntervalMs);
+      configuration.SetStrategyEvalIntervalMs(strategyEvalIntervalMs);
+      configuration.SetMaxBasketsPerEvalCycle(maxBasketsPerEvalCycle);
 
       if(profileName=="")
          return CResult<CEAConfiguration>::Fail(BRE_ERR_CONFIG_INVALID,"Profile name input is empty");

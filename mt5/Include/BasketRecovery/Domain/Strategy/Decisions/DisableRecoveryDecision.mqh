@@ -8,9 +8,16 @@ private:
    string m_ruleId;
    bool   m_permanent;
 
+public:
                      CDisableRecoveryDecision(void) {}
 
-public:
+                     CDisableRecoveryDecision(const CDisableRecoveryDecision &other)
+     {
+      m_idempotencyKey=other.m_idempotencyKey;
+      m_ruleId=other.m_ruleId;
+      m_permanent=other.m_permanent;
+     }
+
    string            IdempotencyKey(void) const { return m_idempotencyKey; }
    string            RuleId(void) const { return m_ruleId; }
    bool              Permanent(void) const { return m_permanent; }

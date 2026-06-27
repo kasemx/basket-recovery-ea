@@ -4,6 +4,7 @@
 #include <BasketRecovery/Shared/Types/Result.mqh>
 #include <BasketRecovery/Domain/Events/DomainEvent.mqh>
 #include <BasketRecovery/Application/DTOs/EventHandlingResult.mqh>
+#include <BasketRecovery/Shared/Types/ResultValueTransfer.mqh>
 
 class IEventHandler
   {

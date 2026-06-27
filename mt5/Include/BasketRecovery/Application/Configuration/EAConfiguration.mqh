@@ -12,6 +12,9 @@ private:
    string m_apiBaseUrl;
    string m_apiKey;
    int    m_restPollIntervalMs;
+   int    m_applicationTimerIntervalMs;
+   int    m_strategyEvalIntervalMs;
+   int    m_maxBasketsPerEvalCycle;
    bool   m_isValid;
 
 public:
@@ -25,6 +28,9 @@ public:
       m_apiBaseUrl="";
       m_apiKey="";
       m_restPollIntervalMs=3000;
+      m_applicationTimerIntervalMs=250;
+      m_strategyEvalIntervalMs=5000;
+      m_maxBasketsPerEvalCycle=5;
       m_isValid=false;
      }
 
@@ -36,6 +42,9 @@ public:
    string            ApiBaseUrl(void) const { return m_apiBaseUrl; }
    string            ApiKey(void) const { return m_apiKey; }
    int               RestPollIntervalMs(void) const { return m_restPollIntervalMs; }
+   int               ApplicationTimerIntervalMs(void) const { return m_applicationTimerIntervalMs; }
+   int               StrategyEvalIntervalMs(void) const { return m_strategyEvalIntervalMs; }
+   int               MaxBasketsPerEvalCycle(void) const { return m_maxBasketsPerEvalCycle; }
    bool              IsValid(void) const { return m_isValid; }
 
    void              SetProfileName(const string value) { m_profileName=value; }
@@ -46,6 +55,9 @@ public:
    void              SetApiBaseUrl(const string value) { m_apiBaseUrl=value; }
    void              SetApiKey(const string value) { m_apiKey=value; }
    void              SetRestPollIntervalMs(const int value) { m_restPollIntervalMs=value; }
+   void              SetApplicationTimerIntervalMs(const int value) { m_applicationTimerIntervalMs=value; }
+   void              SetStrategyEvalIntervalMs(const int value) { m_strategyEvalIntervalMs=value; }
+   void              SetMaxBasketsPerEvalCycle(const int value) { m_maxBasketsPerEvalCycle=value; }
    void              SetIsValid(const bool value) { m_isValid=value; }
   };
 

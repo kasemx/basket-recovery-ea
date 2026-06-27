@@ -9,9 +9,17 @@ private:
    double m_ask;
    double m_pipSize;
 
+public:
                      CMarketContext(void) {}
 
-public:
+                     CMarketContext(const CMarketContext &other)
+     {
+      m_symbol=other.m_symbol;
+      m_bid=other.m_bid;
+      m_ask=other.m_ask;
+      m_pipSize=other.m_pipSize;
+     }
+
    string            Symbol(void) const { return m_symbol; }
    double            Bid(void) const { return m_bid; }
    double            Ask(void) const { return m_ask; }

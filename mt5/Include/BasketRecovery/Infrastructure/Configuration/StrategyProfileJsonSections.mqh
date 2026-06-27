@@ -1,5 +1,5 @@
-#ifndef BASKET_RECOVERY_INFRASTRUCTURE_STRATEGY_PROFILE_JSON_SECTIONS_MQH
-#define BASKET_RECOVERY_INFRASTRUCTURE_STRATEGY_PROFILE_JSON_SECTIONS_MQH
+#ifndef BRE_INF_STRATEGY_PROFILE_JSON_SECTIONS_MQH
+#define BRE_INF_STRATEGY_PROFILE_JSON_SECTIONS_MQH
 
 #include <BasketRecovery/Infrastructure/Persistence/Json/JsonReader.mqh>
 #include <BasketRecovery/Infrastructure/Configuration/StrategyProfileJsonBlockReader.mqh>

@@ -24,9 +24,23 @@ private:
    CExecutionProfileConfig  m_executionPolicy;
    CUtcTime                 m_boundAt;
 
+public:
                      CStrategyProfile(void) {}
 
-public:
+                     CStrategyProfile(const CStrategyProfile &other)
+     {
+      m_strategyId=other.m_strategyId;
+      m_schemaVersion=other.m_schemaVersion;
+      m_metadata=other.m_metadata;
+      m_executionZone=other.m_executionZone;
+      m_recoveryPlan=other.m_recoveryPlan;
+      m_profitDistributionPlan=other.m_profitDistributionPlan;
+      m_breakEvenPlan=other.m_breakEvenPlan;
+      m_riskPlan=other.m_riskPlan;
+      m_executionPolicy=other.m_executionPolicy;
+      m_boundAt=other.m_boundAt;
+     }
+
    string                   StrategyId(void) const { return m_strategyId; }
    int                      SchemaVersion(void) const { return m_schemaVersion; }
    CStrategyMetadata        Metadata(void) const { return m_metadata; }
@@ -47,7 +61,7 @@ public:
                                    const CBreakEvenPlan &breakEvenPlan,
                                    const CRiskPlan &riskPlan,
                                    const CExecutionProfileConfig &executionPolicy,
-                                   const CUtcTime boundAt)
+                                   const CUtcTime &boundAt)
      {
       CStrategyProfile profile;
       profile.m_strategyId=strategyId;

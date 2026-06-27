@@ -10,9 +10,19 @@ private:
    ENUM_BRE_RISK_REDUCTION_MODE m_reductionMode;
    ulong                       m_tickets[];
 
+public:
                      CReduceRiskDecision(void) {}
 
-public:
+                     CReduceRiskDecision(const CReduceRiskDecision &other)
+     {
+      m_idempotencyKey=other.m_idempotencyKey;
+      m_reductionMode=other.m_reductionMode;
+      int ticketCount=ArraySize(other.m_tickets);
+      ArrayResize(m_tickets,ticketCount);
+      for(int i=0;i<ticketCount;i++)
+         m_tickets[i]=other.m_tickets[i];
+     }
+
    string                      IdempotencyKey(void) const { return m_idempotencyKey; }
    ENUM_BRE_RISK_REDUCTION_MODE ReductionMode(void) const { return m_reductionMode; }
    int                         TicketCount(void) const { return ArraySize(m_tickets); }

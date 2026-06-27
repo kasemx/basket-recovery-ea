@@ -87,7 +87,7 @@ public:
       closedEvent.SetOccurredAt(timestampUtc.Value());
       executionResult.AddEvent(closedEvent);
 
-      return CResult<CCommandExecutionResult>::Ok(executionResult);
+      return BreResultOkAdopting(executionResult);
      }
   };
 

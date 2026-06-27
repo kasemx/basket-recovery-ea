@@ -13,7 +13,7 @@
 #include <BasketRecovery/Domain/Factories/BasketFactory.mqh>
 #include <BasketRecovery/Domain/Basket/BasketRuntimeGuard.mqh>
 
-CStrategyProfileSnapshot BuildBoundSnapshot(const string jsonContent,const CUtcTime boundAt)
+CStrategyProfileSnapshot BuildBoundSnapshot(const string jsonContent,const CUtcTime &boundAt)
   {
    CStrategyProfileJsonParser parser;
    CResult<CStrategyProfile> profileResult=parser.Parse(jsonContent,boundAt);
