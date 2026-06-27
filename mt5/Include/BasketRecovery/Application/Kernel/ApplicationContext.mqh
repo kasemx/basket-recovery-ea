@@ -12,6 +12,15 @@
 #include <BasketRecovery/Infrastructure/Execution/InMemoryExecutionRequestRepository.mqh>
 #include <BasketRecovery/Infrastructure/Execution/InMemoryExecutionJournal.mqh>
 #include <BasketRecovery/Shared/DTOs/NormalizedTradeTransaction.mqh>
+#include <BasketRecovery/Infrastructure/MT5/Mt5TradeTransactionAdapter.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionRegistry.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionDiagnostics.mqh>
+#include <BasketRecovery/Application/Execution/InMemoryPendingExecutionEventBuffer.mqh>
+#include <BasketRecovery/Application/Execution/TradeTransactionRouter.mqh>
+#include <BasketRecovery/Application/Execution/ExecutionTimeoutMonitor.mqh>
+#include <BasketRecovery/Application/Execution/ExecutionReconciliationScheduler.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionTestInjectionService.mqh>
+#include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerPositionReader.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
 class CApplicationContext
@@ -26,6 +35,14 @@ private:
    CInMemoryExecutionJournal *m_executionJournal;
    CMt5OrderCheckGateway *m_orderCheckGateway;
    CMt5ExecutionDiagnostics *m_executionDiagnostics;
+   CPendingExecutionRegistry *m_pendingExecutionRegistry;
+   CPendingExecutionDiagnostics *m_pendingExecutionDiagnostics;
+   CInMemoryPendingExecutionEventBuffer *m_pendingExecutionEventBuffer;
+   CTradeTransactionRouter *m_tradeTransactionRouter;
+   CExecutionReconciliationScheduler *m_executionReconciliationScheduler;
+   CExecutionTimeoutMonitor *m_executionTimeoutMonitor;
+   CPendingExecutionTestInjectionService *m_pendingExecutionTestInjection;
+   CMt5BrokerPositionReader *m_executionReconciliationReader;
    bool                m_initialized;
 
 public:
@@ -40,6 +57,14 @@ public:
       m_executionJournal=NULL;
       m_orderCheckGateway=NULL;
       m_executionDiagnostics=NULL;
+      m_pendingExecutionRegistry=NULL;
+      m_pendingExecutionDiagnostics=NULL;
+      m_pendingExecutionEventBuffer=NULL;
+      m_tradeTransactionRouter=NULL;
+      m_executionReconciliationScheduler=NULL;
+      m_executionTimeoutMonitor=NULL;
+      m_pendingExecutionTestInjection=NULL;
+      m_executionReconciliationReader=NULL;
       m_initialized=false;
      }
 
@@ -73,6 +98,25 @@ public:
       m_executionJournal=journal;
       m_orderCheckGateway=orderCheckGateway;
       m_executionDiagnostics=diagnostics;
+     }
+
+   void              RegisterPendingExecutionRuntime(CPendingExecutionRegistry *registry,
+                                                     CPendingExecutionDiagnostics *diagnostics,
+                                                     CInMemoryPendingExecutionEventBuffer *eventBuffer,
+                                                     CTradeTransactionRouter *router,
+                                                     CExecutionReconciliationScheduler *reconciliationScheduler,
+                                                     CExecutionTimeoutMonitor *timeoutMonitor,
+                                                     CPendingExecutionTestInjectionService *testInjection,
+                                                     CMt5BrokerPositionReader *reconciliationReader)
+     {
+      m_pendingExecutionRegistry=registry;
+      m_pendingExecutionDiagnostics=diagnostics;
+      m_pendingExecutionEventBuffer=eventBuffer;
+      m_tradeTransactionRouter=router;
+      m_executionReconciliationScheduler=reconciliationScheduler;
+      m_executionTimeoutMonitor=timeoutMonitor;
+      m_pendingExecutionTestInjection=testInjection;
+      m_executionReconciliationReader=reconciliationReader;
      }
 
    CVoidResult       TryProcessManualExecutionDryRun(const string basketIdValue,
@@ -123,6 +167,46 @@ public:
          delete m_executionDiagnostics;
          m_executionDiagnostics=NULL;
         }
+      if(m_pendingExecutionTestInjection!=NULL)
+        {
+         delete m_pendingExecutionTestInjection;
+         m_pendingExecutionTestInjection=NULL;
+        }
+      if(m_executionTimeoutMonitor!=NULL)
+        {
+         delete m_executionTimeoutMonitor;
+         m_executionTimeoutMonitor=NULL;
+        }
+      if(m_executionReconciliationScheduler!=NULL)
+        {
+         delete m_executionReconciliationScheduler;
+         m_executionReconciliationScheduler=NULL;
+        }
+      if(m_tradeTransactionRouter!=NULL)
+        {
+         delete m_tradeTransactionRouter;
+         m_tradeTransactionRouter=NULL;
+        }
+      if(m_pendingExecutionEventBuffer!=NULL)
+        {
+         delete m_pendingExecutionEventBuffer;
+         m_pendingExecutionEventBuffer=NULL;
+        }
+      if(m_pendingExecutionDiagnostics!=NULL)
+        {
+         delete m_pendingExecutionDiagnostics;
+         m_pendingExecutionDiagnostics=NULL;
+        }
+      if(m_pendingExecutionRegistry!=NULL)
+        {
+         delete m_pendingExecutionRegistry;
+         m_pendingExecutionRegistry=NULL;
+        }
+      if(m_executionReconciliationReader!=NULL)
+        {
+         delete m_executionReconciliationReader;
+         m_executionReconciliationReader=NULL;
+        }
       if(m_kernel!=NULL)
         {
          delete m_kernel;
@@ -143,6 +227,13 @@ public:
      {
       if(!m_initialized || m_kernel==NULL)
          return CVoidResult::Fail(BRE_ERR_SNAPSHOT_APPLY_FAILED,"Application context is not initialized");
+
+      if(m_tradeTransactionRouter!=NULL)
+        {
+         CTradeTransactionCorrelationContext context=
+            CMt5TradeTransactionAdapter::BuildContext(transaction,0);
+         m_tradeTransactionRouter.Route(context);
+        }
 
       CTradeTransactionFastPathService *fastPath=m_kernel.TradeTransactionFastPath();
       if(fastPath==NULL)
@@ -171,6 +262,12 @@ public:
      {
       if(!m_initialized || m_kernel==NULL)
          return CVoidResult::Ok();
+
+      if(m_executionTimeoutMonitor!=NULL)
+         m_executionTimeoutMonitor.ScanDueTimeouts();
+      if(m_executionReconciliationScheduler!=NULL)
+         m_executionReconciliationScheduler.ProcessBatch();
+
       return m_kernel.TimerPipeline().OnTimer(commandsProcessed,eventsProcessed,evaluationsScheduled);
      }
 
@@ -241,6 +338,11 @@ public:
          return;
       logger.Info("SYSTEM","Shutdown","",StringFormat("BasketRecoveryEA stopped | reason=%d",reason));
      }
+
+   CPendingExecutionTestInjectionService* PendingExecutionTestInjection(void) const { return m_pendingExecutionTestInjection; }
+   CPendingExecutionRegistry* PendingExecutionRegistry(void) const { return m_pendingExecutionRegistry; }
+   CInMemoryPendingExecutionEventBuffer* PendingExecutionEventBuffer(void) const { return m_pendingExecutionEventBuffer; }
+   CPendingExecutionDiagnostics* PendingExecutionDiagnostics(void) const { return m_pendingExecutionDiagnostics; }
 
    int               SnapshotCount(void) const
      {

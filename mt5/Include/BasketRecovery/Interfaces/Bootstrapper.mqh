@@ -286,6 +286,37 @@ public:
                                              orderCheckGateway,
                                              executionDiagnostics);
 
+      CPendingExecutionRegistry *pendingExecutionRegistry=new CPendingExecutionRegistry();
+      CInMemoryPendingExecutionEventBuffer *pendingExecutionEventBuffer=
+         new CInMemoryPendingExecutionEventBuffer(32);
+      CPendingExecutionDiagnostics *pendingExecutionDiagnostics=
+         new CPendingExecutionDiagnostics(logger,configuration.EnableExecutionDiagnostics(),64);
+      CMt5BrokerPositionReader *executionReconciliationReader=new CMt5BrokerPositionReader();
+      CExecutionReconciliationScheduler *executionReconciliationScheduler=
+         new CExecutionReconciliationScheduler(pendingExecutionRegistry,executionReconciliationReader,
+                                               pendingExecutionDiagnostics,8);
+      CTradeTransactionRouter *tradeTransactionRouter=
+         new CTradeTransactionRouter(pendingExecutionRegistry,
+                                     pendingExecutionDiagnostics,
+                                     pendingExecutionEventBuffer,
+                                     kernel.FastStateRegistry(),
+                                     clock);
+      CExecutionTimeoutMonitor *executionTimeoutMonitor=
+         new CExecutionTimeoutMonitor(pendingExecutionRegistry,
+                                      executionReconciliationScheduler,
+                                      pendingExecutionDiagnostics,
+                                      clock);
+      CPendingExecutionTestInjectionService *pendingExecutionTestInjection=
+         new CPendingExecutionTestInjectionService(pendingExecutionRegistry,tradeTransactionRouter);
+      context.RegisterPendingExecutionRuntime(pendingExecutionRegistry,
+                                              pendingExecutionDiagnostics,
+                                              pendingExecutionEventBuffer,
+                                              tradeTransactionRouter,
+                                              executionReconciliationScheduler,
+                                              executionTimeoutMonitor,
+                                              pendingExecutionTestInjection,
+                                              executionReconciliationReader);
+
       CFastPathDiagnosticReporter *diagnosticReporter=kernel.DiagnosticReporter();
       if(diagnosticReporter!=NULL)
         {

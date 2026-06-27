@@ -272,6 +272,7 @@ public:
    CFastPathConfig    FastPathConfig(void) const { return m_fastPathConfig; }
    CTimerFallbackEvaluationService* FallbackEvaluation(void) { return m_fallbackEvaluation; }
    CTradeTransactionFastPathService* TradeTransactionFastPath(void) { return m_tradeTransactionFastPath; }
+   CBasketFastStateRegistry*       FastStateRegistry(void) { return m_fastStateRegistry; }
    CPersistenceManager*       PersistenceManager(void) { return m_persistenceManager; }
    CBindMigratedBasketStrategyUseCase* BindMigrationUseCase(void) { return m_bindMigrationUseCase; }
    CMarketContextProviderAdapter* MarketAdapter(void) { return m_marketAdapter; }
