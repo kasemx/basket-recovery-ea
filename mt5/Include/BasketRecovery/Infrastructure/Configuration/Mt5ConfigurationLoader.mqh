@@ -16,8 +16,14 @@ public:
                                                  const string apiKey,
                                                  const int restPollIntervalMs,
                                                  const int applicationTimerIntervalMs,
-                                                 const int strategyEvalIntervalMs,
-                                                 const int maxBasketsPerEvalCycle)
+                                                 const int maxBasketsPerTick,
+                                                 const int reconciliationIntervalMs,
+                                                 const int quoteStaleThresholdMs,
+                                                 const int maxSpreadPoints,
+                                                 const int maxEvaluationAgeMs,
+                                                 const int minEvaluationIntervalMs,
+                                                 const int materialQuoteChangePoints,
+                                                 const int tickSilenceFallbackMs)
      {
       CEAConfiguration configuration;
       configuration.SetProfileName(profileName);
@@ -29,8 +35,15 @@ public:
       configuration.SetApiKey(apiKey);
       configuration.SetRestPollIntervalMs(restPollIntervalMs);
       configuration.SetApplicationTimerIntervalMs(applicationTimerIntervalMs);
-      configuration.SetStrategyEvalIntervalMs(strategyEvalIntervalMs);
-      configuration.SetMaxBasketsPerEvalCycle(maxBasketsPerEvalCycle);
+      configuration.SetMaxBasketsPerTick(maxBasketsPerTick);
+      configuration.SetReconciliationIntervalMs(reconciliationIntervalMs);
+      configuration.SetMaxEvaluationAgeMs(maxEvaluationAgeMs);
+      configuration.SetMinEvaluationIntervalMs(minEvaluationIntervalMs);
+      configuration.SetMaterialQuoteChangePoints(materialQuoteChangePoints);
+      configuration.SetTickSilenceFallbackMs(tickSilenceFallbackMs);
+      configuration.SetMarketSafetyConfig(CMarketSafetyConfig::Create(quoteStaleThresholdMs,
+                                                                      maxSpreadPoints,
+                                                                      30000));
 
       if(profileName=="")
          return CResult<CEAConfiguration>::Fail(BRE_ERR_CONFIG_INVALID,"Profile name input is empty");

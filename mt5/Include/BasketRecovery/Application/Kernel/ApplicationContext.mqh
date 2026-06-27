@@ -57,14 +57,30 @@ public:
 
    CVoidResult       ApplyNormalizedTransaction(const CNormalizedTradeTransaction &transaction)
      {
-      if(!m_initialized || m_container==NULL)
+      if(!m_initialized || m_kernel==NULL)
          return CVoidResult::Fail(BRE_ERR_SNAPSHOT_APPLY_FAILED,"Application context is not initialized");
 
-      IPositionSnapshotStore *snapshotStore=m_container.SnapshotStore();
-      if(snapshotStore==NULL)
-         return CVoidResult::Fail(BRE_ERR_SNAPSHOT_NOT_FOUND,"Snapshot store is not registered");
+      CTradeTransactionFastPathService *fastPath=m_kernel.TradeTransactionFastPath();
+      if(fastPath==NULL)
+         return CVoidResult::Fail(BRE_ERR_SNAPSHOT_APPLY_FAILED,"Trade transaction fast path is unavailable");
 
-      return snapshotStore.ApplyNormalizedTransaction(transaction);
+      return fastPath.Handle(transaction);
+     }
+
+   int               OnTick(const string symbol)
+     {
+      if(!m_initialized || m_kernel==NULL)
+         return 0;
+
+      CTimerFallbackEvaluationService *fallback=m_kernel.FallbackEvaluation();
+      if(fallback!=NULL)
+         fallback.NotifyTick();
+
+      CFastMarketEvaluationCoordinator *coordinator=m_kernel.FastCoordinator();
+      if(coordinator==NULL)
+         return 0;
+
+      return coordinator.OnTick(symbol);
      }
 
    CVoidResult       OnApplicationTimer(int &commandsProcessed,int &eventsProcessed,int &evaluationsScheduled)

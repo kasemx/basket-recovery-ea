@@ -4,18 +4,24 @@
 #include <BasketRecovery/Application/Services/CommandIngestionService.mqh>
 #include <BasketRecovery/Application/Kernel/CommandProcessor.mqh>
 #include <BasketRecovery/Infrastructure/Persistence/PersistenceManager.mqh>
-#include <BasketRecovery/Application/Services/StrategyEvaluationScheduler.mqh>
+#include <BasketRecovery/Application/Services/ReconciliationSchedulerService.mqh>
+#include <BasketRecovery/Application/Services/TimerFallbackEvaluationService.mqh>
+#include <BasketRecovery/Application/Services/SystemHealthCheckService.mqh>
+#include <BasketRecovery/Application/FastPath/FastCommandStagingBuffer.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
 class CApplicationTimerPipeline
   {
 private:
-   CCommandIngestionService     *m_ingestionService;
-   CCommandProcessor            *m_commandProcessor;
-   CPersistenceManager          *m_persistenceManager;
-   CStrategyEvaluationScheduler *m_strategyScheduler;
-   int                           m_restPollIntervalMs;
-   ulong                         m_lastRestPollTickMs;
+   CCommandIngestionService          *m_ingestionService;
+   CCommandProcessor                 *m_commandProcessor;
+   CPersistenceManager               *m_persistenceManager;
+   CReconciliationSchedulerService   *m_reconciliationScheduler;
+   CTimerFallbackEvaluationService   *m_fallbackEvaluation;
+   CSystemHealthCheckService         *m_healthCheck;
+   CFastCommandStagingBuffer         *m_stagingQueue;
+   int                                m_restPollIntervalMs;
+   ulong                              m_lastRestPollTickMs;
 
    bool              IsRestPollDue(void) const
      {
@@ -41,17 +47,30 @@ private:
         }
      }
 
+   int               FlushStagingQueue(void)
+     {
+      if(m_stagingQueue==NULL || m_persistenceManager==NULL)
+         return 0;
+      return m_stagingQueue.FlushTo(m_persistenceManager.CommandQueue());
+     }
+
 public:
                      CApplicationTimerPipeline(CCommandIngestionService *ingestionService,
                                                CCommandProcessor *commandProcessor,
                                                CPersistenceManager *persistenceManager,
-                                               CStrategyEvaluationScheduler *strategyScheduler,
+                                               CReconciliationSchedulerService *reconciliationScheduler,
+                                               CTimerFallbackEvaluationService *fallbackEvaluation,
+                                               CSystemHealthCheckService *healthCheck,
+                                               CFastCommandStagingBuffer *stagingQueue,
                                                const int restPollIntervalMs=3000)
      {
       m_ingestionService=ingestionService;
       m_commandProcessor=commandProcessor;
       m_persistenceManager=persistenceManager;
-      m_strategyScheduler=strategyScheduler;
+      m_reconciliationScheduler=reconciliationScheduler;
+      m_fallbackEvaluation=fallbackEvaluation;
+      m_healthCheck=healthCheck;
+      m_stagingQueue=stagingQueue;
       m_restPollIntervalMs=restPollIntervalMs;
       m_lastRestPollTickMs=0;
      }
@@ -67,6 +86,8 @@ public:
          m_ingestionService.PollAndEnqueue();
          m_lastRestPollTickMs=(ulong)GetTickCount();
         }
+
+      FlushStagingQueue();
 
       if(m_commandProcessor!=NULL)
         {
@@ -86,8 +107,17 @@ public:
             return flushResult;
         }
 
-      if(m_strategyScheduler!=NULL)
-         evaluationsScheduled=m_strategyScheduler.RunIfDue();
+      if(m_reconciliationScheduler!=NULL)
+         m_reconciliationScheduler.RunIfDue();
+
+      if(m_healthCheck!=NULL)
+         m_healthCheck.RunIfDue();
+
+      if(m_fallbackEvaluation!=NULL)
+         evaluationsScheduled=m_fallbackEvaluation.RunIfDue();
+
+      if(evaluationsScheduled>0)
+         FlushStagingQueue();
 
       return CVoidResult::Ok();
      }

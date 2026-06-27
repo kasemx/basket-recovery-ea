@@ -14,6 +14,12 @@
 #include <BasketRecovery/Infrastructure/TradeRequests/InMemoryTradeRequestQueue.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/InMemorySnapshotStore.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/BrokerReconciliationService.mqh>
+#include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerPositionReader.mqh>
+#include <BasketRecovery/Infrastructure/Market/Mt5MarketDataProvider.mqh>
+#include <BasketRecovery/Infrastructure/Market/MarketContextProviderAdapter.mqh>
+#include <BasketRecovery/Application/Services/BasketPositionReconciler.mqh>
+#include <BasketRecovery/Application/Configuration/FastPathConfig.mqh>
+#include <BasketRecovery/Application/Services/ReconciliationSchedulerService.mqh>
 #include <BasketRecovery/Infrastructure/Configuration/DefaultProfileLoader.mqh>
 #include <BasketRecovery/Infrastructure/Rest/RestWebRequestClient.mqh>
 #include <BasketRecovery/Infrastructure/Rest/RestClient.mqh>
@@ -37,13 +43,22 @@ public:
                                          const string apiKey,
                                          const int restPollIntervalMs,
                                          const int applicationTimerIntervalMs,
-                                         const int strategyEvalIntervalMs,
-                                         const int maxBasketsPerEvalCycle)
+                                         const int maxBasketsPerTick,
+                                         const int reconciliationIntervalMs,
+                                         const int quoteStaleThresholdMs,
+                                         const int maxSpreadPoints,
+                                         const int maxEvaluationAgeMs,
+                                         const int minEvaluationIntervalMs,
+                                         const int materialQuoteChangePoints,
+                                         const int tickSilenceFallbackMs)
      {
       CResult<CEAConfiguration> configurationResult=
          CMt5ConfigurationLoader::LoadFromInputs(profileName,logFilePath,logLevel,accountLabel,apiBaseUrl,apiKey,
                                                  restPollIntervalMs,applicationTimerIntervalMs,
-                                                 strategyEvalIntervalMs,maxBasketsPerEvalCycle);
+                                                 maxBasketsPerTick,reconciliationIntervalMs,
+                                                 quoteStaleThresholdMs,maxSpreadPoints,
+                                                 maxEvaluationAgeMs,minEvaluationIntervalMs,
+                                                 materialQuoteChangePoints,tickSilenceFallbackMs);
 
       if(configurationResult.IsFail())
         {
@@ -123,8 +138,9 @@ public:
         }
 
       CInMemorySnapshotStore *snapshotStore=new CInMemorySnapshotStore(clock);
-      CBrokerReconciliationService *reconciliationService=
-         new CBrokerReconciliationService(snapshotStore,clock,logger);
+      CMt5MarketDataProvider *marketDataProvider=new CMt5MarketDataProvider(clock);
+      CMarketContextProviderAdapter *marketContextProvider=
+         new CMarketContextProviderAdapter(marketDataProvider,configuration.MarketSafetyConfig(),true);
 
       CServiceContainer *container=new CServiceContainer();
       container.RegisterLogger(logger,true);
@@ -134,18 +150,37 @@ public:
       container.RegisterSnapshotStore(snapshotStore,true);
       container.RegisterProfileLoader(profileLoader,true);
       container.RegisterTransitionRuleRegistry(transitionRuleRegistry,true);
-      container.RegisterReconciliationService(reconciliationService,true);
       container.RegisterUniqueIdGenerator(new CMt5UniqueIdGenerator(),true);
       container.SetEAConfiguration(configuration);
 
       CPersistenceManager *persistenceManager=new CPersistenceManager(false,500);
       if(persistenceManager.RecoverOnStartup().IsFail())
         {
+         delete marketContextProvider;
          delete persistenceManager;
          delete container;
          return NULL;
         }
       container.RegisterCommandQueue(persistenceManager.CommandQueue(),false);
+
+      CMt5BrokerPositionReader *brokerPositionReader=new CMt5BrokerPositionReader();
+      CBasketPositionReconciler *positionReconciler=
+         new CBasketPositionReconciler(brokerPositionReader,snapshotStore,
+                                       persistenceManager.BasketRepository(),logger,clock);
+      CBrokerReconciliationService *reconciliationService=
+         new CBrokerReconciliationService(positionReconciler);
+      container.RegisterReconciliationService(reconciliationService,true);
+
+      CReconciliationSchedulerService *reconciliationScheduler=
+         new CReconciliationSchedulerService(positionReconciler,
+                                             configuration.ReconciliationIntervalMs(),
+                                             configuration.MaxBasketsPerReconcileCycle());
+
+      CFastPathConfig fastPathConfig=CFastPathConfig::Create(configuration.MaxBasketsPerTick(),
+                                                             configuration.MaxEvaluationAgeMs(),
+                                                             configuration.MinEvaluationIntervalMs(),
+                                                             configuration.MaterialQuoteChangePoints(),
+                                                             configuration.TickSilenceFallbackMs());
 
       CRestClientConfig restConfig;
       restConfig.SetBaseUrl(configuration.ApiBaseUrl());
@@ -165,6 +200,10 @@ public:
       if(reconciliationResult.IsFail())
         {
          logger.Error("SYSTEM","Bootstrap","","Startup reconciliation failed",reconciliationResult.ErrorCode());
+         delete reconciliationScheduler;
+         delete marketContextProvider;
+         delete brokerPositionReader;
+         delete positionReconciler;
          delete persistenceManager;
          delete container;
          return NULL;
@@ -173,10 +212,15 @@ public:
       CApplicationKernel *kernel=new CApplicationKernel();
       if(!kernel.Initialize(transitionRuleRegistry,clock,container.UniqueIdGenerator(),
                              commandIngestionService,profileSnapshot,persistenceManager,
-                             effectivePollIntervalMs,configuration.StrategyEvalIntervalMs(),
-                             configuration.MaxBasketsPerEvalCycle()))
+                             snapshotStore,marketContextProvider,reconciliationScheduler,
+                             fastPathConfig,effectivePollIntervalMs,true))
         {
          delete kernel;
+         delete reconciliationScheduler;
+         delete marketContextProvider;
+         delete brokerPositionReader;
+         delete positionReconciler;
+         delete persistenceManager;
          delete container;
          return NULL;
         }
@@ -186,13 +230,15 @@ public:
         {
          delete context;
          delete kernel;
+         delete brokerPositionReader;
+         delete positionReconciler;
          delete container;
          return NULL;
         }
 
       logger.Info("SYSTEM","Startup",
                   "",
-                  StringFormat("BasketRecoveryEA initialized | profile=%s | profile_snapshot=%s | account=%I64d | label=%s | transition_rules=%d | snapshots=%d | rest=%s | rest_poll_ms=%d | features=signals:%s",
+                  StringFormat("BasketRecoveryEA initialized | profile=%s | profile_snapshot=%s | account=%I64d | label=%s | transition_rules=%d | snapshots=%d | rest=%s | rest_poll_ms=%d | fast_path_tick_budget=%d | reconciliation_ms=%d | features=signals:%s",
                                configuration.ProfileName(),
                                profileSnapshot.ProfileName(),
                                configuration.AccountLogin(),
@@ -201,6 +247,8 @@ public:
                                context.SnapshotCount(),
                                configuration.ApiBaseUrl()=="" ? "disabled" : configuration.ApiBaseUrl(),
                                effectivePollIntervalMs,
+                               configuration.MaxBasketsPerTick(),
+                               configuration.ReconciliationIntervalMs(),
                                BRE_FEATURE_SIGNALS ? "on" : "off"));
 
       return context;

@@ -11,9 +11,22 @@
 #include <BasketRecovery/Infrastructure/Persistence/PersistenceManager.mqh>
 #include <BasketRecovery/Application/UseCases/EvaluateBasketStrategyUseCase.mqh>
 #include <BasketRecovery/Application/UseCases/BindMigratedBasketStrategyUseCase.mqh>
-#include <BasketRecovery/Application/Services/StrategyEvaluationScheduler.mqh>
+#include <BasketRecovery/Application/Services/ReconciliationSchedulerService.mqh>
+#include <BasketRecovery/Application/Services/FastMarketEvaluationCoordinator.mqh>
+#include <BasketRecovery/Application/Services/TradeTransactionFastPathService.mqh>
+#include <BasketRecovery/Application/Services/TimerFallbackEvaluationService.mqh>
+#include <BasketRecovery/Application/Services/SystemHealthCheckService.mqh>
+#include <BasketRecovery/Application/FastPath/BasketFastStateRegistry.mqh>
+#include <BasketRecovery/Application/FastPath/SymbolBasketIndex.mqh>
+#include <BasketRecovery/Application/FastPath/FastEvaluationTriggerPolicy.mqh>
+#include <BasketRecovery/Application/FastPath/FastCommandStagingBuffer.mqh>
+#include <BasketRecovery/Application/FastPath/InMemoryHotPathDiagnostics.mqh>
+#include <BasketRecovery/Application/FastPath/InMemoryFastSafetyAuditBuffer.mqh>
+#include <BasketRecovery/Application/Configuration/FastPathConfig.mqh>
 #include <BasketRecovery/Application/Ports/IStrategyEngine.mqh>
-#include <BasketRecovery/Infrastructure/Market/InMemoryMarketQuoteProvider.mqh>
+#include <BasketRecovery/Application/Ports/IMarketContextProvider.mqh>
+#include <BasketRecovery/Infrastructure/Market/MarketContextProviderAdapter.mqh>
+#include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
 #include <BasketRecovery/Domain/Configuration/ProfileSnapshot.mqh>
 
 class CApplicationKernel
@@ -23,14 +36,25 @@ private:
    CCommandDispatcher               *m_commandDispatcher;
    CEventDispatcher                 *m_eventDispatcher;
    CCommandProcessor                *m_commandProcessor;
-   CApplicationTimerPipeline      *m_timerPipeline;
-   CStrategyEvaluationScheduler     *m_strategyScheduler;
+   CApplicationTimerPipeline        *m_timerPipeline;
+   CReconciliationSchedulerService  *m_reconciliationScheduler;
+   CFastMarketEvaluationCoordinator *m_fastCoordinator;
+   CTradeTransactionFastPathService *m_tradeTransactionFastPath;
+   CTimerFallbackEvaluationService  *m_fallbackEvaluation;
+   CSystemHealthCheckService        *m_healthCheck;
+   CBasketFastStateRegistry         *m_fastStateRegistry;
+   CSymbolBasketIndex               *m_symbolIndex;
+   CFastEvaluationTriggerPolicy     *m_triggerPolicy;
+   CFastCommandStagingBuffer        *m_stagingQueue;
+   CInMemoryHotPathDiagnostics      *m_hotPathDiagnostics;
+   CInMemoryFastSafetyAuditBuffer   *m_safetyAudit;
    CEvaluateBasketStrategyUseCase   *m_evaluateUseCase;
    CBindMigratedBasketStrategyUseCase *m_bindMigrationUseCase;
    CTransitionEngine                *m_transitionEngine;
    CStateTransitionHandler          *m_transitionHandler;
    CStrategyEngineAdapter           *m_strategyEngine;
-   CInMemoryMarketQuoteProvider     *m_marketProvider;
+   CMarketContextProviderAdapter    *m_marketAdapter;
+   bool                              m_ownsMarketAdapter;
    CCreateBasketCommandHandler      *m_createHandler;
    CActivateBasketCommandHandler    *m_activateHandler;
    CCloseBasketCommandHandler       *m_closeHandler;
@@ -58,13 +82,24 @@ public:
       m_eventDispatcher=NULL;
       m_commandProcessor=NULL;
       m_timerPipeline=NULL;
-      m_strategyScheduler=NULL;
+      m_reconciliationScheduler=NULL;
+      m_fastCoordinator=NULL;
+      m_tradeTransactionFastPath=NULL;
+      m_fallbackEvaluation=NULL;
+      m_healthCheck=NULL;
+      m_fastStateRegistry=NULL;
+      m_symbolIndex=NULL;
+      m_triggerPolicy=NULL;
+      m_stagingQueue=NULL;
+      m_hotPathDiagnostics=NULL;
+      m_safetyAudit=NULL;
       m_evaluateUseCase=NULL;
       m_bindMigrationUseCase=NULL;
       m_transitionEngine=NULL;
       m_transitionHandler=NULL;
       m_strategyEngine=NULL;
-      m_marketProvider=NULL;
+      m_marketAdapter=NULL;
+      m_ownsMarketAdapter=false;
       m_createHandler=NULL;
       m_activateHandler=NULL;
       m_closeHandler=NULL;
@@ -105,13 +140,23 @@ public:
       if(m_closeHandler!=NULL) delete m_closeHandler;
       if(m_activateHandler!=NULL) delete m_activateHandler;
       if(m_createHandler!=NULL) delete m_createHandler;
-      if(m_marketProvider!=NULL) delete m_marketProvider;
+      if(m_ownsMarketAdapter && m_marketAdapter!=NULL) delete m_marketAdapter;
       if(m_strategyEngine!=NULL) delete m_strategyEngine;
       if(m_transitionHandler!=NULL) delete m_transitionHandler;
       if(m_transitionEngine!=NULL) delete m_transitionEngine;
       if(m_bindMigrationUseCase!=NULL) delete m_bindMigrationUseCase;
       if(m_evaluateUseCase!=NULL) delete m_evaluateUseCase;
-      if(m_strategyScheduler!=NULL) delete m_strategyScheduler;
+      if(m_safetyAudit!=NULL) delete m_safetyAudit;
+      if(m_hotPathDiagnostics!=NULL) delete m_hotPathDiagnostics;
+      if(m_stagingQueue!=NULL) delete m_stagingQueue;
+      if(m_triggerPolicy!=NULL) delete m_triggerPolicy;
+      if(m_symbolIndex!=NULL) delete m_symbolIndex;
+      if(m_fastStateRegistry!=NULL) delete m_fastStateRegistry;
+      if(m_healthCheck!=NULL) delete m_healthCheck;
+      if(m_fallbackEvaluation!=NULL) delete m_fallbackEvaluation;
+      if(m_tradeTransactionFastPath!=NULL) delete m_tradeTransactionFastPath;
+      if(m_fastCoordinator!=NULL) delete m_fastCoordinator;
+      if(m_reconciliationScheduler!=NULL) delete m_reconciliationScheduler;
       if(m_timerPipeline!=NULL) delete m_timerPipeline;
       if(m_commandProcessor!=NULL) delete m_commandProcessor;
       if(m_eventDispatcher!=NULL) delete m_eventDispatcher;
@@ -125,31 +170,56 @@ public:
                                 CCommandIngestionService *ingestionService,
                                 const CProfileSnapshot &profileSnapshot,
                                 CPersistenceManager *persistenceManager,
+                                IPositionSnapshotStore *snapshotStore,
+                                CMarketContextProviderAdapter *marketAdapter,
+                                CReconciliationSchedulerService *reconciliationScheduler,
+                                const CFastPathConfig &fastPathConfig,
                                 const int restPollIntervalMs,
-                                const int strategyEvalIntervalMs,
-                                const int maxBasketsPerEvalCycle)
+                                const bool takeMarketAdapterOwnership=false)
      {
       if(persistenceManager==NULL)
          return false;
       m_persistenceManager=persistenceManager;
+      m_marketAdapter=marketAdapter;
+      m_ownsMarketAdapter=takeMarketAdapterOwnership;
+      m_reconciliationScheduler=reconciliationScheduler;
+
+      m_fastStateRegistry=new CBasketFastStateRegistry();
+      m_symbolIndex=new CSymbolBasketIndex();
+      m_stagingQueue=new CFastCommandStagingBuffer();
+      m_hotPathDiagnostics=new CInMemoryHotPathDiagnostics();
+      m_safetyAudit=new CInMemoryFastSafetyAuditBuffer();
+      m_triggerPolicy=new CFastEvaluationTriggerPolicy(fastPathConfig);
 
       m_commandDispatcher=new CCommandDispatcher();
       m_eventDispatcher=new CEventDispatcher();
       m_transitionEngine=new CTransitionEngine(registry);
       m_transitionHandler=new CStateTransitionHandler(m_transitionEngine);
       m_strategyEngine=new CStrategyEngineAdapter();
-      m_marketProvider=new CInMemoryMarketQuoteProvider();
 
       IBasketRepository *repository=m_persistenceManager.BasketRepository();
       m_evaluateUseCase=new CEvaluateBasketStrategyUseCase(repository,m_strategyEngine,
                                                            m_persistenceManager.CommandQueue(),
-                                                           clock,idGenerator);
+                                                           clock,idGenerator,snapshotStore);
       m_bindMigrationUseCase=new CBindMigratedBasketStrategyUseCase(repository,clock,idGenerator);
+
+      m_fastCoordinator=new CFastMarketEvaluationCoordinator(repository,snapshotStore,m_evaluateUseCase,
+                                                             m_marketAdapter,m_stagingQueue,
+                                                             m_fastStateRegistry,m_symbolIndex,
+                                                             m_triggerPolicy,m_hotPathDiagnostics,
+                                                             m_safetyAudit,clock,fastPathConfig);
+      m_tradeTransactionFastPath=new CTradeTransactionFastPathService(snapshotStore,m_fastStateRegistry,
+                                                                      m_symbolIndex);
+      m_fallbackEvaluation=new CTimerFallbackEvaluationService(repository,m_marketAdapter,m_evaluateUseCase,
+                                                             m_stagingQueue,m_symbolIndex,fastPathConfig);
+      m_healthCheck=new CSystemHealthCheckService(m_hotPathDiagnostics);
+
+      m_symbolIndex.Rebuild(repository);
 
       m_createHandler=new CCreateBasketCommandHandler(repository,clock,idGenerator,profileSnapshot);
       m_activateHandler=new CActivateBasketCommandHandler(repository,m_transitionHandler,clock,idGenerator);
       m_closeHandler=new CCloseBasketCommandHandler(repository,m_transitionHandler,clock,idGenerator);
-      m_evaluateHandler=new CEvaluateStrategyCommandHandler(m_evaluateUseCase,m_marketProvider);
+      m_evaluateHandler=new CEvaluateStrategyCommandHandler(m_evaluateUseCase,m_marketAdapter);
       m_openRecoveryHandler=new COpenRecoveryPositionCommandHandler(repository,clock);
       m_closePositionsHandler=new CClosePositionsCommandHandler(repository,clock);
       m_moveStopHandler=new CMoveBasketStopLossCommandHandler(repository,clock);
@@ -178,19 +248,20 @@ public:
       m_commandProcessor=new CCommandProcessor(m_persistenceManager.CommandQueue(),
                                                m_commandDispatcher,m_eventDispatcher,
                                                m_persistenceManager.IdempotencyStore());
-      m_strategyScheduler=new CStrategyEvaluationScheduler(repository,m_persistenceManager.CommandQueue(),
-                                                           clock,idGenerator,strategyEvalIntervalMs,
-                                                           maxBasketsPerEvalCycle);
       m_timerPipeline=new CApplicationTimerPipeline(ingestionService,m_commandProcessor,
-                                                    m_persistenceManager,m_strategyScheduler,
+                                                    m_persistenceManager,m_reconciliationScheduler,
+                                                    m_fallbackEvaluation,m_healthCheck,m_stagingQueue,
                                                     restPollIntervalMs);
       return true;
      }
 
    CApplicationTimerPipeline* TimerPipeline(void) { return m_timerPipeline; }
+   CFastMarketEvaluationCoordinator* FastCoordinator(void) { return m_fastCoordinator; }
+   CTimerFallbackEvaluationService* FallbackEvaluation(void) { return m_fallbackEvaluation; }
+   CTradeTransactionFastPathService* TradeTransactionFastPath(void) { return m_tradeTransactionFastPath; }
    CPersistenceManager*       PersistenceManager(void) { return m_persistenceManager; }
    CBindMigratedBasketStrategyUseCase* BindMigrationUseCase(void) { return m_bindMigrationUseCase; }
-   CInMemoryMarketQuoteProvider* MarketProvider(void) { return m_marketProvider; }
+   CMarketContextProviderAdapter* MarketAdapter(void) { return m_marketAdapter; }
   };
 
 #endif

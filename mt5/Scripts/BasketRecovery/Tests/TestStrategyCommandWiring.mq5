@@ -13,6 +13,7 @@
 #include <BasketRecovery/Infrastructure/Commands/InMemoryCommandQueue.mqh>
 #include <BasketRecovery/Infrastructure/Idempotency/InMemoryIdempotencyStore.mqh>
 #include <BasketRecovery/Infrastructure/Market/InMemoryMarketQuoteProvider.mqh>
+#include <BasketRecovery/Infrastructure/Snapshot/InMemorySnapshotStore.mqh>
 #include <BasketRecovery/Infrastructure/Configuration/StrategyProfileCanonicalSerializer.mqh>
 #include <BasketRecovery/Infrastructure/Configuration/StrategyProfileJsonParser.mqh>
 #include <BasketRecovery/Application/Kernel/CommandProcessor.mqh>
@@ -36,7 +37,11 @@
 #include <BasketRecovery/Domain/StateMachine/AlwaysTrueTransitionGuard.mqh>
 #include <BasketRecovery/Application/UseCases/EvaluateBasketStrategyUseCase.mqh>
 #include <BasketRecovery/Application/UseCases/BindMigratedBasketStrategyUseCase.mqh>
-#include <BasketRecovery/Application/Services/StrategyEvaluationScheduler.mqh>
+#include <BasketRecovery/Application/FastPath/SymbolBasketIndex.mqh>
+#include <BasketRecovery/Application/Services/TimerFallbackEvaluationService.mqh>
+#include <BasketRecovery/Application/Services/SystemHealthCheckService.mqh>
+#include <BasketRecovery/Application/FastPath/FastCommandStagingBuffer.mqh>
+#include <BasketRecovery/Application/FastPath/InMemoryHotPathDiagnostics.mqh>
 #include <BasketRecovery/Application/Ports/IStrategyEngine.mqh>
 #include <BasketRecovery/Application/Commands/StrategyCommands.mqh>
 #include <BasketRecovery/Domain/Factories/BasketFactory.mqh>
@@ -251,7 +256,9 @@ void TestEvaluateStrategyDispatchAndEnqueue(void)
    repository.Save(basket);
    marketProvider.SetQuote("XAUUSD",2350.0,2350.2,0.01);
 
-   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator);
+   CInMemorySnapshotStore snapshotStore(&clock);
+
+   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator,&snapshotStore);
    CEvaluateStrategyCommandHandler evaluateHandler(&useCase,&marketProvider);
    CCommandDispatcher dispatcher;
    dispatcher.RegisterHandler(&evaluateHandler,40);
@@ -288,7 +295,9 @@ void TestEvaluateRejectsStaleVersion(void)
    repository.Save(basket);
    marketProvider.SetQuote("XAUUSD",2350.0,2350.2,0.01);
 
-   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator);
+   CInMemorySnapshotStore snapshotStore(&clock);
+
+   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator,&snapshotStore);
    CEvaluateStrategyCommandHandler evaluateHandler(&useCase,&marketProvider);
    CCommandDispatcher dispatcher;
    dispatcher.RegisterHandler(&evaluateHandler,40);
@@ -319,7 +328,9 @@ void TestEvaluateRejectsHashMismatch(void)
    repository.Save(basket);
    marketProvider.SetQuote("XAUUSD",2350.0,2350.2,0.01);
 
-   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator);
+   CInMemorySnapshotStore snapshotStore(&clock);
+
+   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator,&snapshotStore);
    CEvaluateStrategyCommandHandler evaluateHandler(&useCase,&marketProvider);
    CCommandDispatcher dispatcher;
    dispatcher.RegisterHandler(&evaluateHandler,40);
@@ -349,7 +360,9 @@ void TestEvaluateRejectsMigrationRequired(void)
    CBasketAggregate basket=BuildMigrationRequiredBasket("eval-migration");
    repository.Save(basket);
 
-   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator);
+   CInMemorySnapshotStore snapshotStore(&clock);
+
+   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator,&snapshotStore);
    CEvaluateStrategyCommandHandler evaluateHandler(&useCase,&marketProvider);
    CCommandDispatcher dispatcher;
    dispatcher.RegisterHandler(&evaluateHandler,40);
@@ -479,10 +492,7 @@ void TestExecutionStubProducesPendingEvent(void)
 void TestActiveOnlyStrategyEvaluationScheduling(void)
   {
    CInMemoryBasketRepository repository;
-   CInMemoryCommandQueue queue;
-   CTestClock clock;
-   CTestSequentialIdGenerator idGenerator;
-   CStrategyEvaluationScheduler scheduler(&repository,&queue,&clock,&idGenerator,0,10);
+   CSymbolBasketIndex symbolIndex;
 
    CBasketAggregate active=BuildBoundActiveBasket("sched-active",CStrategyProfileTestFixture::MinimalValidJson());
    CBasketAggregate pending=BuildBoundActiveBasket("sched-pending",CStrategyProfileTestFixture::MinimalValidJson());
@@ -491,10 +501,12 @@ void TestActiveOnlyStrategyEvaluationScheduling(void)
    repository.Save(active);
    repository.Save(pending);
    repository.Save(migration);
+   symbolIndex.Rebuild(&repository);
 
-   int scheduled=scheduler.RunIfDue();
-   CTestAssert::EqualInt(1,scheduled,"Only one ACTIVE bound basket must be scheduled");
-   CTestAssert::EqualInt(1,queue.PendingCount(),"Scheduler must enqueue one evaluate command");
+   CBasketId basketIds[];
+   int count=symbolIndex.FindActiveBasketIds("XAUUSD",basketIds,10);
+   CTestAssert::EqualInt(1,count,"Symbol index must return only ACTIVE baskets for symbol");
+   CTestAssert::EqualString("sched-active",basketIds[0].Value(),"Symbol index must map active basket id");
   }
 
 void TestTimerPipelineOrdering(void)
@@ -514,8 +526,12 @@ void TestTimerPipelineOrdering(void)
    CEventDispatcher eventDispatcher;
    CCommandProcessor processor(&queue,&commandDispatcher,&eventDispatcher,&idempotencyStore);
 
-   CStrategyEvaluationScheduler scheduler(&repository,&queue,&clock,&idGenerator,0,5);
-   CApplicationTimerPipeline pipeline(NULL,&processor,NULL,&scheduler,0);
+   CFastCommandStagingBuffer stagingQueue;
+   CTimerFallbackEvaluationService fallback(&repository,NULL,NULL,&stagingQueue,NULL,
+                                            CFastPathConfig::Create(1,2000,250,5,60000));
+   CInMemoryHotPathDiagnostics diagnostics;
+   CSystemHealthCheckService healthCheck(&diagnostics,60000);
+   CApplicationTimerPipeline pipeline(NULL,&processor,NULL,NULL,&fallback,&healthCheck,&stagingQueue,0);
 
    CClosePositionsCommand *closeCommand=new CClosePositionsCommand();
    FillStrategyCommandBase(closeCommand,basket,"timer-close-first");
@@ -527,10 +543,9 @@ void TestTimerPipelineOrdering(void)
    int eventsProcessed=0;
    int evaluationsScheduled=0;
    CTestAssert::True(pipeline.OnTimer(commandsProcessed,eventsProcessed,evaluationsScheduled).IsOk(),"Timer pipeline must succeed");
-   CTestAssert::EqualInt(1,commandsProcessed,"Timer pipeline must process queued command before scheduling");
+   CTestAssert::EqualInt(1,commandsProcessed,"Timer pipeline must process queued command on slow path");
    CTestAssert::True(idempotencyStore.IsProcessed("timer-close-first"),"Queued command must be processed in timer cycle");
-   CTestAssert::EqualInt(1,evaluationsScheduled,"Strategy scheduler must run after command processor");
-   CTestAssert::EqualInt(1,queue.PendingCount(),"Scheduler must leave evaluate command pending for next cycle");
+   CTestAssert::EqualInt(0,evaluationsScheduled,"Timer must not schedule primary strategy evaluation");
   }
 
 CProfileSnapshot BuildDefaultProfileSnapshot(void)
@@ -579,7 +594,9 @@ void TestHandlerRegistrationMap(void)
    CStrategyEngineAdapter strategyEngine;
    CInMemoryCommandQueue queue;
    CInMemoryMarketQuoteProvider marketProvider;
-   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator);
+   CInMemorySnapshotStore snapshotStore(&clock);
+
+   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator,&snapshotStore);
 
    CCreateBasketCommandHandler createHandler(&repository,&clock,&idGenerator,profileSnapshot);
    CActivateBasketCommandHandler activateHandler(&repository,&transitionHandler,&clock,&idGenerator);

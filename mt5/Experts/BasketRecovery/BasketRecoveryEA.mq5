@@ -13,8 +13,14 @@ input string InpApiBaseUrl                = "";
 input string InpApiKey                    = "";
 input int    InpRestPollIntervalMs        = 0;
 input int    InpApplicationTimerIntervalMs = 250;
-input int    InpStrategyEvalIntervalMs    = 5000;
-input int    InpMaxBasketsPerEvalCycle    = 5;
+input int    InpMaxBasketsPerTick         = 3;
+input int    InpReconciliationIntervalMs  = 30000;
+input int    InpQuoteStaleThresholdMs     = 5000;
+input int    InpMaxSpreadPoints           = 500;
+input int    InpMaxEvaluationAgeMs        = 2000;
+input int    InpMinEvaluationIntervalMs   = 250;
+input int    InpMaterialQuoteChangePoints = 5;
+input int    InpTickSilenceFallbackMs     = 10000;
 
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
@@ -31,8 +37,14 @@ int OnInit()
                                                  InpApiKey,
                                                  InpRestPollIntervalMs,
                                                  InpApplicationTimerIntervalMs,
-                                                 InpStrategyEvalIntervalMs,
-                                                 InpMaxBasketsPerEvalCycle);
+                                                 InpMaxBasketsPerTick,
+                                                 InpReconciliationIntervalMs,
+                                                 InpQuoteStaleThresholdMs,
+                                                 InpMaxSpreadPoints,
+                                                 InpMaxEvaluationAgeMs,
+                                                 InpMinEvaluationIntervalMs,
+                                                 InpMaterialQuoteChangePoints,
+                                                 InpTickSilenceFallbackMs);
    if(g_applicationContext==NULL)
      {
       Print("BasketRecoveryEA initialization failed");
@@ -51,7 +63,7 @@ int OnInit()
    Print("BasketRecoveryEA v0.0.3 started | profile=",InpProfileName,
          " | account=",AccountInfoInteger(ACCOUNT_LOGIN),
          " | app_timer_ms=",timerIntervalMs,
-         " | strategy_eval_ms=",InpStrategyEvalIntervalMs);
+         " | fast_tick_budget=",InpMaxBasketsPerTick);
 
    return INIT_SUCCEEDED;
   }
@@ -76,7 +88,10 @@ void OnDeinit(const int reason)
 
 void OnTick()
   {
-   return;
+   if(g_applicationContext==NULL)
+      return;
+
+   g_applicationContext.OnTick(_Symbol);
   }
 
 void OnTimer()

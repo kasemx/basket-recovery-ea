@@ -6,6 +6,7 @@
 #include <BasketRecovery/Application/Ports/ICommandQueue.mqh>
 #include <BasketRecovery/Application/Ports/IClock.mqh>
 #include <BasketRecovery/Application/Ports/IUniqueIdGenerator.mqh>
+#include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
 #include <BasketRecovery/Application/Services/StrategyEvaluationContextFactory.mqh>
 #include <BasketRecovery/Application/Services/StrategyDecisionCommandMapper.mqh>
 #include <BasketRecovery/Application/Commands/StrategyCommands.mqh>
@@ -18,11 +19,12 @@
 class CEvaluateBasketStrategyUseCase
   {
 private:
-   IBasketRepository  *m_repository;
-   IStrategyEngine    *m_strategyEngine;
-   ICommandQueue      *m_queue;
-   IClock             *m_clock;
-   IUniqueIdGenerator *m_idGenerator;
+   IBasketRepository       *m_repository;
+   IStrategyEngine         *m_strategyEngine;
+   ICommandQueue           *m_queue;
+   IClock                  *m_clock;
+   IUniqueIdGenerator      *m_idGenerator;
+   IPositionSnapshotStore  *m_snapshotStore;
 
 public:
    IBasketRepository* Repository(void) const { return m_repository; }
@@ -32,20 +34,20 @@ public:
                                                     IStrategyEngine *strategyEngine,
                                                     ICommandQueue *queue,
                                                     IClock *clock,
-                                                    IUniqueIdGenerator *idGenerator)
+                                                    IUniqueIdGenerator *idGenerator,
+                                                    IPositionSnapshotStore *snapshotStore)
      {
       m_repository=repository;
       m_strategyEngine=strategyEngine;
       m_queue=queue;
       m_clock=clock;
       m_idGenerator=idGenerator;
+      m_snapshotStore=snapshotStore;
      }
 
    CResult<int>      Execute(const CEvaluateStrategyCommand &command,
                              const CMarketContext &market,
-                             const CRiskRuntimeContext &riskContext,
-                             const double adverseMovePips,
-                             const double floatingProfitUsd)
+                             const CRiskRuntimeContext &riskContext)
      {
       if(m_repository==NULL)
          return CResult<int>::Fail(BRE_ERR_BASKET_NOT_FOUND,"Basket repository is required");
@@ -64,8 +66,13 @@ public:
       if(guardResult.IsFail())
          return CResult<int>::Fail(guardResult.ErrorCode(),guardResult.ErrorMessage());
 
-      CStrategyEvaluationContext context=CStrategyEvaluationContextFactory::FromBasket(basket,market,riskContext,
-                                                                                       adverseMovePips,floatingProfitUsd);
+      CResult<CStrategyEvaluationContext> contextResult=
+         CStrategyEvaluationContextFactory::TryBuild(basket,market,riskContext,m_snapshotStore);
+      if(contextResult.IsFail())
+         return CResult<int>::Fail(contextResult.ErrorCode(),contextResult.ErrorMessage());
+
+      CStrategyEvaluationContext context;
+      contextResult.TryGetValue(context);
       CStrategyDecisionSet decisions=m_strategyEngine.EvaluateAll(context);
 
       CStrategyDecisionCommandMapper mapper;
@@ -102,6 +109,50 @@ public:
       CVoidResult saveResult=m_repository.Save(basket);
       if(saveResult.IsFail())
          return CResult<int>::Fail(saveResult.ErrorCode(),saveResult.ErrorMessage());
+
+      return CResult<int>::Ok(mappedCount);
+     }
+
+   CResult<int>      ExecuteFastPath(const CBasketAggregate &basket,
+                                     const CMarketContext &market,
+                                     const CRiskRuntimeContext &riskContext,
+                                     ICommandQueue *stagingQueue,
+                                     const string correlationKey)
+     {
+      if(stagingQueue==NULL)
+         return CResult<int>::Fail(BRE_ERR_COMMAND_INVALID,"Staging queue is required");
+
+      CResult<CStrategyEvaluationContext> contextResult=
+         CStrategyEvaluationContextFactory::TryBuild(basket,market,riskContext,m_snapshotStore);
+      if(contextResult.IsFail())
+         return CResult<int>::Fail(contextResult.ErrorCode(),contextResult.ErrorMessage());
+
+      CStrategyEvaluationContext context;
+      contextResult.TryGetValue(context);
+      CStrategyDecisionSet decisions=m_strategyEngine.EvaluateAll(context);
+
+      CStrategyDecisionCommandMapper mapper;
+      ICommand *mappedCommands[];
+      CResult<int> mapResult=mapper.MapDecisionSet(decisions,
+                                                   basket.Id(),
+                                                   basket.Version(),
+                                                   basket.StrategyProfileHash(),
+                                                   correlationKey,
+                                                   mappedCommands);
+      if(mapResult.IsFail())
+         return mapResult;
+
+      int mappedCount=0;
+      mapResult.TryGetValue(mappedCount);
+      for(int i=0;i<mappedCount;i++)
+        {
+         if(mappedCommands[i]==NULL)
+            continue;
+         CCommandBase *commandBase=(CCommandBase*)mappedCommands[i];
+         commandBase.SetId(CCommandId(m_idGenerator.NewGuid()));
+         commandBase.SetEnqueuedAt(m_clock!=NULL ? m_clock.Now() : 0);
+         stagingQueue.Enqueue(mappedCommands[i]);
+        }
 
       return CResult<int>::Ok(mappedCount);
      }

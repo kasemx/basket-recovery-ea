@@ -1,6 +1,8 @@
 #ifndef BASKET_RECOVERY_APPLICATION_EA_CONFIGURATION_MQH
 #define BASKET_RECOVERY_APPLICATION_EA_CONFIGURATION_MQH
 
+#include <BasketRecovery/Application/Configuration/MarketSafetyConfig.mqh>
+
 class CEAConfiguration
   {
 private:
@@ -15,6 +17,15 @@ private:
    int    m_applicationTimerIntervalMs;
    int    m_strategyEvalIntervalMs;
    int    m_maxBasketsPerEvalCycle;
+   int    m_marketRefreshIntervalMs;
+   int    m_reconciliationIntervalMs;
+   int    m_maxBasketsPerReconcileCycle;
+   int    m_maxBasketsPerTick;
+   int    m_maxEvaluationAgeMs;
+   int    m_minEvaluationIntervalMs;
+   int    m_materialQuoteChangePoints;
+   int    m_tickSilenceFallbackMs;
+   CMarketSafetyConfig m_marketSafetyConfig;
    bool   m_isValid;
 
 public:
@@ -31,6 +42,15 @@ public:
       m_applicationTimerIntervalMs=250;
       m_strategyEvalIntervalMs=5000;
       m_maxBasketsPerEvalCycle=5;
+      m_marketRefreshIntervalMs=1000;
+      m_reconciliationIntervalMs=30000;
+      m_maxBasketsPerReconcileCycle=3;
+      m_maxBasketsPerTick=3;
+      m_maxEvaluationAgeMs=2000;
+      m_minEvaluationIntervalMs=250;
+      m_materialQuoteChangePoints=5;
+      m_tickSilenceFallbackMs=10000;
+      m_marketSafetyConfig=CMarketSafetyConfig();
       m_isValid=false;
      }
 
@@ -45,6 +65,15 @@ public:
    int               ApplicationTimerIntervalMs(void) const { return m_applicationTimerIntervalMs; }
    int               StrategyEvalIntervalMs(void) const { return m_strategyEvalIntervalMs; }
    int               MaxBasketsPerEvalCycle(void) const { return m_maxBasketsPerEvalCycle; }
+   int               MarketRefreshIntervalMs(void) const { return m_marketRefreshIntervalMs; }
+   int               ReconciliationIntervalMs(void) const { return m_reconciliationIntervalMs; }
+   int               MaxBasketsPerReconcileCycle(void) const { return m_maxBasketsPerReconcileCycle; }
+   int               MaxBasketsPerTick(void) const { return m_maxBasketsPerTick; }
+   int               MaxEvaluationAgeMs(void) const { return m_maxEvaluationAgeMs; }
+   int               MinEvaluationIntervalMs(void) const { return m_minEvaluationIntervalMs; }
+   int               MaterialQuoteChangePoints(void) const { return m_materialQuoteChangePoints; }
+   int               TickSilenceFallbackMs(void) const { return m_tickSilenceFallbackMs; }
+   CMarketSafetyConfig MarketSafetyConfig(void) const { return m_marketSafetyConfig; }
    bool              IsValid(void) const { return m_isValid; }
 
    void              SetProfileName(const string value) { m_profileName=value; }
@@ -58,6 +87,15 @@ public:
    void              SetApplicationTimerIntervalMs(const int value) { m_applicationTimerIntervalMs=value; }
    void              SetStrategyEvalIntervalMs(const int value) { m_strategyEvalIntervalMs=value; }
    void              SetMaxBasketsPerEvalCycle(const int value) { m_maxBasketsPerEvalCycle=value; }
+   void              SetMarketRefreshIntervalMs(const int value) { m_marketRefreshIntervalMs=value; }
+   void              SetReconciliationIntervalMs(const int value) { m_reconciliationIntervalMs=value; }
+   void              SetMaxBasketsPerReconcileCycle(const int value) { m_maxBasketsPerReconcileCycle=value; }
+   void              SetMaxBasketsPerTick(const int value) { m_maxBasketsPerTick=value; }
+   void              SetMaxEvaluationAgeMs(const int value) { m_maxEvaluationAgeMs=value; }
+   void              SetMinEvaluationIntervalMs(const int value) { m_minEvaluationIntervalMs=value; }
+   void              SetMaterialQuoteChangePoints(const int value) { m_materialQuoteChangePoints=value; }
+   void              SetTickSilenceFallbackMs(const int value) { m_tickSilenceFallbackMs=value; }
+   void              SetMarketSafetyConfig(const CMarketSafetyConfig &value) { m_marketSafetyConfig=value; }
    void              SetIsValid(const bool value) { m_isValid=value; }
   };
 
