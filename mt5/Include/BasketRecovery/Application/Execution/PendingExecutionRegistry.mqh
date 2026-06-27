@@ -140,10 +140,9 @@ public:
      {
       if(index<0 || index>=ArraySize(m_entries))
          return false;
-      ENUM_BRE_TRADE_EXECUTION_STATUS fromStatus=m_entries[index].Status();
-      if(toStatus==BRE_TRADE_EXEC_STATUS_SUBMITTED &&
-         !CBrokerSubmissionTransitionGate::CanTransitionToSubmitted(fromStatus,true))
+      if(toStatus==BRE_TRADE_EXEC_STATUS_SUBMITTED)
          return false;
+      ENUM_BRE_TRADE_EXECUTION_STATUS fromStatus=m_entries[index].Status();
       if(!CPendingExecutionTransitionRules::CanTransition(fromStatus,toStatus))
          return false;
       m_entries[index].SetStatus(toStatus);
@@ -165,7 +164,17 @@ public:
      {
       if(!brokerSubmitAccepted)
          return false;
-      return TryTransitionByRequestId(executionRequestId,BRE_TRADE_EXEC_STATUS_SUBMITTED,updatedEntry);
+      int index=FindIndexByExecutionRequestId(executionRequestId);
+      if(index<0)
+         return false;
+      ENUM_BRE_TRADE_EXECUTION_STATUS fromStatus=m_entries[index].Status();
+      if(!CBrokerSubmissionTransitionGate::CanTransitionToSubmitted(fromStatus,true))
+         return false;
+      if(!CPendingExecutionTransitionRules::CanTransition(fromStatus,BRE_TRADE_EXEC_STATUS_SUBMITTED))
+         return false;
+      m_entries[index].SetStatus(BRE_TRADE_EXEC_STATUS_SUBMITTED);
+      updatedEntry=m_entries[index];
+      return true;
      }
 
    int               CollectTimeoutDue(const datetime nowUtc,int &dueIndices[])

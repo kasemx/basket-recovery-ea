@@ -337,6 +337,8 @@ public:
                                                               pendingExecutionRegistry,
                                                               restartWarnings);
       context.RegisterSubmissionPreparationRuntime(submissionPreparer,pendingExecutionStore);
+      // Sprint 6E: CSimulatedSubmissionGateway / CSubmitPreparedExecutionUseCase remain test-only.
+      // CSubmissionGatewayCompositionGuard blocks bootstrap auto-wire of simulated gateways.
 
       CFastPathDiagnosticReporter *diagnosticReporter=kernel.DiagnosticReporter();
       if(diagnosticReporter!=NULL)

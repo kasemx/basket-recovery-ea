@@ -157,6 +157,8 @@ public:
      }
 
    bool              IsMt5ExecutorWiredToTimerPipeline(void) const { return false; }
+   bool              IsSubmissionGatewayWiredToProduction(void) const { return false; }
+   bool              IsSubmitPreparedExecutionWiredToTimer(void) const { return false; }
 
    void              Shutdown(void)
      {

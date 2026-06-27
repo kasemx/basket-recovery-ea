@@ -1,0 +1,23 @@
+#ifndef BRE_DOMAIN_SUBMISSION_GATEWAY_STATUS_MQH
+#define BRE_DOMAIN_SUBMISSION_GATEWAY_STATUS_MQH
+
+enum ENUM_BRE_SUBMISSION_GATEWAY_STATUS
+  {
+   BRE_SUBMISSION_GW_NONE=0,
+   BRE_SUBMISSION_GW_ACCEPTED=1,
+   BRE_SUBMISSION_GW_REJECTED=2,
+   BRE_SUBMISSION_GW_UNKNOWN=3
+  };
+
+inline string SubmissionGatewayStatusLabel(const ENUM_BRE_SUBMISSION_GATEWAY_STATUS status)
+  {
+   switch(status)
+     {
+      case BRE_SUBMISSION_GW_ACCEPTED: return "ACCEPTED";
+      case BRE_SUBMISSION_GW_REJECTED: return "REJECTED";
+      case BRE_SUBMISSION_GW_UNKNOWN: return "UNKNOWN";
+      default: return "NONE";
+     }
+  }
+
+#endif
