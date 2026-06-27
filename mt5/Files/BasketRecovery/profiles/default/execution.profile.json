@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "profile_name": "default",
+  "slippage_points": 10,
+  "max_trade_retries": 3,
+  "magic_number_base": 202606000,
+  "command_batch_size": 10,
+  "trade_request_batch_size": 5,
+  "rest_poll_interval_ms": 3000
+}

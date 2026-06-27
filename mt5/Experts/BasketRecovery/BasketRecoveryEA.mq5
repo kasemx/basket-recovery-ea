@@ -1,0 +1,97 @@
+#property copyright "Basket Recovery EA"
+#property link      "https://github.com/basket-recovery-ea"
+#property version   "0.0.2"
+
+#include <BasketRecovery/Interfaces/Bootstrapper.mqh>
+#include <BasketRecovery/Infrastructure/MT5/Mt5TradeTransactionNormalizer.mqh>
+
+input string InpProfileName        = "default";
+input string InpLogFilePath        = "BasketRecovery/logs/basket_recovery.log";
+input int    InpLogLevel           = 2;
+input string InpAccountLabel       = "primary";
+input string InpApiBaseUrl         = "";
+input string InpApiKey             = "";
+input int    InpRestPollIntervalMs = 0;
+
+CApplicationContext *g_applicationContext=NULL;
+CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
+
+int OnInit()
+  {
+   MathSrand((int)GetTickCount());
+
+   g_applicationContext=CBootstrapper::Bootstrap(InpProfileName,
+                                                 InpLogFilePath,
+                                                 InpLogLevel,
+                                                 InpAccountLabel,
+                                                 InpApiBaseUrl,
+                                                 InpApiKey,
+                                                 InpRestPollIntervalMs);
+   if(g_applicationContext==NULL)
+     {
+      Print("BasketRecoveryEA initialization failed");
+      return INIT_FAILED;
+     }
+
+   g_tradeTransactionNormalizer=new CMt5TradeTransactionNormalizer(NULL);
+
+   if(g_applicationContext.IsRestIngestionConfigured())
+     {
+      int pollIntervalMs=g_applicationContext.RestPollIntervalMs();
+      if(!EventSetMillisecondTimer(pollIntervalMs))
+        {
+         Print("BasketRecoveryEA failed to start REST poll timer | interval_ms=",pollIntervalMs);
+         return INIT_FAILED;
+        }
+     }
+
+   Print("BasketRecoveryEA v0.0.2 started | profile=",InpProfileName,
+         " | account=",AccountInfoInteger(ACCOUNT_LOGIN),
+         " | rest_poll_ms=",g_applicationContext.RestPollIntervalMs());
+
+   return INIT_SUCCEEDED;
+  }
+
+void OnDeinit(const int reason)
+  {
+   EventKillTimer();
+
+   if(g_tradeTransactionNormalizer!=NULL)
+     {
+      delete g_tradeTransactionNormalizer;
+      g_tradeTransactionNormalizer=NULL;
+     }
+
+   if(g_applicationContext!=NULL)
+     {
+      g_applicationContext.LogShutdown(reason);
+      delete g_applicationContext;
+      g_applicationContext=NULL;
+     }
+  }
+
+void OnTick()
+  {
+   return;
+  }
+
+void OnTimer()
+  {
+   if(g_applicationContext==NULL)
+      return;
+
+   g_applicationContext.OnRestPollTimer();
+  }
+
+void OnTradeTransaction(const MqlTradeTransaction &trans,
+                        const MqlTradeRequest &request,
+                        const MqlTradeResult &result)
+  {
+   if(g_applicationContext==NULL || g_tradeTransactionNormalizer==NULL)
+      return;
+
+   CNormalizedTradeTransaction normalized=
+      g_tradeTransactionNormalizer.Normalize(trans,request,result);
+
+   g_applicationContext.ApplyNormalizedTransaction(normalized);
+  }

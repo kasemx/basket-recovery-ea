@@ -1,0 +1,25 @@
+# MT5 / MetaEditor
+*.ex5
+*.ex4
+*.log
+MQL5/Logs/
+MQL5/Profiles/Tester/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Secrets
+.env
+*.env
+credentials.json
+**/secrets/
+
+# Build / temp
+*.tmp
+*.bak
+*.obj
+*.pch

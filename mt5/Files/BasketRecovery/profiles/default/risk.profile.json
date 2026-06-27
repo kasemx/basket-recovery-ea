@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "profile_name": "default",
+  "target_risk_pct": 1.0,
+  "max_risk_pct": 1.2,
+  "max_risk_release_threshold": 0.95,
+  "break_even_realized_fraction": 0.33,
+  "risk_eval_debounce_ms": 100,
+  "wait_details_timeout_minutes": 30
+}

@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "profile_name": "default",
+  "tp1_realize_fraction": 0.33,
+  "tp2_realize_fraction": 0.66,
+  "require_floating_profit_positive": true
+}

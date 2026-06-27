@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "profile_name": "default",
+  "safety_buffer_pips": 0.5,
+  "include_spread": true,
+  "sync_retry_count": 3
+}
