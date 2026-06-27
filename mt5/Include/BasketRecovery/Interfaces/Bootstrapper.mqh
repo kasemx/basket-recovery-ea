@@ -50,7 +50,10 @@ public:
                                          const int maxEvaluationAgeMs,
                                          const int minEvaluationIntervalMs,
                                          const int materialQuoteChangePoints,
-                                         const int tickSilenceFallbackMs)
+                                         const int tickSilenceFallbackMs,
+                                         const bool enableFastPathDiagnostics,
+                                         const int fastPathDiagnosticIntervalMs,
+                                         const bool enableFastPathNoBasketHeartbeat)
      {
       CResult<CEAConfiguration> configurationResult=
          CMt5ConfigurationLoader::LoadFromInputs(profileName,logFilePath,logLevel,accountLabel,apiBaseUrl,apiKey,
@@ -58,7 +61,9 @@ public:
                                                  maxBasketsPerTick,reconciliationIntervalMs,
                                                  quoteStaleThresholdMs,maxSpreadPoints,
                                                  maxEvaluationAgeMs,minEvaluationIntervalMs,
-                                                 materialQuoteChangePoints,tickSilenceFallbackMs);
+                                                 materialQuoteChangePoints,tickSilenceFallbackMs,
+                                                 enableFastPathDiagnostics,fastPathDiagnosticIntervalMs,
+                                                 enableFastPathNoBasketHeartbeat);
 
       if(configurationResult.IsFail())
         {
@@ -168,11 +173,11 @@ public:
          new CBasketPositionReconciler(brokerPositionReader,snapshotStore,
                                        persistenceManager.BasketRepository(),logger,clock);
       CBrokerReconciliationService *reconciliationService=
-         new CBrokerReconciliationService(positionReconciler);
+         new CBrokerReconciliationService(brokerPositionReader,positionReconciler,true);
       container.RegisterReconciliationService(reconciliationService,true);
 
       CReconciliationSchedulerService *reconciliationScheduler=
-         new CReconciliationSchedulerService(positionReconciler,
+         new CReconciliationSchedulerService(reconciliationService.Reconciler(),
                                              configuration.ReconciliationIntervalMs(),
                                              configuration.MaxBasketsPerReconcileCycle());
 
@@ -180,7 +185,10 @@ public:
                                                              configuration.MaxEvaluationAgeMs(),
                                                              configuration.MinEvaluationIntervalMs(),
                                                              configuration.MaterialQuoteChangePoints(),
-                                                             configuration.TickSilenceFallbackMs());
+                                                             configuration.TickSilenceFallbackMs(),
+                                                             configuration.EnableFastPathDiagnostics(),
+                                                             configuration.FastPathDiagnosticIntervalMs(),
+                                                             configuration.EnableFastPathNoBasketHeartbeat());
 
       CRestClientConfig restConfig;
       restConfig.SetBaseUrl(configuration.ApiBaseUrl());
@@ -202,8 +210,6 @@ public:
          logger.Error("SYSTEM","Bootstrap","","Startup reconciliation failed",reconciliationResult.ErrorCode());
          delete reconciliationScheduler;
          delete marketContextProvider;
-         delete brokerPositionReader;
-         delete positionReconciler;
          delete persistenceManager;
          delete container;
          return NULL;
@@ -218,8 +224,6 @@ public:
          delete kernel;
          delete reconciliationScheduler;
          delete marketContextProvider;
-         delete brokerPositionReader;
-         delete positionReconciler;
          delete persistenceManager;
          delete container;
          return NULL;
@@ -230,10 +234,17 @@ public:
         {
          delete context;
          delete kernel;
-         delete brokerPositionReader;
-         delete positionReconciler;
          delete container;
          return NULL;
+        }
+
+      CFastPathDiagnosticReporter *diagnosticReporter=kernel.DiagnosticReporter();
+      if(diagnosticReporter!=NULL)
+        {
+         int symbolIndexCount=0;
+         if(kernel.SymbolIndex()!=NULL)
+            symbolIndexCount=kernel.SymbolIndex().TotalActiveBasketCount();
+         diagnosticReporter.EmitStartupLine(symbolIndexCount,configuration.MaxBasketsPerTick());
         }
 
       logger.Info("SYSTEM","Startup",

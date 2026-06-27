@@ -6,6 +6,7 @@
 #include <BasketRecovery/Application/FastPath/MaterialQuoteChangePolicy.mqh>
 #include <BasketRecovery/Application/FastPath/QuoteSequenceGuard.mqh>
 #include <BasketRecovery/Application/FastPath/ForceReevaluationFlag.mqh>
+#include <BasketRecovery/Application/FastPath/FastPathSkipReason.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 #include <BasketRecovery/Domain/Strategy/Services/ExecutionZoneResolver.mqh>
 #include <BasketRecovery/Domain/Strategy/ValueObjects/ProfitDistributionPlan.mqh>
@@ -78,6 +79,49 @@ public:
       m_config=config;
      }
 
+   ENUM_BRE_FAST_PATH_SKIP_REASON ResolveSkipReason(const CBasketAggregate &basket,
+                                                  CBasketFastState &state,
+                                                  const double bid,
+                                                  const double ask,
+                                                  const double point,
+                                                  const double pipSize,
+                                                  const ulong quoteSequence,
+                                                  const datetime nowUtc) const
+     {
+      if(CForceReevaluationFlag::IsSet(state))
+         return BRE_FAST_SKIP_NONE;
+
+      if(state.NextAllowedEvaluationUtc()>0 && nowUtc<state.NextAllowedEvaluationUtc())
+         return BRE_FAST_SKIP_MIN_INTERVAL_GATE;
+
+      if(m_sequenceGuard.IsDuplicateSequence(state.LastEvaluatedQuoteSequence(),quoteSequence))
+         return BRE_FAST_SKIP_DUPLICATE_QUOTE_SEQUENCE;
+
+      double currentMid=(bid+ask)*0.5;
+      double previousMid=(state.LastEvaluatedBid()+state.LastEvaluatedAsk())*0.5;
+      if(previousMid<=0.0)
+         previousMid=currentMid;
+
+      if(CrossedProfitLevel(basket,previousMid,currentMid))
+         return BRE_FAST_SKIP_NONE;
+
+      if(CrossedRecoveryThreshold(basket,previousMid,currentMid,pipSize))
+         return BRE_FAST_SKIP_NONE;
+
+      if(m_materialPolicy.HasMaterialChange(state.LastEvaluatedBid(),state.LastEvaluatedAsk(),
+                                            bid,ask,point,m_config.MaterialQuoteChangePoints()))
+         return BRE_FAST_SKIP_NONE;
+
+      if(state.LastEvaluatedTickTimeMsc()>0)
+        {
+         ulong elapsedMs=(ulong)GetTickCount64()-state.LastEvaluatedTickTimeMsc();
+         if(elapsedMs>=(ulong)m_config.MaxEvaluationAgeMs())
+            return BRE_FAST_SKIP_NONE;
+        }
+
+      return BRE_FAST_SKIP_TRIGGER_POLICY;
+     }
+
    bool              ShouldEvaluate(const CBasketAggregate &basket,
                                     CBasketFastState &state,
                                     const double bid,
@@ -87,38 +131,7 @@ public:
                                     const ulong quoteSequence,
                                     const datetime nowUtc) const
      {
-      if(CForceReevaluationFlag::IsSet(state))
-         return true;
-
-      if(state.NextAllowedEvaluationUtc()>0 && nowUtc<state.NextAllowedEvaluationUtc())
-         return false;
-
-      if(m_sequenceGuard.IsDuplicateSequence(state.LastEvaluatedQuoteSequence(),quoteSequence))
-         return false;
-
-      double currentMid=(bid+ask)*0.5;
-      double previousMid=(state.LastEvaluatedBid()+state.LastEvaluatedAsk())*0.5;
-      if(previousMid<=0.0)
-         previousMid=currentMid;
-
-      if(CrossedProfitLevel(basket,previousMid,currentMid))
-         return true;
-
-      if(CrossedRecoveryThreshold(basket,previousMid,currentMid,pipSize))
-         return true;
-
-      if(m_materialPolicy.HasMaterialChange(state.LastEvaluatedBid(),state.LastEvaluatedAsk(),
-                                            bid,ask,point,m_config.MaterialQuoteChangePoints()))
-         return true;
-
-      if(state.LastEvaluatedTickTimeMsc()>0)
-        {
-         ulong elapsedMs=(ulong)GetTickCount64()-state.LastEvaluatedTickTimeMsc();
-         if(elapsedMs>=(ulong)m_config.MaxEvaluationAgeMs())
-            return true;
-        }
-
-      return false;
+      return ResolveSkipReason(basket,state,bid,ask,point,pipSize,quoteSequence,nowUtc)==BRE_FAST_SKIP_NONE;
      }
   };
 

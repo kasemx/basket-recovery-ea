@@ -25,6 +25,9 @@ private:
    int    m_minEvaluationIntervalMs;
    int    m_materialQuoteChangePoints;
    int    m_tickSilenceFallbackMs;
+   bool   m_enableFastPathDiagnostics;
+   int    m_fastPathDiagnosticIntervalMs;
+   bool   m_enableFastPathNoBasketHeartbeat;
    CMarketSafetyConfig m_marketSafetyConfig;
    bool   m_isValid;
 
@@ -50,6 +53,9 @@ public:
       m_minEvaluationIntervalMs=250;
       m_materialQuoteChangePoints=5;
       m_tickSilenceFallbackMs=10000;
+      m_enableFastPathDiagnostics=false;
+      m_fastPathDiagnosticIntervalMs=1000;
+      m_enableFastPathNoBasketHeartbeat=false;
       m_marketSafetyConfig=CMarketSafetyConfig();
       m_isValid=false;
      }
@@ -73,6 +79,9 @@ public:
    int               MinEvaluationIntervalMs(void) const { return m_minEvaluationIntervalMs; }
    int               MaterialQuoteChangePoints(void) const { return m_materialQuoteChangePoints; }
    int               TickSilenceFallbackMs(void) const { return m_tickSilenceFallbackMs; }
+   bool              EnableFastPathDiagnostics(void) const { return m_enableFastPathDiagnostics; }
+   int               FastPathDiagnosticIntervalMs(void) const { return m_fastPathDiagnosticIntervalMs; }
+   bool              EnableFastPathNoBasketHeartbeat(void) const { return m_enableFastPathNoBasketHeartbeat; }
    CMarketSafetyConfig MarketSafetyConfig(void) const { return m_marketSafetyConfig; }
    bool              IsValid(void) const { return m_isValid; }
 
@@ -95,6 +104,9 @@ public:
    void              SetMinEvaluationIntervalMs(const int value) { m_minEvaluationIntervalMs=value; }
    void              SetMaterialQuoteChangePoints(const int value) { m_materialQuoteChangePoints=value; }
    void              SetTickSilenceFallbackMs(const int value) { m_tickSilenceFallbackMs=value; }
+   void              SetEnableFastPathDiagnostics(const bool value) { m_enableFastPathDiagnostics=value; }
+   void              SetFastPathDiagnosticIntervalMs(const int value) { m_fastPathDiagnosticIntervalMs=value; }
+   void              SetEnableFastPathNoBasketHeartbeat(const bool value) { m_enableFastPathNoBasketHeartbeat=value; }
    void              SetMarketSafetyConfig(const CMarketSafetyConfig &value) { m_marketSafetyConfig=value; }
    void              SetIsValid(const bool value) { m_isValid=value; }
   };

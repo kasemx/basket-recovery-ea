@@ -23,7 +23,10 @@ public:
                                                  const int maxEvaluationAgeMs,
                                                  const int minEvaluationIntervalMs,
                                                  const int materialQuoteChangePoints,
-                                                 const int tickSilenceFallbackMs)
+                                                 const int tickSilenceFallbackMs,
+                                                 const bool enableFastPathDiagnostics,
+                                                 const int fastPathDiagnosticIntervalMs,
+                                                 const bool enableFastPathNoBasketHeartbeat)
      {
       CEAConfiguration configuration;
       configuration.SetProfileName(profileName);
@@ -41,6 +44,9 @@ public:
       configuration.SetMinEvaluationIntervalMs(minEvaluationIntervalMs);
       configuration.SetMaterialQuoteChangePoints(materialQuoteChangePoints);
       configuration.SetTickSilenceFallbackMs(tickSilenceFallbackMs);
+      configuration.SetEnableFastPathDiagnostics(enableFastPathDiagnostics);
+      configuration.SetFastPathDiagnosticIntervalMs(fastPathDiagnosticIntervalMs);
+      configuration.SetEnableFastPathNoBasketHeartbeat(enableFastPathNoBasketHeartbeat);
       configuration.SetMarketSafetyConfig(CMarketSafetyConfig::Create(quoteStaleThresholdMs,
                                                                       maxSpreadPoints,
                                                                       30000));

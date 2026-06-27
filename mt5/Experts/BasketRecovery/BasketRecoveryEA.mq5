@@ -21,6 +21,9 @@ input int    InpMaxEvaluationAgeMs        = 2000;
 input int    InpMinEvaluationIntervalMs   = 250;
 input int    InpMaterialQuoteChangePoints = 5;
 input int    InpTickSilenceFallbackMs     = 10000;
+input bool   InpEnableFastPathDiagnostics = false;
+input int    InpFastPathDiagnosticIntervalMs = 1000;
+input bool   InpEnableFastPathNoBasketHeartbeat = false;
 
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
@@ -44,7 +47,10 @@ int OnInit()
                                                  InpMaxEvaluationAgeMs,
                                                  InpMinEvaluationIntervalMs,
                                                  InpMaterialQuoteChangePoints,
-                                                 InpTickSilenceFallbackMs);
+                                                 InpTickSilenceFallbackMs,
+                                                 InpEnableFastPathDiagnostics,
+                                                 InpFastPathDiagnosticIntervalMs,
+                                                 InpEnableFastPathNoBasketHeartbeat);
    if(g_applicationContext==NULL)
      {
       Print("BasketRecoveryEA initialization failed");
@@ -80,6 +86,7 @@ void OnDeinit(const int reason)
 
    if(g_applicationContext!=NULL)
      {
+      g_applicationContext.LogFastPathDeinitSummary();
       g_applicationContext.LogShutdown(reason);
       delete g_applicationContext;
       g_applicationContext=NULL;

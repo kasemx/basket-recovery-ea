@@ -8,6 +8,7 @@
 #include <BasketRecovery/Application/FastPath/FastCommandStagingBuffer.mqh>
 #include <BasketRecovery/Application/FastPath/InMemoryHotPathDiagnostics.mqh>
 #include <BasketRecovery/Application/FastPath/InMemoryFastSafetyAuditBuffer.mqh>
+#include <BasketRecovery/Application/FastPath/FastPathDiagnosticReporter.mqh>
 #include <BasketRecovery/Application/FastPath/ForceReevaluationFlag.mqh>
 #include <BasketRecovery/Application/UseCases/EvaluateBasketStrategyUseCase.mqh>
 #include <BasketRecovery/Infrastructure/Market/MarketContextProviderAdapter.mqh>
@@ -31,6 +32,7 @@ private:
    CFastEvaluationTriggerPolicy   *m_triggerPolicy;
    CInMemoryHotPathDiagnostics    *m_diagnostics;
    CInMemoryFastSafetyAuditBuffer *m_safetyAudit;
+   CFastPathDiagnosticReporter    *m_diagnosticReporter;
    IClock                         *m_clock;
    CFastPathConfig                 m_config;
 
@@ -55,6 +57,14 @@ private:
              !basket.StrategyMigrationRequired();
      }
 
+   int               CountActiveBasketsForSymbol(const string symbol) const
+     {
+      if(m_symbolIndex==NULL)
+         return 0;
+      CBasketId ids[];
+      return m_symbolIndex.FindActiveBasketIds(symbol,ids,100000);
+     }
+
    void              UpdateStateAfterAttempt(CBasketFastState &state,
                                              const CMarketQuote &quote,
                                              const ulong quoteSequence,
@@ -70,6 +80,27 @@ private:
       CForceReevaluationFlag::ClearAfterAttempt(state);
      }
 
+   void              FinalizeTick(const string symbol,
+                                  const ulong startMsc,
+                                  const int evaluated,
+                                  const int deferred,
+                                  const int skipped,
+                                  const int activeBasketCount,
+                                  const ulong quoteSequence,
+                                  const double bid,
+                                  const double ask,
+                                  const ENUM_BRE_FAST_PATH_SKIP_REASON primaryReason)
+     {
+      if(m_diagnostics==NULL)
+         return;
+
+      m_diagnostics.RecordTickRun(symbol,startMsc,evaluated,deferred,skipped,
+                                  activeBasketCount,quoteSequence,bid,ask,primaryReason);
+
+      if(m_diagnosticReporter!=NULL)
+         m_diagnosticReporter.MaybeEmitTickLine(symbol,*m_diagnostics,primaryReason);
+     }
+
 public:
                      CFastMarketEvaluationCoordinator(IBasketRepository *repository,
                                                       IPositionSnapshotStore *snapshotStore,
@@ -81,6 +112,7 @@ public:
                                                       CFastEvaluationTriggerPolicy *triggerPolicy,
                                                       CInMemoryHotPathDiagnostics *diagnostics,
                                                       CInMemoryFastSafetyAuditBuffer *safetyAudit,
+                                                      CFastPathDiagnosticReporter *diagnosticReporter,
                                                       IClock *clock,
                                                       const CFastPathConfig &config)
      {
@@ -94,6 +126,7 @@ public:
       m_triggerPolicy=triggerPolicy;
       m_diagnostics=diagnostics;
       m_safetyAudit=safetyAudit;
+      m_diagnosticReporter=diagnosticReporter;
       m_clock=clock;
       m_config=config;
      }
@@ -107,38 +140,53 @@ public:
       int evaluated=0;
       int deferred=0;
       int skipped=0;
+      ENUM_BRE_FAST_PATH_SKIP_REASON primaryReason=BRE_FAST_SKIP_NONE;
+      ENUM_BRE_FAST_PATH_SKIP_REASON firstBasketSkip=BRE_FAST_SKIP_NONE;
+      int activeBasketCount=0;
+      ulong quoteSequence=0;
+      double bid=0.0;
+      double ask=0.0;
 
       if(m_repository==NULL || m_evaluateUseCase==NULL || m_marketAdapter==NULL || symbol=="")
         {
-         if(m_diagnostics!=NULL)
-            m_diagnostics.RecordTickRun(symbol,startMsc,0,0,0);
+         FinalizeTick(symbol,startMsc,0,0,0,0,0,0.0,0.0,BRE_FAST_SKIP_NONE);
          return 0;
         }
 
       if(m_symbolIndex!=NULL && m_symbolIndex.IsDirty())
          m_symbolIndex.Rebuild(m_repository);
 
+      activeBasketCount=CountActiveBasketsForSymbol(symbol);
+
       CResult<CMarketQuote> quoteResult=CTickQuoteReader::ReadOnce(symbol);
       if(quoteResult.IsFail())
         {
          RecordDeferredAudit(CBasketId("__symbol__"),quoteResult.ErrorCode());
-         if(m_diagnostics!=NULL)
-            m_diagnostics.RecordTickRun(symbol,startMsc,0,1,0);
+         primaryReason=BRE_FAST_SKIP_STALE_QUOTE;
+         FinalizeTick(symbol,startMsc,0,1,0,activeBasketCount,0,0.0,0.0,primaryReason);
          return 0;
         }
 
       CMarketQuote quote;
       quoteResult.TryGetValue(quote);
+      bid=quote.Bid();
+      ask=quote.Ask();
 
       MqlTick tick;
       SymbolInfoTick(symbol,tick);
-      ulong quoteSequence=CTickQuoteReader::QuoteSequence(tick);
+      quoteSequence=CTickQuoteReader::QuoteSequence(tick);
       datetime nowUtc=m_clock!=NULL ? m_clock.Now() : TimeCurrent();
 
+      if(activeBasketCount==0)
+        {
+         primaryReason=BRE_FAST_SKIP_NO_MATCHING_BASKET;
+         FinalizeTick(symbol,startMsc,0,0,0,0,quoteSequence,bid,ask,primaryReason);
+         return 0;
+        }
+
       CBasketId basketIds[];
-      int basketCount=0;
-      if(m_symbolIndex!=NULL)
-         basketCount=m_symbolIndex.FindActiveBasketIds(symbol,basketIds,m_config.MaxBasketsPerTick());
+      int basketCount=m_symbolIndex.FindActiveBasketIds(symbol,basketIds,m_config.MaxBasketsPerTick());
+      bool budgetExhausted=activeBasketCount>m_config.MaxBasketsPerTick();
 
       int processed=0;
       for(int i=0;i<basketCount && processed<m_config.MaxBasketsPerTick();i++)
@@ -155,11 +203,19 @@ public:
             continue;
 
          CBasketFastState state=m_fastStateRegistry.GetOrCreate(basket.Id());
-         if(m_triggerPolicy==NULL || !m_triggerPolicy.ShouldEvaluate(basket,state,quote.Bid(),quote.Ask(),
-                                                                     quote.Point(),ResolvePipSize(quote),
-                                                                     quoteSequence,nowUtc))
+         ENUM_BRE_FAST_PATH_SKIP_REASON skipReason=BRE_FAST_SKIP_NONE;
+         if(m_triggerPolicy!=NULL)
+            skipReason=m_triggerPolicy.ResolveSkipReason(basket,state,quote.Bid(),quote.Ask(),
+                                                         quote.Point(),ResolvePipSize(quote),
+                                                         quoteSequence,nowUtc);
+
+         if(skipReason!=BRE_FAST_SKIP_NONE)
            {
             skipped++;
+            if(m_diagnostics!=NULL)
+               m_diagnostics.RecordBasketSkip(skipReason);
+            if(firstBasketSkip==BRE_FAST_SKIP_NONE)
+               firstBasketSkip=skipReason;
             m_fastStateRegistry.Save(basket.Id(),state);
             continue;
            }
@@ -183,6 +239,10 @@ public:
            {
             deferred++;
             RecordDeferredAudit(basket.Id(),BRE_ERR_MARKET_QUOTE_STALE);
+            if(m_diagnostics!=NULL)
+               m_diagnostics.RecordBasketSkip(BRE_FAST_SKIP_STALE_QUOTE);
+            if(firstBasketSkip==BRE_FAST_SKIP_NONE)
+               firstBasketSkip=BRE_FAST_SKIP_STALE_QUOTE;
             UpdateStateAfterAttempt(state,quote,quoteSequence,BRE_FAST_EVAL_OUTCOME_DEFERRED,nowUtc);
             m_fastStateRegistry.Save(basket.Id(),state);
             continue;
@@ -207,8 +267,17 @@ public:
          processed++;
         }
 
-      if(m_diagnostics!=NULL)
-         m_diagnostics.RecordTickRun(symbol,startMsc,evaluated,deferred,skipped);
+      if(evaluated>0)
+         primaryReason=BRE_FAST_SKIP_NONE;
+      else if(budgetExhausted && skipped>0)
+         primaryReason=BRE_FAST_SKIP_BUDGET_EXHAUSTED;
+      else if(firstBasketSkip!=BRE_FAST_SKIP_NONE)
+         primaryReason=firstBasketSkip;
+      else if(skipped>0)
+         primaryReason=BRE_FAST_SKIP_TRIGGER_POLICY;
+
+      FinalizeTick(symbol,startMsc,evaluated,deferred,skipped,activeBasketCount,
+                   quoteSequence,bid,ask,primaryReason);
 
       return evaluated;
      }

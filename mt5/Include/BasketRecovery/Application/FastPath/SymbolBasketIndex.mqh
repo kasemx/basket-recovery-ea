@@ -77,6 +77,8 @@ public:
         }
       return written;
      }
+
+   int               TotalActiveBasketCount(void) const { return m_count; }
   };
 
 #endif

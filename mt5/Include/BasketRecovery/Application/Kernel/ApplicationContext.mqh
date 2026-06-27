@@ -131,6 +131,23 @@ public:
       return m_kernel.PersistenceManager().CommandQueue().PendingCount();
      }
 
+   void              LogFastPathDeinitSummary(void)
+     {
+      if(m_kernel==NULL)
+         return;
+
+      CFastPathDiagnosticReporter *reporter=m_kernel.DiagnosticReporter();
+      CInMemoryHotPathDiagnostics *diagnostics=m_kernel.HotPathDiagnostics();
+      if(reporter==NULL || diagnostics==NULL)
+         return;
+
+      int stagedCount=0;
+      if(m_kernel.StagingQueue()!=NULL)
+         stagedCount=m_kernel.StagingQueue().PendingCount();
+
+      reporter.EmitDeinitSummary(*diagnostics,stagedCount);
+     }
+
    void              LogShutdown(const int reason)
      {
       if(m_container==NULL)

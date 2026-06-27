@@ -22,6 +22,7 @@
 #include <BasketRecovery/Application/FastPath/FastCommandStagingBuffer.mqh>
 #include <BasketRecovery/Application/FastPath/InMemoryHotPathDiagnostics.mqh>
 #include <BasketRecovery/Application/FastPath/InMemoryFastSafetyAuditBuffer.mqh>
+#include <BasketRecovery/Application/FastPath/FastPathDiagnosticReporter.mqh>
 #include <BasketRecovery/Application/Configuration/FastPathConfig.mqh>
 #include <BasketRecovery/Application/Ports/IStrategyEngine.mqh>
 #include <BasketRecovery/Application/Ports/IMarketContextProvider.mqh>
@@ -48,6 +49,8 @@ private:
    CFastCommandStagingBuffer        *m_stagingQueue;
    CInMemoryHotPathDiagnostics      *m_hotPathDiagnostics;
    CInMemoryFastSafetyAuditBuffer   *m_safetyAudit;
+   CFastPathDiagnosticReporter      *m_diagnosticReporter;
+   CFastPathConfig                   m_fastPathConfig;
    CEvaluateBasketStrategyUseCase   *m_evaluateUseCase;
    CBindMigratedBasketStrategyUseCase *m_bindMigrationUseCase;
    CTransitionEngine                *m_transitionEngine;
@@ -93,6 +96,7 @@ public:
       m_stagingQueue=NULL;
       m_hotPathDiagnostics=NULL;
       m_safetyAudit=NULL;
+      m_diagnosticReporter=NULL;
       m_evaluateUseCase=NULL;
       m_bindMigrationUseCase=NULL;
       m_transitionEngine=NULL;
@@ -147,6 +151,7 @@ public:
       if(m_bindMigrationUseCase!=NULL) delete m_bindMigrationUseCase;
       if(m_evaluateUseCase!=NULL) delete m_evaluateUseCase;
       if(m_safetyAudit!=NULL) delete m_safetyAudit;
+      if(m_diagnosticReporter!=NULL) delete m_diagnosticReporter;
       if(m_hotPathDiagnostics!=NULL) delete m_hotPathDiagnostics;
       if(m_stagingQueue!=NULL) delete m_stagingQueue;
       if(m_triggerPolicy!=NULL) delete m_triggerPolicy;
@@ -183,12 +188,14 @@ public:
       m_marketAdapter=marketAdapter;
       m_ownsMarketAdapter=takeMarketAdapterOwnership;
       m_reconciliationScheduler=reconciliationScheduler;
+      m_fastPathConfig=fastPathConfig;
 
       m_fastStateRegistry=new CBasketFastStateRegistry();
       m_symbolIndex=new CSymbolBasketIndex();
       m_stagingQueue=new CFastCommandStagingBuffer();
       m_hotPathDiagnostics=new CInMemoryHotPathDiagnostics();
       m_safetyAudit=new CInMemoryFastSafetyAuditBuffer();
+      m_diagnosticReporter=new CFastPathDiagnosticReporter(fastPathConfig);
       m_triggerPolicy=new CFastEvaluationTriggerPolicy(fastPathConfig);
 
       m_commandDispatcher=new CCommandDispatcher();
@@ -207,7 +214,8 @@ public:
                                                              m_marketAdapter,m_stagingQueue,
                                                              m_fastStateRegistry,m_symbolIndex,
                                                              m_triggerPolicy,m_hotPathDiagnostics,
-                                                             m_safetyAudit,clock,fastPathConfig);
+                                                             m_safetyAudit,m_diagnosticReporter,
+                                                             clock,fastPathConfig);
       m_tradeTransactionFastPath=new CTradeTransactionFastPathService(snapshotStore,m_fastStateRegistry,
                                                                       m_symbolIndex);
       m_fallbackEvaluation=new CTimerFallbackEvaluationService(repository,m_marketAdapter,m_evaluateUseCase,
@@ -257,6 +265,11 @@ public:
 
    CApplicationTimerPipeline* TimerPipeline(void) { return m_timerPipeline; }
    CFastMarketEvaluationCoordinator* FastCoordinator(void) { return m_fastCoordinator; }
+   CFastPathDiagnosticReporter* DiagnosticReporter(void) { return m_diagnosticReporter; }
+   CInMemoryHotPathDiagnostics* HotPathDiagnostics(void) { return m_hotPathDiagnostics; }
+   CFastCommandStagingBuffer* StagingQueue(void) { return m_stagingQueue; }
+   CSymbolBasketIndex* SymbolIndex(void) { return m_symbolIndex; }
+   CFastPathConfig    FastPathConfig(void) const { return m_fastPathConfig; }
    CTimerFallbackEvaluationService* FallbackEvaluation(void) { return m_fallbackEvaluation; }
    CTradeTransactionFastPathService* TradeTransactionFastPath(void) { return m_tradeTransactionFastPath; }
    CPersistenceManager*       PersistenceManager(void) { return m_persistenceManager; }
