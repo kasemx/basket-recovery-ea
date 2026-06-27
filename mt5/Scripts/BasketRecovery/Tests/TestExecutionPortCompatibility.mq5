@@ -31,11 +31,11 @@ void TestSimulatedTradeExecutorSatisfiesSoleExecutionPort(void)
    CTestAssert::EqualInt(0,simulated.ExecuteCallCount(),"Simulated executor starts with zero calls");
   }
 
-void TestMt5TradeExecutorPlaceholderIsInactiveAdapter(void)
+void TestMt5TradeExecutorDefaultDisabledMode(void)
   {
    CMt5TradeExecutor executor;
    ITradeExecutor *port=&executor;
-   CTestAssert::False(executor.IsActive(),"CMt5TradeExecutor must remain inactive before Sprint 6B");
+   CTestAssert::False(executor.IsActive(),"CMt5TradeExecutor default mode must be inactive (DISABLED)");
    CTestAssert::True(port!=NULL,"CMt5TradeExecutor must implement ITradeExecutor");
 
    CTradeExecutionRequest request=CTradeExecutionRequest::Create("probe-mt5","sim:reject:probe","corr",
@@ -43,12 +43,14 @@ void TestMt5TradeExecutorPlaceholderIsInactiveAdapter(void)
                                                                  BRE_EXEC_INTENT_OPEN_POSITION,BRE_DIRECTION_BUY,0,
                                                                  0.01,1900.0,0.0,0.0,1000,CCommandId("c1"),"probe");
    CResult<CTradeExecutionReceipt> result=executor.Execute(request);
-   CTestAssert::True(result.IsOk(),"Inactive placeholder returns deterministic receipt without broker APIs");
+   CTestAssert::True(result.IsOk(),"Disabled executor returns deterministic receipt without broker APIs");
    CTradeExecutionReceipt receipt;
    result.TryGetValue(receipt);
    CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_REJECTED,(int)receipt.CurrentStatus(),
-                         "Inactive Mt5TradeExecutor must reject until Sprint 6B wiring");
-   CTestAssert::EqualInt(1,executor.ExecuteCallCount(),"Placeholder tracks in-process execute calls only");
+                         "Disabled Mt5TradeExecutor must reject");
+   CTestAssert::EqualInt((int)BRE_EXEC_FAIL_EXECUTION_DISABLED,(int)receipt.Result().FailureReason(),
+                         "Disabled mode must use execution_disabled failure reason");
+   CTestAssert::EqualInt(1,executor.ExecuteCallCount(),"Executor tracks in-process execute calls only");
   }
 
 void TestLegacyTradeRequestExecutorBlockedFromCompositionRoot(void)
@@ -73,7 +75,7 @@ void OnStart()
    CTestAssert::Reset();
    TestExecuteTradeIntentUseCaseDependsOnITradeExecutor();
    TestSimulatedTradeExecutorSatisfiesSoleExecutionPort();
-   TestMt5TradeExecutorPlaceholderIsInactiveAdapter();
+   TestMt5TradeExecutorDefaultDisabledMode();
    TestLegacyTradeRequestExecutorBlockedFromCompositionRoot();
    TestUseCaseConstructorAcceptsUnifiedPortOnly();
    CTestAssert::Summary("TestExecutionPortCompatibility");

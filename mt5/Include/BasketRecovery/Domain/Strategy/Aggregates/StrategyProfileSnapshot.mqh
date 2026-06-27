@@ -52,6 +52,11 @@ public:
    static CStrategyProfileSnapshot CreateUnbound(void)
      {
       CStrategyProfileSnapshot snapshot;
+      snapshot.m_strategyId="";
+      snapshot.m_schemaVersion=0;
+      snapshot.m_canonicalJson="";
+      snapshot.m_profileHash="";
+      snapshot.m_boundAtUtc=CUtcTime(0);
       return snapshot;
      }
   };

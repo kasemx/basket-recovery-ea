@@ -26,6 +26,13 @@
 #include <BasketRecovery/Infrastructure/Rest/RestClientConfig.mqh>
 #include <BasketRecovery/Infrastructure/Rest/RestCommandSource.mqh>
 #include <BasketRecovery/Application/Services/CommandIngestionService.mqh>
+#include <BasketRecovery/Application/Services/ExecutionDryRunManualCommandService.mqh>
+#include <BasketRecovery/Application/Execution/ExecuteTradeIntentUseCase.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5TradeExecutor.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5OrderCheckGateway.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5ExecutionDiagnostics.mqh>
+#include <BasketRecovery/Infrastructure/Execution/InMemoryExecutionRequestRepository.mqh>
+#include <BasketRecovery/Infrastructure/Execution/InMemoryExecutionJournal.mqh>
 #include <BasketRecovery/Application/Kernel/TransitionRuleRegistry.mqh>
 #include <BasketRecovery/Application/Kernel/DefaultTransitionRuleTable.mqh>
 #include <BasketRecovery/Domain/StateMachine/AlwaysTrueTransitionGuard.mqh>
@@ -53,7 +60,10 @@ public:
                                          const int tickSilenceFallbackMs,
                                          const bool enableFastPathDiagnostics,
                                          const int fastPathDiagnosticIntervalMs,
-                                         const bool enableFastPathNoBasketHeartbeat)
+                                         const bool enableFastPathNoBasketHeartbeat,
+                                         const int executionRuntimeMode,
+                                         const bool enableExecutionDryRun,
+                                         const bool enableExecutionDiagnostics)
      {
       CResult<CEAConfiguration> configurationResult=
          CMt5ConfigurationLoader::LoadFromInputs(profileName,logFilePath,logLevel,accountLabel,apiBaseUrl,apiKey,
@@ -63,7 +73,8 @@ public:
                                                  maxEvaluationAgeMs,minEvaluationIntervalMs,
                                                  materialQuoteChangePoints,tickSilenceFallbackMs,
                                                  enableFastPathDiagnostics,fastPathDiagnosticIntervalMs,
-                                                 enableFastPathNoBasketHeartbeat);
+                                                 enableFastPathNoBasketHeartbeat,
+                                                 executionRuntimeMode,enableExecutionDryRun,enableExecutionDiagnostics);
 
       if(configurationResult.IsFail())
         {
@@ -237,6 +248,43 @@ public:
          delete container;
          return NULL;
         }
+
+      CInMemoryExecutionRequestRepository *executionRequestRepository=new CInMemoryExecutionRequestRepository();
+      CInMemoryExecutionJournal *executionJournal=new CInMemoryExecutionJournal(executionRequestRepository);
+      CMt5OrderCheckGateway *orderCheckGateway=new CMt5OrderCheckGateway();
+      CMt5ExecutionDiagnostics *executionDiagnostics=
+         new CMt5ExecutionDiagnostics(logger,configuration.EnableExecutionDiagnostics());
+      CMt5TradeExecutor *mt5TradeExecutor=new CMt5TradeExecutor();
+      mt5TradeExecutor.Configure(configuration.ExecutionRuntimeMode(),
+                                 persistenceManager.BasketRepository(),
+                                 marketDataProvider,
+                                 orderCheckGateway,
+                                 executionDiagnostics,
+                                 configuration.MarketSafetyConfig(),
+                                 configuration.EnableExecutionDryRun());
+      CExecuteTradeIntentUseCase *executeTradeIntentUseCase=
+         new CExecuteTradeIntentUseCase(persistenceManager.BasketRepository(),
+                                        mt5TradeExecutor,
+                                        executionJournal,
+                                        executionRequestRepository,
+                                        clock);
+      CExecutionDryRunManualCommandService *manualDryRunService=new CExecutionDryRunManualCommandService();
+      manualDryRunService.Configure(configuration.ExecutionRuntimeMode(),
+                                    configuration.EnableExecutionDryRun(),
+                                    configuration.EnableExecutionDiagnostics(),
+                                    BRE_PERSISTENCE_BASKET_SUBDIR,
+                                    executeTradeIntentUseCase,
+                                    persistenceManager.BasketRepository(),
+                                    container.EventBus(),
+                                    container.UniqueIdGenerator(),
+                                    logger);
+      context.RegisterExecutionDryRunRuntime(manualDryRunService,
+                                             mt5TradeExecutor,
+                                             executeTradeIntentUseCase,
+                                             executionRequestRepository,
+                                             executionJournal,
+                                             orderCheckGateway,
+                                             executionDiagnostics);
 
       CFastPathDiagnosticReporter *diagnosticReporter=kernel.DiagnosticReporter();
       if(diagnosticReporter!=NULL)

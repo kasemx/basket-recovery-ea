@@ -40,11 +40,31 @@ public:
       return StringFormat("%08X",crc);
      }
 
-   static bool         FromHex(const string hexValue,uint &outCrc)
+   static int        HexDigit(const ushort ch)
+     {
+      if(ch>='0' && ch<='9')
+         return (int)(ch-'0');
+      if(ch>='A' && ch<='F')
+         return 10+(int)(ch-'A');
+      if(ch>='a' && ch<='f')
+         return 10+(int)(ch-'a');
+      return -1;
+     }
+
+   static bool       FromHex(const string hexValue,uint &outCrc)
      {
       if(StringLen(hexValue)!=8)
          return false;
-      outCrc=(uint)StringToInteger("0x"+hexValue);
+
+      uint crc=0;
+      for(int i=0;i<8;i++)
+        {
+         int digit=HexDigit(StringGetCharacter(hexValue,i));
+         if(digit<0)
+            return false;
+         crc=(crc<<4)|(uint)digit;
+        }
+      outCrc=crc;
       return true;
      }
   };

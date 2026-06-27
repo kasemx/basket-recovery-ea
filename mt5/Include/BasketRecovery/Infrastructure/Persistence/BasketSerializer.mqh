@@ -266,6 +266,11 @@ private:
 public:
    bool              FromReader(const CJsonReader &reader,CBasketPersistenceDto &dto,const int schemaVersion) const;
 
+   string            BuildCrcPayload(const CBasketPersistenceDto &dto) const
+     {
+      return "\"schema_version\":"+IntegerToString(BRE_PERSISTENCE_SCHEMA_VERSION)+","+BuildBodyFields(dto);
+     }
+
    string            Serialize(const CBasketAggregate &aggregate) const
      {
       CBasketPersistenceDto dto;

@@ -20,7 +20,9 @@ enum ENUM_BRE_TRADE_EXECUTION_FAILURE_REASON
    BRE_EXEC_FAIL_BASKET_LOCKED=14,
    BRE_EXEC_FAIL_RECOVERY_DISABLED=15,
    BRE_EXEC_FAIL_TICKET_NOT_IN_BASKET=16,
-   BRE_EXEC_FAIL_VOLUME_CONSTRAINT=17
+   BRE_EXEC_FAIL_VOLUME_CONSTRAINT=17,
+   BRE_EXEC_FAIL_EXECUTION_DISABLED=18,
+   BRE_EXEC_FAIL_UNSUPPORTED_INTENT=19
   };
 
 inline string TradeExecutionFailureReasonLabel(const ENUM_BRE_TRADE_EXECUTION_FAILURE_REASON reason)
@@ -44,6 +46,8 @@ inline string TradeExecutionFailureReasonLabel(const ENUM_BRE_TRADE_EXECUTION_FA
       case BRE_EXEC_FAIL_RECOVERY_DISABLED: return "recovery_disabled";
       case BRE_EXEC_FAIL_TICKET_NOT_IN_BASKET: return "ticket_not_in_basket";
       case BRE_EXEC_FAIL_VOLUME_CONSTRAINT: return "volume_constraint";
+      case BRE_EXEC_FAIL_EXECUTION_DISABLED: return "execution_disabled";
+      case BRE_EXEC_FAIL_UNSUPPORTED_INTENT: return "unsupported_intent";
       default: return "none";
      }
   }

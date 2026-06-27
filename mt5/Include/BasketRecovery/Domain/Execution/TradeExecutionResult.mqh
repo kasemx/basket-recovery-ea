@@ -16,6 +16,12 @@ private:
    ulong                                   m_brokerTicket;
    string                                  m_brokerCorrelationId;
    datetime                                m_completedAtUtc;
+   bool                                    m_isDryRun;
+   uint                                    m_mt5Retcode;
+   string                                  m_requestSummary;
+   double                                  m_checkedStopLoss;
+   double                                  m_checkedTakeProfit;
+   bool                                    m_orderCheckInvoked;
 
 public:
                      CTradeExecutionResult(void)
@@ -29,6 +35,12 @@ public:
       m_brokerTicket=0;
       m_brokerCorrelationId="";
       m_completedAtUtc=0;
+      m_isDryRun=false;
+      m_mt5Retcode=0;
+      m_requestSummary="";
+      m_checkedStopLoss=0.0;
+      m_checkedTakeProfit=0.0;
+      m_orderCheckInvoked=false;
      }
 
    ENUM_BRE_TRADE_EXECUTION_STATUS         Status(void) const { return m_status; }
@@ -40,6 +52,12 @@ public:
    ulong                                   BrokerTicket(void) const { return m_brokerTicket; }
    string                                  BrokerCorrelationId(void) const { return m_brokerCorrelationId; }
    datetime                                CompletedAtUtc(void) const { return m_completedAtUtc; }
+   bool                                    IsDryRun(void) const { return m_isDryRun; }
+   uint                                    Mt5Retcode(void) const { return m_mt5Retcode; }
+   string                                  RequestSummary(void) const { return m_requestSummary; }
+   double                                  CheckedStopLoss(void) const { return m_checkedStopLoss; }
+   double                                  CheckedTakeProfit(void) const { return m_checkedTakeProfit; }
+   bool                                    OrderCheckInvoked(void) const { return m_orderCheckInvoked; }
 
    void              SetStatus(const ENUM_BRE_TRADE_EXECUTION_STATUS value) { m_status=value; }
    void              SetFailureReason(const ENUM_BRE_TRADE_EXECUTION_FAILURE_REASON value) { m_failureReason=value; }
@@ -50,6 +68,12 @@ public:
    void              SetBrokerTicket(const ulong value) { m_brokerTicket=value; }
    void              SetBrokerCorrelationId(const string value) { m_brokerCorrelationId=value; }
    void              SetCompletedAtUtc(const datetime value) { m_completedAtUtc=value; }
+   void              SetIsDryRun(const bool value) { m_isDryRun=value; }
+   void              SetMt5Retcode(const uint value) { m_mt5Retcode=value; }
+   void              SetRequestSummary(const string value) { m_requestSummary=value; }
+   void              SetCheckedStopLoss(const double value) { m_checkedStopLoss=value; }
+   void              SetCheckedTakeProfit(const double value) { m_checkedTakeProfit=value; }
+   void              SetOrderCheckInvoked(const bool value) { m_orderCheckInvoked=value; }
 
    static CTradeExecutionResult Rejected(const ENUM_BRE_TRADE_EXECUTION_FAILURE_REASON reason,
                                          const string message,

@@ -2,6 +2,8 @@
 #define BASKET_RECOVERY_INFRASTRUCTURE_MT5_CONFIGURATION_LOADER_MQH
 
 #include <BasketRecovery/Application/Configuration/EAConfiguration.mqh>
+#include <BasketRecovery/Application/Configuration/MarketSafetyConfig.mqh>
+#include <BasketRecovery/Domain/Execution/ExecutionRuntimeMode.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 #include <BasketRecovery/Shared/Types/Result.mqh>
 
@@ -26,7 +28,10 @@ public:
                                                  const int tickSilenceFallbackMs,
                                                  const bool enableFastPathDiagnostics,
                                                  const int fastPathDiagnosticIntervalMs,
-                                                 const bool enableFastPathNoBasketHeartbeat)
+                                                 const bool enableFastPathNoBasketHeartbeat,
+                                                 const int executionRuntimeMode,
+                                                 const bool enableExecutionDryRun,
+                                                 const bool enableExecutionDiagnostics)
      {
       CEAConfiguration configuration;
       configuration.SetProfileName(profileName);
@@ -47,6 +52,9 @@ public:
       configuration.SetEnableFastPathDiagnostics(enableFastPathDiagnostics);
       configuration.SetFastPathDiagnosticIntervalMs(fastPathDiagnosticIntervalMs);
       configuration.SetEnableFastPathNoBasketHeartbeat(enableFastPathNoBasketHeartbeat);
+      configuration.SetExecutionRuntimeMode((ENUM_BRE_EXECUTION_RUNTIME_MODE)executionRuntimeMode);
+      configuration.SetEnableExecutionDryRun(enableExecutionDryRun);
+      configuration.SetEnableExecutionDiagnostics(enableExecutionDiagnostics);
       configuration.SetMarketSafetyConfig(CMarketSafetyConfig::Create(quoteStaleThresholdMs,
                                                                       maxSpreadPoints,
                                                                       30000));
@@ -59,6 +67,9 @@ public:
 
       if(logLevel<0 || logLevel>5)
          return CResult<CEAConfiguration>::Fail(BRE_ERR_CONFIG_INVALID,"Log level must be between 0 and 5");
+
+      if(executionRuntimeMode<BRE_EXEC_RUNTIME_DISABLED || executionRuntimeMode>BRE_EXEC_RUNTIME_SIMULATED)
+         return CResult<CEAConfiguration>::Fail(BRE_ERR_CONFIG_INVALID,"Execution runtime mode is invalid");
 
       configuration.SetIsValid(true);
       return CResult<CEAConfiguration>::Ok(configuration);

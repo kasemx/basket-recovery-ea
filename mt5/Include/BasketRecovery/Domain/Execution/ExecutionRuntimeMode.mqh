@@ -1,0 +1,21 @@
+#ifndef BRE_DOMAIN_EXECUTION_RUNTIME_MODE_MQH
+#define BRE_DOMAIN_EXECUTION_RUNTIME_MODE_MQH
+
+enum ENUM_BRE_EXECUTION_RUNTIME_MODE
+  {
+   BRE_EXEC_RUNTIME_DISABLED=0,
+   BRE_EXEC_RUNTIME_MT5_DRY_RUN=1,
+   BRE_EXEC_RUNTIME_SIMULATED=2
+  };
+
+inline string ExecutionRuntimeModeLabel(const ENUM_BRE_EXECUTION_RUNTIME_MODE mode)
+  {
+   switch(mode)
+     {
+      case BRE_EXEC_RUNTIME_MT5_DRY_RUN: return "MT5_DRY_RUN";
+      case BRE_EXEC_RUNTIME_SIMULATED: return "SIMULATED";
+      default: return "DISABLED";
+     }
+  }
+
+#endif

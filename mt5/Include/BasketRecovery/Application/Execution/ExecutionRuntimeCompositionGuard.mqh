@@ -13,6 +13,11 @@ public:
      {
       return true;
      }
+
+   static bool       AllowsMt5ExecutorInTimerOrFastPathPipeline(void)
+     {
+      return false;
+     }
   };
 
 #endif

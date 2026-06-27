@@ -24,9 +24,16 @@ input int    InpTickSilenceFallbackMs     = 10000;
 input bool   InpEnableFastPathDiagnostics = false;
 input int    InpFastPathDiagnosticIntervalMs = 1000;
 input bool   InpEnableFastPathNoBasketHeartbeat = false;
+input int    InpExecutionMode = 0;
+input bool   InpEnableExecutionDryRun = false;
+input bool   InpEnableExecutionDiagnostics = false;
+input string InpManualExecutionDryRunBasketId = "";
+input string InpManualExecutionDryRunTriggerToken = "";
+input double InpManualExecutionDryRunLotSize = 0.01;
 
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
+int g_manualValidationTimerTicks=0;
 
 int OnInit()
   {
@@ -50,7 +57,10 @@ int OnInit()
                                                  InpTickSilenceFallbackMs,
                                                  InpEnableFastPathDiagnostics,
                                                  InpFastPathDiagnosticIntervalMs,
-                                                 InpEnableFastPathNoBasketHeartbeat);
+                                                 InpEnableFastPathNoBasketHeartbeat,
+                                                 InpExecutionMode,
+                                                 InpEnableExecutionDryRun,
+                                                 InpEnableExecutionDiagnostics);
    if(g_applicationContext==NULL)
      {
       Print("BasketRecoveryEA initialization failed");
@@ -70,6 +80,19 @@ int OnInit()
          " | account=",AccountInfoInteger(ACCOUNT_LOGIN),
          " | app_timer_ms=",timerIntervalMs,
          " | fast_tick_budget=",InpMaxBasketsPerTick);
+
+   if(InpEnableExecutionDiagnostics && InpManualExecutionDryRunBasketId!="")
+     {
+      Print("BRE chart-validation | terminal_trade_allowed=",
+            (TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)?"true":"false"),
+            " | account_trade_expert=",
+            (AccountInfoInteger(ACCOUNT_TRADE_EXPERT)?"true":"false"),
+            " | broker_state_before | positions=",PositionsTotal(),
+            " | orders=",OrdersTotal(),
+            " | common_persistence=",
+            TerminalInfoString(TERMINAL_COMMONDATA_PATH),"\\Files\\BasketRecovery\\persistence\\baskets\\",
+            InpManualExecutionDryRunBasketId,".json");
+     }
 
    return INIT_SUCCEEDED;
   }
@@ -110,6 +133,29 @@ void OnTimer()
    int eventsProcessed=0;
    int evaluationsScheduled=0;
    g_applicationContext.OnApplicationTimer(commandsProcessed,eventsProcessed,evaluationsScheduled);
+
+   if(InpManualExecutionDryRunBasketId!="")
+     {
+      if(InpEnableExecutionDiagnostics || (InpManualExecutionDryRunTriggerToken!="" && InpManualExecutionDryRunTriggerToken!="0"))
+        {
+         CVoidResult dryRunResult=g_applicationContext.TryProcessManualExecutionDryRun(
+            InpManualExecutionDryRunBasketId,
+            InpManualExecutionDryRunTriggerToken,
+            InpManualExecutionDryRunLotSize);
+         if(dryRunResult.IsFail())
+            Print("Manual execution dry-run rejected | code=",dryRunResult.ErrorCode(),
+                  " | message=",dryRunResult.ErrorMessage());
+
+         g_manualValidationTimerTicks++;
+         bool crcOnly=(InpManualExecutionDryRunTriggerToken=="" || InpManualExecutionDryRunTriggerToken=="0");
+         int ticksBeforeShutdown=(crcOnly ? 1 : 1);
+         if(g_manualValidationTimerTicks>=ticksBeforeShutdown)
+           {
+            ExpertRemove();
+            TerminalClose(0);
+           }
+        }
+     }
   }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,

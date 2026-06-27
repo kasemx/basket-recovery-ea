@@ -14,14 +14,11 @@ private:
 
    int FindKeyValueStart(const string key) const
      {
-      string pattern="\""+key+"\"";
+      string pattern="\""+key+"\":";
       int keyIndex=StringFind(m_content,pattern);
       if(keyIndex<0)
          return -1;
-      int colonIndex=StringFind(m_content,":",keyIndex);
-      if(colonIndex<0)
-         return -1;
-      return colonIndex+1;
+      return keyIndex+StringLen(pattern);
      }
 
    string Trim(const string value) const
@@ -137,10 +134,47 @@ public:
       int quoteStart=StringFind(m_content,"\"",start);
       if(quoteStart<0)
          return defaultValue;
-      int quoteEnd=StringFind(m_content,"\"",quoteStart+1);
-      if(quoteEnd<0)
-         return defaultValue;
-      return StringSubstr(m_content,quoteStart+1,quoteEnd-quoteStart-1);
+
+      string result="";
+      for(int i=quoteStart+1;i<StringLen(m_content);i++)
+        {
+         ushort ch=StringGetCharacter(m_content,i);
+         if(ch=='\\' && i+1<StringLen(m_content))
+           {
+            ushort next=StringGetCharacter(m_content,i+1);
+            if(next=='"')
+              {
+               result+=CharToString('"');
+               i++;
+               continue;
+              }
+            if(next=='\\')
+              {
+               result+=CharToString('\\');
+               i++;
+               continue;
+              }
+            if(next=='n')
+              {
+               result+=CharToString('\n');
+               i++;
+               continue;
+              }
+            if(next=='r')
+              {
+               result+=CharToString('\r');
+               i++;
+               continue;
+              }
+            result+=CharToString((uchar)next);
+            i++;
+            continue;
+           }
+         if(ch=='"')
+            break;
+         result+=ShortToString(ch);
+        }
+      return result;
      }
 
    int               ReadSchemaVersion(void) const
