@@ -3,6 +3,7 @@
 
 #include <BasketRecovery/Shared/DTOs/NormalizedTradeTransaction.mqh>
 #include <BasketRecovery/Domain/Execution/TradeTransactionType.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerCommentStamp.mqh>
 
 enum ENUM_BRE_CORRELATION_MATCH_STRATEGY
   {
@@ -82,6 +83,13 @@ public:
 
    static string     ExtractCorrelationToken(const string comment)
      {
+      if(StringFind(comment,"BRE|")==0)
+        {
+         if(!CBrokerCommentStamp::ValidateChecksum(comment))
+            return "";
+         return CBrokerCommentStamp::ExtractCorrelationToken(comment);
+        }
+
       int execIndex=StringFind(comment,"EXEC:");
       if(execIndex>=0)
          return StringSubstr(comment,execIndex+5);

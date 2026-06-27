@@ -52,15 +52,18 @@ public:
       if(broker.MagicNumber()!=0 &&
          context.MagicNumber()==broker.MagicNumber() &&
          entry.Symbol()==context.Symbol() &&
-         broker.CommentToken()!="" &&
-         StringFind(context.CorrelationToken(),broker.CommentToken())>=0)
+         context.CorrelationToken()!="" &&
+         (broker.CommentToken()==context.CorrelationToken() ||
+          StringFind(context.Comment(),entry.BrokerComment())>=0))
         {
          strategyUsed=BRE_CORRELATION_MATCH_MAGIC_SYMBOL_COMMENT;
          return true;
         }
 
-      if(broker.RequestFingerprint()!="" &&
-         broker.RequestFingerprint()==BuildFingerprint(entry,context))
+      string entryFingerprint=entry.RequestFingerprint();
+      if(entryFingerprint=="" )
+         entryFingerprint=broker.RequestFingerprint();
+      if(entryFingerprint!="" && entryFingerprint==BuildFingerprint(entry,context))
         {
          strategyUsed=BRE_CORRELATION_MATCH_REQUEST_FINGERPRINT;
          return true;

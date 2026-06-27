@@ -36,6 +36,11 @@
 #include <BasketRecovery/Application/Kernel/TransitionRuleRegistry.mqh>
 #include <BasketRecovery/Application/Kernel/DefaultTransitionRuleTable.mqh>
 #include <BasketRecovery/Domain/StateMachine/AlwaysTrueTransitionGuard.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionRestartService.mqh>
+#include <BasketRecovery/Application/Execution/ExecutionSubmissionPreparer.mqh>
+#include <BasketRecovery/Application/Execution/SubmissionPreparationPolicy.mqh>
+#include <BasketRecovery/Application/Execution/SubmissionPreparationValidator.mqh>
+#include <BasketRecovery/Infrastructure/Execution/FilePendingExecutionStore.mqh>
 #include <BasketRecovery/Shared/Constants/FeatureFlags.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
@@ -316,6 +321,22 @@ public:
                                               executionTimeoutMonitor,
                                               pendingExecutionTestInjection,
                                               executionReconciliationReader);
+
+      CFilePendingExecutionStore *pendingExecutionStore=
+         new CFilePendingExecutionStore("BasketRecovery/pending_executions.dat");
+      pendingExecutionStore.RestoreFromDisk();
+      CSubmissionPreparationValidator preparationValidator(marketDataProvider,configuration.MarketSafetyConfig());
+      CExecutionSubmissionPreparer *submissionPreparer=
+         new CExecutionSubmissionPreparer(CSubmissionPreparationPolicy::Default(),
+                                          preparationValidator,
+                                          pendingExecutionRegistry,
+                                          pendingExecutionStore,
+                                          clock);
+      string restartWarnings[];
+      CPendingExecutionRestartService::RestorePreparedEntries(pendingExecutionStore,
+                                                              pendingExecutionRegistry,
+                                                              restartWarnings);
+      context.RegisterSubmissionPreparationRuntime(submissionPreparer,pendingExecutionStore);
 
       CFastPathDiagnosticReporter *diagnosticReporter=kernel.DiagnosticReporter();
       if(diagnosticReporter!=NULL)

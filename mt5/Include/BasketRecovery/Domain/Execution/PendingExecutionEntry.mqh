@@ -7,6 +7,7 @@
 #include <BasketRecovery/Domain/Execution/PendingExecutionCorrelationState.mqh>
 #include <BasketRecovery/Domain/Execution/TradeExecutionStatus.mqh>
 #include <BasketRecovery/Domain/Execution/TradeExecutionIntentType.mqh>
+#include <BasketRecovery/Domain/Execution/SubmissionPreparationFailureReason.mqh>
 
 class CPendingExecutionEntry
   {
@@ -29,6 +30,15 @@ private:
    ENUM_BRE_PENDING_EXECUTION_CORRELATION_STATE m_correlationState;
    string                                m_lastTransactionKey;
    int                                   m_seenTransactionCount;
+   datetime                              m_preparedAtUtc;
+   datetime                              m_preparedQuoteTimestampUtc;
+   double                                m_preparedBid;
+   double                                m_preparedAsk;
+   string                                m_brokerComment;
+   string                                m_correlationToken;
+   string                                m_requestFingerprint;
+   int                                   m_preparationAttemptCount;
+   ENUM_BRE_SUBMISSION_PREPARATION_FAILURE_REASON m_lastPreparationFailureReason;
 
 public:
                      CPendingExecutionEntry(void)
@@ -49,6 +59,15 @@ public:
       m_correlationState=BRE_PENDING_CORRELATION_UNMATCHED;
       m_lastTransactionKey="";
       m_seenTransactionCount=0;
+      m_preparedAtUtc=0;
+      m_preparedQuoteTimestampUtc=0;
+      m_preparedBid=0.0;
+      m_preparedAsk=0.0;
+      m_brokerComment="";
+      m_correlationToken="";
+      m_requestFingerprint="";
+      m_preparationAttemptCount=0;
+      m_lastPreparationFailureReason=BRE_PREP_FAIL_NONE;
      }
 
    string            ExecutionRequestId(void) const { return m_executionRequestId; }
@@ -69,6 +88,18 @@ public:
    ENUM_BRE_PENDING_EXECUTION_CORRELATION_STATE CorrelationState(void) const { return m_correlationState; }
    string            LastTransactionKey(void) const { return m_lastTransactionKey; }
    int               SeenTransactionCount(void) const { return m_seenTransactionCount; }
+   datetime          PreparedAtUtc(void) const { return m_preparedAtUtc; }
+   datetime          PreparedQuoteTimestampUtc(void) const { return m_preparedQuoteTimestampUtc; }
+   double            PreparedBid(void) const { return m_preparedBid; }
+   double            PreparedAsk(void) const { return m_preparedAsk; }
+   string            BrokerComment(void) const { return m_brokerComment; }
+   string            CorrelationToken(void) const { return m_correlationToken; }
+   string            RequestFingerprint(void) const { return m_requestFingerprint; }
+   int               PreparationAttemptCount(void) const { return m_preparationAttemptCount; }
+   ENUM_BRE_SUBMISSION_PREPARATION_FAILURE_REASON LastPreparationFailureReason(void) const { return m_lastPreparationFailureReason; }
+
+   bool              HasPreparationMetadata(void) const { return m_preparedAtUtc>0 && m_brokerComment!=""; }
+   bool              IsPreparedQueued(void) const { return m_status==BRE_TRADE_EXEC_STATUS_QUEUED && HasPreparationMetadata(); }
 
    void              SetExecutionRequestId(const string value) { m_executionRequestId=value; }
    void              SetIdempotencyKey(const string value) { m_idempotencyKey=value; }
@@ -88,6 +119,15 @@ public:
    void              SetCorrelationState(const ENUM_BRE_PENDING_EXECUTION_CORRELATION_STATE value) { m_correlationState=value; }
    void              SetLastTransactionKey(const string value) { m_lastTransactionKey=value; }
    void              IncrementSeenTransactionCount(void) { m_seenTransactionCount++; }
+   void              SetPreparedAtUtc(const datetime value) { m_preparedAtUtc=value; }
+   void              SetPreparedQuoteTimestampUtc(const datetime value) { m_preparedQuoteTimestampUtc=value; }
+   void              SetPreparedBid(const double value) { m_preparedBid=value; }
+   void              SetPreparedAsk(const double value) { m_preparedAsk=value; }
+   void              SetBrokerComment(const string value) { m_brokerComment=value; }
+   void              SetCorrelationToken(const string value) { m_correlationToken=value; }
+   void              SetRequestFingerprint(const string value) { m_requestFingerprint=value; }
+   void              IncrementPreparationAttemptCount(void) { m_preparationAttemptCount++; }
+   void              SetLastPreparationFailureReason(const ENUM_BRE_SUBMISSION_PREPARATION_FAILURE_REASON value) { m_lastPreparationFailureReason=value; }
 
    void              AccumulateFill(const double volumeDelta)
      {

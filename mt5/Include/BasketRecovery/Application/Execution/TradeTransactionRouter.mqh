@@ -9,6 +9,7 @@
 #include <BasketRecovery/Application/FastPath/BasketFastStateRegistry.mqh>
 #include <BasketRecovery/Application/FastPath/ForceReevaluationFlag.mqh>
 #include <BasketRecovery/Application/Ports/IClock.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerCommentStamp.mqh>
 #include <BasketRecovery/Domain/Execution/TradeTransactionResultCode.mqh>
 
 class CTradeTransactionRouter
@@ -68,6 +69,20 @@ public:
       if(m_diagnostics!=NULL)
          m_diagnostics.OnTransactionNormalized(context.TransactionKey(),
                                                TradeTransactionTypeLabel(context.TransactionType()));
+
+      if(StringFind(context.Comment(),"BRE|")==0 && !CBrokerCommentStamp::ValidateChecksum(context.Comment()))
+        {
+         if(m_diagnostics!=NULL)
+            m_diagnostics.OnUnrelatedTransaction(context.TransactionKey());
+         return BRE_TRADE_TX_RESULT_UNRELATED;
+        }
+
+      if(context.CorrelationToken()=="" && StringFind(context.Comment(),"BRE|")==0)
+        {
+         if(m_diagnostics!=NULL)
+            m_diagnostics.OnUnrelatedTransaction(context.TransactionKey());
+         return BRE_TRADE_TX_RESULT_UNRELATED;
+        }
 
       CPendingExecutionEntry priceProbe;
       priceProbe.SetSymbol(context.Symbol());

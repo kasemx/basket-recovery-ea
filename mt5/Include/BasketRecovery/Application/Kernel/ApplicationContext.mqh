@@ -20,6 +20,14 @@
 #include <BasketRecovery/Application/Execution/ExecutionTimeoutMonitor.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionReconciliationScheduler.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionTestInjectionService.mqh>
+#include <BasketRecovery/Application/Execution/ExecutionSubmissionPreparer.mqh>
+#include <BasketRecovery/Application/Execution/SubmissionPreparationPolicy.mqh>
+#include <BasketRecovery/Application/Execution/SubmissionPreparationValidator.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionRestartService.mqh>
+#include <BasketRecovery/Application/Execution/Ports/IPendingExecutionStore.mqh>
+#include <BasketRecovery/Infrastructure/Execution/InMemoryPendingExecutionStore.mqh>
+#include <BasketRecovery/Domain/Execution/SubmissionPreparationResult.mqh>
+#include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerPositionReader.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
@@ -43,6 +51,8 @@ private:
    CExecutionTimeoutMonitor *m_executionTimeoutMonitor;
    CPendingExecutionTestInjectionService *m_pendingExecutionTestInjection;
    CMt5BrokerPositionReader *m_executionReconciliationReader;
+   CExecutionSubmissionPreparer *m_submissionPreparer;
+   IPendingExecutionStore *m_pendingExecutionStore;
    bool                m_initialized;
 
 public:
@@ -65,6 +75,8 @@ public:
       m_executionTimeoutMonitor=NULL;
       m_pendingExecutionTestInjection=NULL;
       m_executionReconciliationReader=NULL;
+      m_submissionPreparer=NULL;
+      m_pendingExecutionStore=NULL;
       m_initialized=false;
      }
 
@@ -117,6 +129,22 @@ public:
       m_executionTimeoutMonitor=timeoutMonitor;
       m_pendingExecutionTestInjection=testInjection;
       m_executionReconciliationReader=reconciliationReader;
+     }
+
+   void              RegisterSubmissionPreparationRuntime(CExecutionSubmissionPreparer *preparer,
+                                                          IPendingExecutionStore *store)
+     {
+      m_submissionPreparer=preparer;
+      m_pendingExecutionStore=store;
+     }
+
+   CSubmissionPreparationResult TryPrepareSubmission(const CTradeExecutionRequest &request,
+                                                     const CBasketAggregate &basket,
+                                                     const long magicNumber)
+     {
+      if(m_submissionPreparer==NULL)
+         return CSubmissionPreparationResult::Fail(BRE_PREP_FAIL_VALIDATION,"Submission preparer is not configured");
+      return m_submissionPreparer.Prepare(request,basket,magicNumber);
      }
 
    CVoidResult       TryProcessManualExecutionDryRun(const string basketIdValue,
@@ -206,6 +234,16 @@ public:
         {
          delete m_executionReconciliationReader;
          m_executionReconciliationReader=NULL;
+        }
+      if(m_submissionPreparer!=NULL)
+        {
+         delete m_submissionPreparer;
+         m_submissionPreparer=NULL;
+        }
+      if(m_pendingExecutionStore!=NULL)
+        {
+         delete m_pendingExecutionStore;
+         m_pendingExecutionStore=NULL;
         }
       if(m_kernel!=NULL)
         {
@@ -343,6 +381,8 @@ public:
    CPendingExecutionRegistry* PendingExecutionRegistry(void) const { return m_pendingExecutionRegistry; }
    CInMemoryPendingExecutionEventBuffer* PendingExecutionEventBuffer(void) const { return m_pendingExecutionEventBuffer; }
    CPendingExecutionDiagnostics* PendingExecutionDiagnostics(void) const { return m_pendingExecutionDiagnostics; }
+   CExecutionSubmissionPreparer* SubmissionPreparer(void) const { return m_submissionPreparer; }
+   IPendingExecutionStore* PendingExecutionStore(void) const { return m_pendingExecutionStore; }
 
    int               SnapshotCount(void) const
      {

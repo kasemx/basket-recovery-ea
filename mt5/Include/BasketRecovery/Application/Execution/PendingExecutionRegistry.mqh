@@ -3,6 +3,7 @@
 
 #include <BasketRecovery/Domain/Execution/PendingExecutionEntry.mqh>
 #include <BasketRecovery/Domain/Execution/PendingExecutionTransitionRules.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerSubmissionTransitionGate.mqh>
 #include <BasketRecovery/Domain/Execution/TradeTransactionCorrelationContext.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionCorrelationMatcher.mqh>
 #include <BasketRecovery/Shared/Types/Result.mqh>
@@ -52,6 +53,35 @@ public:
          return false;
       entry=m_entries[index];
       return true;
+     }
+
+   bool              TryGetByIdempotencyKey(const string idempotencyKey,CPendingExecutionEntry &entry) const
+     {
+      for(int i=0;i<ArraySize(m_entries);i++)
+        {
+         if(m_entries[i].IdempotencyKey()==idempotencyKey)
+           {
+            entry=m_entries[i];
+            return true;
+           }
+        }
+      return false;
+     }
+
+   CVoidResult       Upsert(const CPendingExecutionEntry &entry)
+     {
+      if(entry.ExecutionRequestId()=="")
+         return CVoidResult::Fail(-1,"executionRequestId is required");
+      int index=FindIndexByExecutionRequestId(entry.ExecutionRequestId());
+      if(index<0)
+        {
+         int size=ArraySize(m_entries);
+         ArrayResize(m_entries,size+1);
+         m_entries[size]=entry;
+         return CVoidResult::Ok();
+        }
+      m_entries[index]=entry;
+      return CVoidResult::Ok();
      }
 
    CVoidResult       Register(const CPendingExecutionEntry &entry)
@@ -111,11 +141,31 @@ public:
       if(index<0 || index>=ArraySize(m_entries))
          return false;
       ENUM_BRE_TRADE_EXECUTION_STATUS fromStatus=m_entries[index].Status();
+      if(toStatus==BRE_TRADE_EXEC_STATUS_SUBMITTED &&
+         !CBrokerSubmissionTransitionGate::CanTransitionToSubmitted(fromStatus,true))
+         return false;
       if(!CPendingExecutionTransitionRules::CanTransition(fromStatus,toStatus))
          return false;
       m_entries[index].SetStatus(toStatus);
       updatedEntry=m_entries[index];
       return true;
+     }
+
+   bool              TryTransitionByRequestId(const string executionRequestId,
+                                              const ENUM_BRE_TRADE_EXECUTION_STATUS toStatus,
+                                              CPendingExecutionEntry &updatedEntry)
+     {
+      int index=FindIndexByExecutionRequestId(executionRequestId);
+      return TryTransition(index,toStatus,updatedEntry);
+     }
+
+   bool              TryBrokerSubmitTransition(const string executionRequestId,
+                                               const bool brokerSubmitAccepted,
+                                               CPendingExecutionEntry &updatedEntry)
+     {
+      if(!brokerSubmitAccepted)
+         return false;
+      return TryTransitionByRequestId(executionRequestId,BRE_TRADE_EXEC_STATUS_SUBMITTED,updatedEntry);
      }
 
    int               CollectTimeoutDue(const datetime nowUtc,int &dueIndices[])
