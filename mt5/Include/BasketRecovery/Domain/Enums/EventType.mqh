@@ -34,7 +34,14 @@ enum ENUM_BRE_EVENT_TYPE
    BRE_EVENT_STATE_TRANSITIONED,
    BRE_EVENT_TRANSITION_REJECTED,
    BRE_EVENT_COMMAND_PROCESSED,
-   BRE_EVENT_COMMAND_FAILED
+   BRE_EVENT_COMMAND_FAILED,
+   BRE_EVENT_EXECUTION_REQUESTED,
+   BRE_EVENT_EXECUTION_ACCEPTED,
+   BRE_EVENT_EXECUTION_PARTIALLY_FILLED,
+   BRE_EVENT_EXECUTION_FILLED,
+   BRE_EVENT_EXECUTION_REJECTED,
+   BRE_EVENT_EXECUTION_TIMED_OUT,
+   BRE_EVENT_EXECUTION_UNKNOWN
   };
 
 class CEventTypeHelper
@@ -75,6 +82,13 @@ public:
          case BRE_EVENT_TRANSITION_REJECTED: return "TransitionRejected";
          case BRE_EVENT_COMMAND_PROCESSED: return "CommandProcessed";
          case BRE_EVENT_COMMAND_FAILED: return "CommandFailed";
+         case BRE_EVENT_EXECUTION_REQUESTED: return "ExecutionRequested";
+         case BRE_EVENT_EXECUTION_ACCEPTED: return "ExecutionAccepted";
+         case BRE_EVENT_EXECUTION_PARTIALLY_FILLED: return "ExecutionPartiallyFilled";
+         case BRE_EVENT_EXECUTION_FILLED: return "ExecutionFilled";
+         case BRE_EVENT_EXECUTION_REJECTED: return "ExecutionRejected";
+         case BRE_EVENT_EXECUTION_TIMED_OUT: return "ExecutionTimedOut";
+         case BRE_EVENT_EXECUTION_UNKNOWN: return "ExecutionUnknown";
          default: return "None";
         }
      }

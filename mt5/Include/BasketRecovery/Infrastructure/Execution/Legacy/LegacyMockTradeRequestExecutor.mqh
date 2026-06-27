@@ -1,11 +1,13 @@
-#ifndef BASKET_RECOVERY_INFRASTRUCTURE_MOCK_TRADE_EXECUTOR_MQH
-#define BASKET_RECOVERY_INFRASTRUCTURE_MOCK_TRADE_EXECUTOR_MQH
+#ifndef BRE_INF_LEGACY_MOCK_TRADE_REQUEST_EXECUTOR_MQH
+#define BRE_INF_LEGACY_MOCK_TRADE_REQUEST_EXECUTOR_MQH
 
-#include <BasketRecovery/Application/Ports/ITradeExecutor.mqh>
+// Sprint 5 test double for per-operation broker port. Superseded by CSimulatedTradeExecutor.
+
+#include <BasketRecovery/Infrastructure/Execution/Legacy/ITradeRequestExecutor.mqh>
 #include <BasketRecovery/Infrastructure/Execution/TradeResultMapper.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
-class CMockTradeExecutor : public ITradeExecutor
+class CLegacyMockTradeRequestExecutor : public ITradeRequestExecutor
   {
 private:
    int    m_failCountBeforeSuccess;
@@ -28,21 +30,8 @@ private:
       return result;
      }
 
-   CExecutionResult BuildRetryableFailure(const int attemptCount) const
-     {
-      CExecutionResult result;
-      result.SetSuccess(false);
-      result.SetRetryable(true);
-      result.SetStatus(BRE_EXECUTION_STATUS_REJECTED);
-      result.SetErrorCode(BRE_ERR_EXEC_BROKER_ERROR);
-      result.SetMessage("Mock retryable broker failure");
-      result.SetRetcode(TRADE_RETCODE_REQUOTE);
-      result.SetAttemptCount(attemptCount);
-      return result;
-     }
-
 public:
-                     CMockTradeExecutor(void)
+                     CLegacyMockTradeRequestExecutor(void)
      {
       m_failCountBeforeSuccess=0;
       m_callCount=0;
@@ -51,10 +40,7 @@ public:
       m_nextTicket=100001;
      }
 
-   void              SetFailCountBeforeSuccess(const int value) { m_failCountBeforeSuccess=value; }
-   void              SetRetryableFailuresRemaining(const int value) { m_retryableFailuresRemaining=value; }
    void              SetSimulateSuccess(const bool value) { m_simulateSuccess=value; }
-   void              SetNextTicket(const ulong value) { m_nextTicket=value; }
    int               CallCount(void) const { return m_callCount; }
 
    virtual CResult<CExecutionResult> OpenPosition(const CTradeContext &context,
@@ -62,22 +48,8 @@ public:
                                                   const CTradeRequest &request)
      {
       m_callCount++;
-
-      if(m_retryableFailuresRemaining>0)
-        {
-         m_retryableFailuresRemaining--;
-         return CResult<CExecutionResult>::Fail(BRE_ERR_EXEC_BROKER_ERROR,"Mock retryable broker failure");
-        }
-
-      if(m_failCountBeforeSuccess>0)
-        {
-         m_failCountBeforeSuccess--;
-         return CResult<CExecutionResult>::Fail(BRE_ERR_EXEC_REJECTED,"Mock open rejected");
-        }
-
       if(!m_simulateSuccess)
          return CResult<CExecutionResult>::Fail(BRE_ERR_EXEC_REJECTED,"Mock open disabled");
-
       return CResult<CExecutionResult>::Ok(BuildSuccess("OpenPosition",1));
      }
 

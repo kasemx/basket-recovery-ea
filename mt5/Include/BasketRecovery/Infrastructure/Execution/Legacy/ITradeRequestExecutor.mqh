@@ -1,5 +1,5 @@
-#ifndef BASKET_RECOVERY_APPLICATION_ITRADE_EXECUTOR_MQH
-#define BASKET_RECOVERY_APPLICATION_ITRADE_EXECUTOR_MQH
+#ifndef BRE_INF_LEGACY_ITRADE_REQUEST_EXECUTOR_MQH
+#define BRE_INF_LEGACY_ITRADE_REQUEST_EXECUTOR_MQH
 
 #include <BasketRecovery/Shared/Types/Result.mqh>
 #include <BasketRecovery/Application/DTOs/TradeContext.mqh>
@@ -31,10 +31,10 @@ struct SClosePositionParams
    string symbol;
   };
 
-class ITradeExecutor
+class ITradeRequestExecutor
   {
 public:
-   virtual          ~ITradeExecutor(void) {}
+   virtual          ~ITradeRequestExecutor(void) {}
    virtual CResult<CExecutionResult> OpenPosition(const CTradeContext &context,
                                                   const SOpenPositionParams &params,
                                                   const CTradeRequest &request)=0;

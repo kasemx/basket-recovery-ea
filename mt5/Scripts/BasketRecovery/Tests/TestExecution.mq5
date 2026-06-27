@@ -1,11 +1,11 @@
 #property script_show_inputs
 
 #include <BasketRecovery/Tests/TestAssert.mqh>
-#include <BasketRecovery/Infrastructure/Execution/MockTradeExecutor.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Legacy/LegacyMockTradeRequestExecutor.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Legacy/LegacyMt5TradeRequestExecutor.mqh>
 #include <BasketRecovery/Infrastructure/Execution/TradeResultMapper.mqh>
 #include <BasketRecovery/Infrastructure/Execution/TradeRequestBuilder.mqh>
 #include <BasketRecovery/Infrastructure/Execution/ExecutionPolicy.mqh>
-#include <BasketRecovery/Infrastructure/Execution/Mt5TradeExecutor.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
 CTradeContext BuildTestContext(void)
@@ -36,7 +36,7 @@ CTradeRequest BuildTestRequest(void)
 
 void TestMockExecutorOpenSuccess(void)
   {
-   CMockTradeExecutor executor;
+   CLegacyMockTradeRequestExecutor executor;
    CTradeContext context=BuildTestContext();
    SOpenPositionParams params;
    params.symbol=_Symbol;
@@ -55,7 +55,7 @@ void TestMockExecutorOpenSuccess(void)
 
 void TestMockExecutorRejection(void)
   {
-   CMockTradeExecutor executor;
+   CLegacyMockTradeRequestExecutor executor;
    executor.SetSimulateSuccess(false);
    SOpenPositionParams params;
    params.symbol=_Symbol;
@@ -111,12 +111,12 @@ void TestRequestBuilderOpenFields(void)
    CTestAssert::EqualInt(ORDER_TIME_GTC,(int)tradeRequest.type_time,"Open request time type must be GTC");
   }
 
-void TestDryRunExecutor(void)
+void TestLegacyDryRunExecutor(void)
   {
    CExecutionPolicy policy;
    policy.SetEnableExecution(true);
    policy.SetDryRunMode(true);
-   CMt5TradeExecutor executor(policy,NULL);
+   CLegacyMt5TradeRequestExecutor executor(policy,NULL);
 
    SOpenPositionParams params;
    params.symbol=_Symbol;
@@ -130,13 +130,13 @@ void TestDryRunExecutor(void)
    CTestAssert::EqualInt(BRE_EXECUTION_STATUS_DRY_RUN,(int)executionResult.Status(),"Dry run status must be DRY_RUN");
   }
 
-void TestExecutionDisabled(void)
+void TestLegacyExecutionDisabled(void)
   {
    CExecutionPolicy policy;
    policy.SetEnableExecution(false);
    policy.SetDryRunMode(false);
    policy.SetSimulationMode(false);
-   CMt5TradeExecutor executor(policy,NULL);
+   CLegacyMt5TradeRequestExecutor executor(policy,NULL);
 
    SOpenPositionParams params;
    params.symbol=_Symbol;
@@ -150,7 +150,7 @@ void TestExecutionDisabled(void)
 
 void TestCloseBasketMock(void)
   {
-   CMockTradeExecutor executor;
+   CLegacyMockTradeRequestExecutor executor;
    ulong tickets[2]={100001,100002};
    SClosePositionParams params;
    params.ticket=tickets[0];
@@ -171,8 +171,8 @@ void OnStart()
    TestResultMapperSuccess();
    TestResultMapperRetryable();
    TestRequestBuilderOpenFields();
-   TestDryRunExecutor();
-   TestExecutionDisabled();
+   TestLegacyDryRunExecutor();
+   TestLegacyExecutionDisabled();
    TestCloseBasketMock();
 
    CTestAssert::Summary("TestExecution");
