@@ -22,8 +22,18 @@
 #include <BasketRecovery/Application/Kernel/ApplicationTimerPipeline.mqh>
 #include <BasketRecovery/Application/Handlers/Commands/EvaluateStrategyCommandHandler.mqh>
 #include <BasketRecovery/Application/Handlers/Commands/StrategyExecutionStubHandlers.mqh>
+#include <BasketRecovery/Application/Handlers/Commands/DisableRecoveryCommandHandler.mqh>
+#include <BasketRecovery/Application/Handlers/Commands/MarkProfitLevelCompletedCommandHandler.mqh>
+#include <BasketRecovery/Application/Handlers/Commands/CreateBasketCommandHandler.mqh>
+#include <BasketRecovery/Application/Handlers/Commands/ActivateBasketCommandHandler.mqh>
+#include <BasketRecovery/Application/Handlers/Commands/CloseBasketCommandHandler.mqh>
+#include <BasketRecovery/Application/Handlers/StateTransitionHandler.mqh>
 #include <BasketRecovery/Application/Handlers/Events/StrategyRuntimeEventHandlers.mqh>
 #include <BasketRecovery/Application/Handlers/Events/StrategyRuntimeEventHandlersPart2.mqh>
+#include <BasketRecovery/Application/Kernel/TransitionEngine.mqh>
+#include <BasketRecovery/Application/Kernel/TransitionRuleRegistry.mqh>
+#include <BasketRecovery/Application/Kernel/DefaultTransitionRuleTable.mqh>
+#include <BasketRecovery/Domain/StateMachine/AlwaysTrueTransitionGuard.mqh>
 #include <BasketRecovery/Application/UseCases/EvaluateBasketStrategyUseCase.mqh>
 #include <BasketRecovery/Application/UseCases/BindMigratedBasketStrategyUseCase.mqh>
 #include <BasketRecovery/Application/Services/StrategyEvaluationScheduler.mqh>
@@ -523,6 +533,151 @@ void TestTimerPipelineOrdering(void)
    CTestAssert::EqualInt(1,queue.PendingCount(),"Scheduler must leave evaluate command pending for next cycle");
   }
 
+CProfileSnapshot BuildDefaultProfileSnapshot(void)
+  {
+   return CProfileSnapshot::Create("default",CRiskProfileConfig(),CRecoveryProfileConfig(),
+                                   CTakeProfitProfileConfig(),CBreakEvenProfileConfig(),
+                                   CExecutionProfileConfig(),CUtcTime(1000));
+  }
+
+void AssertDispatchFindsHandler(CCommandDispatcher &dispatcher,ICommand *command,const string label)
+  {
+   CResult<CCommandExecutionResult> result=dispatcher.Dispatch(command);
+   string message=label+" must resolve a handler";
+   CTestAssert::True(result.ErrorCode()!=BRE_ERR_HANDLER_NOT_FOUND,message);
+  }
+
+void AssertExecutionStubPending(CCommandDispatcher &dispatcher,
+                              ICommand *command,
+                              const string label)
+  {
+   CResult<CCommandExecutionResult> result=dispatcher.Dispatch(command);
+   string successMessage=label+" stub must succeed";
+   CTestAssert::True(result.IsOk(),successMessage);
+   CCommandExecutionResult executionResult;
+   result.TryGetValue(executionResult);
+   CDomainEvent *event=executionResult.ReleaseEventAt(0);
+   string eventMessage=label+" must emit event";
+   CTestAssert::True(event!=NULL,eventMessage);
+   string pendingMessage=label+" must be execution pending";
+   CTestAssert::EqualInt((long)BRE_EVENT_EXECUTION_PENDING,(long)event.EventType(),pendingMessage);
+   delete event;
+  }
+
+void TestHandlerRegistrationMap(void)
+  {
+   CInMemoryBasketRepository repository;
+   CTestClock clock;
+   CTestSequentialIdGenerator idGenerator;
+   CTransitionRuleRegistry registry;
+   CAlwaysTrueTransitionGuard guard;
+   CDefaultTransitionRuleTable::RegisterDefaultRules(registry,&guard);
+   CTransitionEngine engine(&registry);
+   CStateTransitionHandler transitionHandler(&engine);
+   CProfileSnapshot profileSnapshot=BuildDefaultProfileSnapshot();
+
+   CStrategyEngineAdapter strategyEngine;
+   CInMemoryCommandQueue queue;
+   CInMemoryMarketQuoteProvider marketProvider;
+   CEvaluateBasketStrategyUseCase useCase(&repository,&strategyEngine,&queue,&clock,&idGenerator);
+
+   CCreateBasketCommandHandler createHandler(&repository,&clock,&idGenerator,profileSnapshot);
+   CActivateBasketCommandHandler activateHandler(&repository,&transitionHandler,&clock,&idGenerator);
+   CCloseBasketCommandHandler closeHandler(&repository,&transitionHandler,&clock,&idGenerator);
+   CEvaluateStrategyCommandHandler evaluateHandler(&useCase,&marketProvider);
+   COpenRecoveryPositionCommandHandler openHandler(&repository,&clock);
+   CClosePositionsCommandHandler closePositionsHandler(&repository,&clock);
+   CMoveBasketStopLossCommandHandler moveHandler(&repository,&clock);
+   CReduceBasketRiskCommandHandler reduceHandler(&repository,&clock);
+   CDisableRecoveryCommandHandler disableHandler(&repository,&clock,&idGenerator);
+   CMarkProfitLevelCompletedCommandHandler markHandler(&repository,&clock,&idGenerator);
+
+   CCommandDispatcher dispatcher;
+   CKernelHandlerRegistration::RegisterCommandHandlers(dispatcher,
+      &createHandler,&activateHandler,&closeHandler,&evaluateHandler,
+      &openHandler,&closePositionsHandler,&moveHandler,&reduceHandler,
+      &disableHandler,&markHandler);
+
+   CTestAssert::EqualInt(10,dispatcher.HandlerCount(),"Kernel registration must wire ten command handlers");
+
+   string json=CStrategyProfileTestFixture::MinimalValidJson();
+   CBasketAggregate basket=BuildBoundActiveBasket("handler-map",json);
+   repository.Save(basket);
+
+   ENUM_BRE_COMMAND_TYPE strategyTypes[7]=
+     {
+      BRE_COMMAND_EVALUATE_STRATEGY,
+      BRE_COMMAND_OPEN_RECOVERY_POSITION,
+      BRE_COMMAND_CLOSE_POSITIONS,
+      BRE_COMMAND_MOVE_BASKET_STOP_LOSS,
+      BRE_COMMAND_DISABLE_RECOVERY,
+      BRE_COMMAND_REDUCE_BASKET_RISK,
+      BRE_COMMAND_MARK_PROFIT_LEVEL_COMPLETED
+     };
+
+   for(int i=0;i<7;i++)
+     {
+      ICommand *command=BuildStrategyCommandSample(strategyTypes[i],basket);
+      string label="Command type "+IntegerToString((long)strategyTypes[i]);
+      AssertDispatchFindsHandler(dispatcher,command,label);
+      delete command;
+     }
+  }
+
+void TestAllExecutionStubHandlersProducePendingEvent(void)
+  {
+   CInMemoryBasketRepository repository;
+   CTestClock clock;
+   CCommandDispatcher dispatcher;
+   COpenRecoveryPositionCommandHandler openHandler(&repository,&clock);
+   CClosePositionsCommandHandler closeHandler(&repository,&clock);
+   CMoveBasketStopLossCommandHandler moveHandler(&repository,&clock);
+   CReduceBasketRiskCommandHandler reduceHandler(&repository,&clock);
+   dispatcher.RegisterHandler(&openHandler,50);
+   dispatcher.RegisterHandler(&closeHandler,50);
+   dispatcher.RegisterHandler(&moveHandler,50);
+   dispatcher.RegisterHandler(&reduceHandler,50);
+
+   CBasketAggregate basket=BuildBoundActiveBasket("stub-all",CStrategyProfileTestFixture::MinimalValidJson());
+   repository.Save(basket);
+
+   ENUM_BRE_COMMAND_TYPE stubTypes[4]=
+     {
+      BRE_COMMAND_OPEN_RECOVERY_POSITION,
+      BRE_COMMAND_CLOSE_POSITIONS,
+      BRE_COMMAND_MOVE_BASKET_STOP_LOSS,
+      BRE_COMMAND_REDUCE_BASKET_RISK
+     };
+
+   for(int i=0;i<4;i++)
+     {
+      ICommand *command=BuildStrategyCommandSample(stubTypes[i],basket);
+      string label="Stub type "+IntegerToString((long)stubTypes[i]);
+      AssertExecutionStubPending(dispatcher,command,label);
+      delete command;
+     }
+  }
+
+void TestMigrationRejectsAlreadyBoundBasket(void)
+  {
+   CInMemoryBasketRepository repository;
+   CTestClock clock;
+   CTestSequentialIdGenerator idGenerator;
+   string json=CStrategyProfileTestFixture::MinimalValidJson();
+
+   CBasketAggregate basket=BuildBoundActiveBasket("migration-already-bound",json);
+   repository.Save(basket);
+
+   CStrategyProfileJsonParser parser;
+   CStrategyProfile profile;
+   parser.Parse(json,CUtcTime(2000)).TryGetValue(profile);
+
+   CBindMigratedBasketStrategyUseCase useCase(&repository,&clock,&idGenerator);
+   CDomainEventResult result=useCase.Execute(basket.Id(),json,profile);
+   CTestAssert::True(result.IsFail(),"Already-bound basket must reject controlled migration");
+   CTestAssert::EqualInt(BRE_ERR_STRATEGY_ALREADY_BOUND,result.ErrorCode(),"Already-bound error code must match");
+  }
+
 void OnStart()
   {
    CTestAssert::Reset();
@@ -536,6 +691,9 @@ void OnStart()
    TestDuplicateProfitLevelReachedRejection();
    TestDuplicateBreakEvenRuleRejection();
    TestExecutionStubProducesPendingEvent();
+   TestAllExecutionStubHandlersProducePendingEvent();
+   TestHandlerRegistrationMap();
+   TestMigrationRejectsAlreadyBoundBasket();
    TestActiveOnlyStrategyEvaluationScheduling();
    TestTimerPipelineOrdering();
    CPersistenceTestPaths::Cleanup();
