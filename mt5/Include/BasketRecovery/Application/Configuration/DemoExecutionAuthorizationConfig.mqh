@@ -15,6 +15,8 @@ private:
    int                             m_maxAuthorizedRequestsPerSession;
    int                             m_authorizationTokenExpirySeconds;
    double                          m_maxManualDemoOpenVolume;
+   int                             m_manualRecoveryCandidateExpirySeconds;
+   int                             m_maxRecoverySubmissionsPerSession;
 
 public:
                      CDemoExecutionAuthorizationConfig(void)
@@ -28,6 +30,8 @@ public:
       m_maxAuthorizedRequestsPerSession=1;
       m_authorizationTokenExpirySeconds=300;
       m_maxManualDemoOpenVolume=0.01;
+      m_manualRecoveryCandidateExpirySeconds=30;
+      m_maxRecoverySubmissionsPerSession=1;
      }
 
    ENUM_BRE_EXECUTION_RUNTIME_MODE ExecutionRuntimeMode(void) const { return m_executionRuntimeMode; }
@@ -39,6 +43,8 @@ public:
    int               MaxAuthorizedRequestsPerSession(void) const { return m_maxAuthorizedRequestsPerSession; }
    int               AuthorizationTokenExpirySeconds(void) const { return m_authorizationTokenExpirySeconds; }
    double            MaxManualDemoOpenVolume(void) const { return m_maxManualDemoOpenVolume; }
+   int               ManualRecoveryCandidateExpirySeconds(void) const { return m_manualRecoveryCandidateExpirySeconds; }
+   int               MaxRecoverySubmissionsPerSession(void) const { return m_maxRecoverySubmissionsPerSession; }
 
    void              SetExecutionRuntimeMode(const ENUM_BRE_EXECUTION_RUNTIME_MODE value) { m_executionRuntimeMode=value; }
    void              SetEnableLiveDemoExecution(const bool value) { m_enableLiveDemoExecution=value; }
@@ -49,6 +55,8 @@ public:
    void              SetMaxAuthorizedRequestsPerSession(const int value) { m_maxAuthorizedRequestsPerSession=value; }
    void              SetAuthorizationTokenExpirySeconds(const int value) { m_authorizationTokenExpirySeconds=value; }
    void              SetMaxManualDemoOpenVolume(const double value) { m_maxManualDemoOpenVolume=value; }
+   void              SetManualRecoveryCandidateExpirySeconds(const int value) { m_manualRecoveryCandidateExpirySeconds=value; }
+   void              SetMaxRecoverySubmissionsPerSession(const int value) { m_maxRecoverySubmissionsPerSession=value; }
 
    void              ApplyDefaultOff(void)
      {
@@ -61,6 +69,8 @@ public:
       m_maxAuthorizedRequestsPerSession=1;
       m_authorizationTokenExpirySeconds=300;
       m_maxManualDemoOpenVolume=0.01;
+      m_manualRecoveryCandidateExpirySeconds=30;
+      m_maxRecoverySubmissionsPerSession=1;
      }
   };
 

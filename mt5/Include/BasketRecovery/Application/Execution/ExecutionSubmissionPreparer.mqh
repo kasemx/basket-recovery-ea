@@ -14,7 +14,9 @@
 #include <BasketRecovery/Domain/Execution/BrokerCommentStamp.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionRequestFingerprint.mqh>
 #include <BasketRecovery/Domain/Execution/BrokerSubmissionTransitionGate.mqh>
+#include <BasketRecovery/Domain/Execution/PendingExecutionTransitionRules.mqh>
 #include <BasketRecovery/Domain/Execution/TradeExecutionRequest.mqh>
+#include <BasketRecovery/Domain/Execution/TradeExecutionStatus.mqh>
 #include <BasketRecovery/Domain/Execution/SubmissionPreparationResult.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 
@@ -132,6 +134,139 @@ private:
          basket,request,quote,account,m_snapshotStore,CRiskCalculationSettings::CreateDefault());
      }
 
+   bool              EntryMatchesCachedEnvelope(const CPendingExecutionEntry &entry,
+                                                const CTradeExecutionRequest &request,
+                                                const CBrokerSubmissionEnvelope &envelope) const
+     {
+      if(entry.ExecutionRequestId()!=request.ExecutionRequestId())
+         return false;
+      if(entry.IdempotencyKey()!=request.IdempotencyKey())
+         return false;
+      if(entry.BasketId().Value()!=request.BasketId().Value())
+         return false;
+      if(entry.StrategyProfileHash()!=request.StrategyProfileHash())
+         return false;
+      if(entry.ExpectedBasketVersion()!=(int)request.ExpectedBasketVersion())
+         return false;
+      if(entry.Symbol()!=request.Symbol())
+         return false;
+      if(entry.IntentType()!=request.IntentType())
+         return false;
+      if(MathAbs(entry.RequestedVolume()-request.RequestedVolume())>0.0000001)
+         return false;
+      if(entry.CorrelationToken()!=envelope.CorrelationToken())
+         return false;
+      if(entry.RequestFingerprint()!=envelope.Fingerprint().Value())
+         return false;
+      return true;
+     }
+
+   void              SyncEntryPreparationFromEnvelope(CPendingExecutionEntry &entry,
+                                                      const CBrokerSubmissionEnvelope &envelope) const
+     {
+      entry.SetPreparedAtUtc(envelope.PreparedAtUtc());
+      entry.SetPreparedQuoteTimestampUtc(envelope.QuoteTimestampUtc());
+      entry.SetBrokerComment(envelope.BrokerComment());
+      entry.SetCorrelationToken(envelope.CorrelationToken());
+      entry.SetRequestFingerprint(envelope.Fingerprint().Value());
+      entry.SetDeadlineUtc(envelope.ExpirationUtc());
+      if(entry.PreparedBid()<=0.0 && envelope.RequestedPrice()>0.0)
+         entry.SetPreparedBid(envelope.RequestedPrice());
+      if(entry.PreparedAsk()<=0.0 && envelope.RequestedPrice()>0.0)
+         entry.SetPreparedAsk(envelope.RequestedPrice());
+
+      CBrokerRequestCorrelation broker=entry.BrokerCorrelation();
+      broker.SetMagicNumber(envelope.MagicNumber());
+      broker.SetSymbol(envelope.Symbol());
+      broker.SetCommentToken(envelope.CorrelationToken());
+      broker.SetRequestFingerprint(envelope.Fingerprint().Value());
+      entry.SetBrokerCorrelation(broker);
+     }
+
+   CPendingExecutionEntry BuildPendingEntryFromEnvelope(const CBrokerSubmissionEnvelope &envelope,
+                                                        const CTradeExecutionRequest &request,
+                                                        const datetime nowUtc) const
+     {
+      CPendingExecutionEntry entry;
+      entry.SetExecutionRequestId(envelope.ExecutionRequestId());
+      entry.SetIdempotencyKey(envelope.IdempotencyKey());
+      entry.SetBasketId(envelope.BasketId());
+      entry.SetExpectedBasketVersion(envelope.ExpectedBasketVersion());
+      entry.SetStrategyProfileHash(envelope.StrategyProfileHash());
+      entry.SetIntentType(envelope.IntentType());
+      entry.SetSymbol(envelope.Symbol());
+      entry.SetRequestedVolume(envelope.RequestedVolume());
+      entry.SetCreatedAtUtc(nowUtc);
+      entry.SetStatus(BRE_TRADE_EXEC_STATUS_QUEUED);
+      SyncEntryPreparationFromEnvelope(entry,envelope);
+      return entry;
+     }
+
+   CSubmissionPreparationResult RestorePendingRegistryEntryFromCachedEnvelope(const CTradeExecutionRequest &request,
+                                                                              const CBrokerSubmissionEnvelope &envelope,
+                                                                              const datetime nowUtc)
+     {
+      if(m_registry==NULL)
+         return CSubmissionPreparationResult::Fail(BRE_PREP_FAIL_VALIDATION,
+                                                   "Pending execution registry is not configured");
+
+      CPendingExecutionEntry entry;
+      bool hasEntry=m_registry.TryGetByExecutionRequestId(request.ExecutionRequestId(),entry);
+
+      if(!hasEntry && m_store!=NULL)
+        {
+         CPendingExecutionEntry storedEntries[];
+         int count=m_store.RestoreEntries(storedEntries);
+         for(int i=0;i<count;i++)
+           {
+            if(storedEntries[i].IdempotencyKey()==request.IdempotencyKey() &&
+               storedEntries[i].ExecutionRequestId()!=request.ExecutionRequestId())
+               return CSubmissionPreparationResult::Fail(BRE_PREP_FAIL_VALIDATION,
+                                                         "Cached pending entry idempotency key collision");
+            if(storedEntries[i].ExecutionRequestId()==request.ExecutionRequestId())
+              {
+               entry=storedEntries[i];
+               hasEntry=true;
+               break;
+              }
+           }
+        }
+
+      if(hasEntry)
+        {
+         if(!EntryMatchesCachedEnvelope(entry,request,envelope))
+            return CSubmissionPreparationResult::Fail(BRE_PREP_FAIL_VALIDATION,
+                                                    "Cached pending entry mismatch for execution request id "+
+                                                    request.ExecutionRequestId());
+
+         if(CPendingExecutionTransitionRules::IsTerminal(entry.Status()) ||
+            entry.BlocksBlindResend() ||
+            entry.Status()==BRE_TRADE_EXEC_STATUS_SUBMITTED)
+            return CSubmissionPreparationResult::Fail(BRE_PREP_FAIL_VALIDATION,
+                                                    "Cached pending entry status does not allow reuse: "+
+                                                    TradeExecutionStatusLabel(entry.Status()));
+
+         if(!CBrokerSubmissionTransitionGate::PreparationMaySetStatus(entry.Status()) &&
+            entry.Status()!=BRE_TRADE_EXEC_STATUS_QUEUED)
+            return CSubmissionPreparationResult::Fail(BRE_PREP_FAIL_VALIDATION,
+                                                    "Pending entry status does not allow preparation reuse");
+        }
+      else
+        {
+         entry=BuildPendingEntryFromEnvelope(envelope,request,nowUtc);
+        }
+
+      if(entry.Status()==BRE_TRADE_EXEC_STATUS_CREATED)
+         entry.SetStatus(BRE_TRADE_EXEC_STATUS_QUEUED);
+      else if(entry.Status()!=BRE_TRADE_EXEC_STATUS_QUEUED)
+         return CSubmissionPreparationResult::Fail(BRE_PREP_FAIL_VALIDATION,
+                                                 "Pending entry must remain QUEUED for cached envelope reuse");
+
+      SyncEntryPreparationFromEnvelope(entry,envelope);
+      UpsertEntry(entry);
+      return CSubmissionPreparationResult::Ok(envelope,true);
+     }
+
 public:
                      CExecutionSubmissionPreparer(const CSubmissionPreparationPolicy &policy,
                                                   CSubmissionPreparationValidator &validator,
@@ -176,7 +311,13 @@ public:
             CBrokerSubmissionEnvelope envelope;
             cached.TryGetValue(envelope);
             if(IsEnvelopeReusable(envelope,request,nowUtc))
+              {
+               CSubmissionPreparationResult restored=
+                  RestorePendingRegistryEntryFromCachedEnvelope(request,envelope,nowUtc);
+               if(!restored.IsSuccess())
+                  return restored;
                return CSubmissionPreparationResult::Ok(envelope,true);
+              }
            }
         }
 

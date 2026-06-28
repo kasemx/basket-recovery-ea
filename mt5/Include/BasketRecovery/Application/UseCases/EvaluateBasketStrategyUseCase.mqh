@@ -11,6 +11,7 @@
 #include <BasketRecovery/Application/Services/StrategyDecisionCommandMapper.mqh>
 #include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Application/Strategy/RecoveryCandidatePlanningService.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateRegistrationService.mqh>
 #include <BasketRecovery/Application/Commands/StrategyCommands.mqh>
 #include <BasketRecovery/Application/Commands/CommandBase.mqh>
 #include <BasketRecovery/Domain/Basket/BasketRuntimeGuard.mqh>
@@ -29,6 +30,7 @@ private:
    IPositionSnapshotStore  *m_snapshotStore;
    CRecoveryDecisionRiskGateService *m_riskGateService;
    CRecoveryCandidatePlanningService *m_candidatePlanningService;
+   CManualRecoveryCandidateRegistrationService *m_manualRecoveryRegistrationService;
 
 public:
    IBasketRepository* Repository(void) const { return m_repository; }
@@ -46,6 +48,16 @@ public:
    CRecoveryDecisionRiskGateService* RiskGateService(void) const { return m_riskGateService; }
    CRecoveryCandidatePlanningService* CandidatePlanningService(void) const { return m_candidatePlanningService; }
 
+   void              ConfigureManualRecoveryCandidateRegistration(CManualRecoveryCandidateRegistrationService *registrationService)
+     {
+      m_manualRecoveryRegistrationService=registrationService;
+     }
+
+   CManualRecoveryCandidateRegistrationService* ManualRecoveryRegistrationService(void) const
+     {
+      return m_manualRecoveryRegistrationService;
+     }
+
 public:
                      CEvaluateBasketStrategyUseCase(IBasketRepository *repository,
                                                     IStrategyEngine *strategyEngine,
@@ -62,6 +74,7 @@ public:
       m_snapshotStore=snapshotStore;
       m_riskGateService=NULL;
       m_candidatePlanningService=NULL;
+      m_manualRecoveryRegistrationService=NULL;
      }
 
    CStrategyDecisionSet ApplyRecoveryCandidatePlanning(const CBasketAggregate &basket,
@@ -94,6 +107,18 @@ public:
       CStrategyDecisionSet gated=m_riskGateService.ApplyGate(basket,decisions,gateInput,riskContext);
       context.SetRiskEvaluationContext(riskContext);
       return gated;
+     }
+
+   void              RegisterManualRecoveryCandidates(const CBasketAggregate &basket,
+                                                    const CStrategyDecisionSet &decisions,
+                                                    const CStrategyEvaluationContext &context,
+                                                    const CRecoveryRiskGateInput &gateInput) const
+     {
+      if(m_manualRecoveryRegistrationService==NULL || !gateInput.HasQuote())
+         return;
+
+      CStrategyRiskEvaluationContext riskContext=context.RiskEvaluationContext();
+      m_manualRecoveryRegistrationService.TryRegisterFromGatedDecisions(basket,decisions,context,gateInput,riskContext);
      }
 
    CResult<int>      Execute(const CEvaluateStrategyCommand &command,
@@ -136,6 +161,7 @@ public:
       CStrategyDecisionSet decisions=m_strategyEngine.EvaluateAll(context);
       decisions=ApplyRecoveryCandidatePlanning(basket,decisions,context,gateInput);
       decisions=ApplyRecoveryRiskGate(basket,decisions,gateInput,context);
+      RegisterManualRecoveryCandidates(basket,decisions,context,gateInput);
 
       CStrategyDecisionCommandMapper mapper;
       ICommand *mappedCommands[];
@@ -205,6 +231,7 @@ public:
       CStrategyDecisionSet decisions=m_strategyEngine.EvaluateAll(context);
       decisions=ApplyRecoveryCandidatePlanning(basket,decisions,context,gateInput);
       decisions=ApplyRecoveryRiskGate(basket,decisions,gateInput,context);
+      RegisterManualRecoveryCandidates(basket,decisions,context,gateInput);
 
       CStrategyDecisionCommandMapper mapper;
       ICommand *mappedCommands[];

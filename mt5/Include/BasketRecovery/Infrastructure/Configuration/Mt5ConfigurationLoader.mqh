@@ -39,7 +39,8 @@ public:
                                                  const string basketExecutionKillSwitchBasketId,
                                                  const int maxAuthorizedRequestsPerSession,
                                                  const int authorizationTokenExpirySeconds,
-                                                 const double maxManualDemoOpenVolume)
+                                                 const double maxManualDemoOpenVolume,
+                                                 const int manualRecoveryCandidateExpirySeconds)
      {
       CEAConfiguration configuration;
       configuration.SetProfileName(profileName);
@@ -77,6 +78,10 @@ public:
       demoConfig.SetMaxAuthorizedRequestsPerSession(maxAuthorizedRequestsPerSession);
       demoConfig.SetAuthorizationTokenExpirySeconds(authorizationTokenExpirySeconds);
       demoConfig.SetMaxManualDemoOpenVolume(maxManualDemoOpenVolume>0.0 ? maxManualDemoOpenVolume : 0.01);
+      demoConfig.SetManualRecoveryCandidateExpirySeconds(manualRecoveryCandidateExpirySeconds>0
+                                                         ? manualRecoveryCandidateExpirySeconds
+                                                         : 30);
+      demoConfig.SetMaxRecoverySubmissionsPerSession(1);
       configuration.SetDemoAuthorizationConfig(demoConfig);
 
       if(profileName=="")

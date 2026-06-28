@@ -86,6 +86,8 @@ bool CBasketSerializer::FromReader(const CJsonReader &reader,CBasketPersistenceD
    dto.signalDirection=(ENUM_BRE_TRADE_DIRECTION)reader.ReadInt("signal_direction",BRE_DIRECTION_NONE);
    dto.signalSymbol=reader.ReadString("signal_symbol","");
    dto.signalDetails.hasDetails=reader.ReadBool("signal_has_details",false);
+   dto.signalDetails.rangeLow=reader.ReadDouble("signal_range_low",0.0);
+   dto.signalDetails.rangeHigh=reader.ReadDouble("signal_range_high",0.0);
    dto.signalDetails.stopLoss=reader.ReadDouble("signal_stop_loss",0.0);
    dto.signalDetails.tp1=reader.ReadDouble("signal_tp1",0.0);
    dto.signalDetails.tp2=reader.ReadDouble("signal_tp2",0.0);

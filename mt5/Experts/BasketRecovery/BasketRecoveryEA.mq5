@@ -48,11 +48,54 @@ input bool   InpManualDemoValidationAutoShutdown = false;
 input string InpManualExecutionDryRunBasketId = "";
 input string InpManualExecutionDryRunTriggerToken = "";
 input double InpManualExecutionDryRunLotSize = 0.01;
+input string InpManualRecoveryCandidateId = "";
+input string InpManualRecoverySubmissionTriggerToken = "";
+input int    InpManualRecoveryCandidateExpirySeconds = 30;
 
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
 int g_manualValidationTimerTicks=0;
 int g_manualSubmissionTimerTicks=0;
+bool g_manualRecoverySubmitAttempted=false;
+
+void ProcessManualRecoverySubmissionChartValidation(void)
+  {
+   if(g_applicationContext==NULL || g_manualRecoverySubmitAttempted)
+      return;
+   if(InpManualRecoveryCandidateId=="")
+      return;
+   if(!(InpEnableExecutionDiagnostics ||
+        (InpManualDemoAuthorizationToken!="" && InpManualRecoverySubmissionTriggerToken!="")))
+      return;
+
+   g_manualRecoverySubmitAttempted=true;
+
+   if(InpEnableExecutionDiagnostics)
+      Print("BRE broker_state_before | positions=",PositionsTotal(),
+            " | orders=",OrdersTotal(),
+            " | deals_history=",HistoryDealsTotal());
+
+   CDemoManualSubmissionResult recoveryResult=g_applicationContext.TryProcessManualRecoverySubmission(
+      InpManualRecoveryCandidateId,
+      InpManualDemoAuthorizationToken,
+      InpManualRecoverySubmissionTriggerToken,
+      InpManualDemoAuthorizationBasketId,
+      (long)202606001);
+
+   if(InpEnableExecutionDiagnostics)
+      Print("BRE broker_state_after | positions=",PositionsTotal(),
+            " | orders=",OrdersTotal(),
+            " | deals_history=",HistoryDealsTotal());
+
+   if(recoveryResult.IsSuccess())
+      Print("Manual recovery submission accepted | status=",
+            TradeExecutionStatusLabel(recoveryResult.ResultingStatus()),
+            " | order_send_async=",recoveryResult.OrderSendAsyncAccepted()?"true":"false");
+   else
+      Print("Manual recovery submission rejected | reason=",
+            LiveSubmissionSafetyRejectionReasonLabel(recoveryResult.RejectionReason()),
+            " | detail=",recoveryResult.Detail());
+  }
 
 int OnInit()
   {
@@ -87,7 +130,8 @@ int OnInit()
                                                  InpBasketExecutionKillSwitchBasketId,
                                                  InpMaxAuthorizedRequestsPerSession,
                                                  InpAuthorizationTokenExpirySeconds,
-                                                 InpMaxManualDemoOpenVolume);
+                                                 InpMaxManualDemoOpenVolume,
+                                                 InpManualRecoveryCandidateExpirySeconds);
    if(g_applicationContext==NULL)
      {
       Print("BasketRecoveryEA initialization failed");
@@ -120,6 +164,8 @@ int OnInit()
             TerminalInfoString(TERMINAL_COMMONDATA_PATH),"\\Files\\BasketRecovery\\persistence\\baskets\\",
             InpManualExecutionDryRunBasketId,".json");
      }
+
+   ProcessManualRecoverySubmissionChartValidation();
 
    return INIT_SUCCEEDED;
   }
@@ -160,6 +206,23 @@ void OnTimer()
    int eventsProcessed=0;
    int evaluationsScheduled=0;
    g_applicationContext.OnApplicationTimer(commandsProcessed,eventsProcessed,evaluationsScheduled);
+
+   if(InpManualRecoveryCandidateId!="" && InpManualDemoValidationAutoShutdown)
+     {
+      g_manualSubmissionTimerTicks++;
+      if(g_manualSubmissionTimerTicks>=12)
+        {
+         ExpertRemove();
+         TerminalClose(0);
+        }
+      return;
+     }
+
+   if(InpManualRecoveryCandidateId!="" && !g_manualRecoverySubmitAttempted)
+      ProcessManualRecoverySubmissionChartValidation();
+
+   if(InpManualRecoveryCandidateId!="")
+      return;
 
    if(InpManualDemoSubmissionRequestId!="")
      {

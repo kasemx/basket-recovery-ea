@@ -33,6 +33,11 @@
 #include <BasketRecovery/Application/Execution/ManualDemoAuthorizationUseCase.mqh>
 #include <BasketRecovery/Application/Execution/DemoManualSubmissionValidationService.mqh>
 #include <BasketRecovery/Application/Execution/DemoManualSubmissionService.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateSubmissionValidationService.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateSubmissionService.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateRegistry.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateRegistrationService.mqh>
+#include <BasketRecovery/Application/Execution/RecoveryStepExecutionTracker.mqh>
 #include <BasketRecovery/Application/Execution/DemoManualSubmissionTriggerRegistry.mqh>
 #include <BasketRecovery/Application/Execution/SubmitPreparedExecutionUseCase.mqh>
 #include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5AsyncSubmissionGateway.mqh>
@@ -87,6 +92,11 @@ private:
    CRecoveryDecisionRiskGateService *m_recoveryRiskGateService;
    CRecoveryCandidateEventBuffer *m_recoveryCandidateEventBuffer;
    CRecoveryCandidatePlanningService *m_recoveryCandidatePlanningService;
+   CManualRecoveryCandidateRegistry *m_manualRecoveryCandidateRegistry;
+   CManualRecoveryCandidateRegistrationService *m_manualRecoveryRegistrationService;
+   CManualRecoveryCandidateSubmissionValidationService *m_manualRecoverySubmissionValidationService;
+   CManualRecoveryCandidateSubmissionService *m_manualRecoverySubmissionService;
+   CRecoveryStepExecutionTracker *m_recoveryStepExecutionTracker;
    bool                m_initialized;
 
 public:
@@ -127,6 +137,11 @@ public:
       m_recoveryRiskGateService=NULL;
       m_recoveryCandidateEventBuffer=NULL;
       m_recoveryCandidatePlanningService=NULL;
+      m_manualRecoveryCandidateRegistry=NULL;
+      m_manualRecoveryRegistrationService=NULL;
+      m_manualRecoverySubmissionValidationService=NULL;
+      m_manualRecoverySubmissionService=NULL;
+      m_recoveryStepExecutionTracker=NULL;
       m_initialized=false;
      }
 
@@ -195,6 +210,22 @@ public:
       m_recoveryCandidatePlanningService=planningService;
      }
 
+   void              RegisterManualRecoveryCandidateRuntime(CManualRecoveryCandidateRegistry *registry,
+                                                            CManualRecoveryCandidateRegistrationService *registrationService,
+                                                            CManualRecoveryCandidateSubmissionValidationService *validationService,
+                                                            CManualRecoveryCandidateSubmissionService *submissionService,
+                                                            CRecoveryStepExecutionTracker *stepTracker)
+     {
+      m_manualRecoveryCandidateRegistry=registry;
+      m_manualRecoveryRegistrationService=registrationService;
+      m_manualRecoverySubmissionValidationService=validationService;
+      m_manualRecoverySubmissionService=submissionService;
+      m_recoveryStepExecutionTracker=stepTracker;
+     }
+
+   CManualRecoveryCandidateRegistry* ManualRecoveryCandidateRegistry(void) const { return m_manualRecoveryCandidateRegistry; }
+   CRecoveryStepExecutionTracker* RecoveryStepExecutionTracker(void) const { return m_recoveryStepExecutionTracker; }
+
    void              RegisterSubmissionPreparationRuntime(CExecutionSubmissionPreparer *preparer,
                                                           IPendingExecutionStore *store)
      {
@@ -245,6 +276,30 @@ public:
                                                                                   triggerToken,
                                                                                   basketIdValue);
      }
+
+   CDemoManualSubmissionResult TryProcessManualRecoverySubmission(const string candidateId,
+                                                                  const string authorizationToken,
+                                                                  const string triggerToken,
+                                                                  const string basketIdValue,
+                                                                  const long magicNumber)
+     {
+      if(m_manualRecoverySubmissionValidationService==NULL)
+         return CDemoManualSubmissionResult::Rejected(BRE_LIVE_SAFETY_LIVE_DISABLED,
+                                                      "Manual recovery submission route is not configured");
+      return m_manualRecoverySubmissionValidationService.TryProcessManualRecoverySubmission(candidateId,
+                                                                                            authorizationToken,
+                                                                                            triggerToken,
+                                                                                            basketIdValue,
+                                                                                            magicNumber);
+     }
+
+   bool              IsManualRecoverySubmissionWiredToStrategy(void) const
+     {
+      return m_manualRecoverySubmissionValidationService!=NULL &&
+             m_manualRecoverySubmissionValidationService.IsWiredToStrategyEngine();
+     }
+
+   bool              IsManualRecoverySubmissionWiredToAutomaticTimer(void) const { return false; }
 
    CExecutionAuthorizationResult TryProcessManualDemoAuthorizationValidation(const string executionRequestId,
                                                                                const string authorizationToken,
@@ -472,7 +527,20 @@ public:
         {
          CTradeTransactionCorrelationContext context=
             CMt5TradeTransactionAdapter::BuildContext(transaction,0);
-         m_tradeTransactionRouter.Route(context);
+         ENUM_BRE_TRADE_TRANSACTION_RESULT_CODE routeResult=m_tradeTransactionRouter.Route(context);
+         if((routeResult==BRE_TRADE_TX_RESULT_ACCEPTED || routeResult==BRE_TRADE_TX_RESULT_RECONCILED) &&
+            m_pendingExecutionRegistry!=NULL && m_manualRecoverySubmissionService!=NULL)
+           {
+            ENUM_BRE_CORRELATION_MATCH_STRATEGY strategy=BRE_CORRELATION_MATCH_NONE;
+            int index=m_pendingExecutionRegistry.TryCorrelate(context,strategy);
+            if(index>=0)
+              {
+               CPendingExecutionEntry entry;
+               if(m_pendingExecutionRegistry.TryGetEntry(index,entry) &&
+                  entry.Status()==BRE_TRADE_EXEC_STATUS_FILLED)
+                  m_manualRecoverySubmissionService.OnBrokerFillConfirmed(entry.ExecutionRequestId());
+              }
+           }
         }
 
       CTradeTransactionFastPathService *fastPath=m_kernel.TradeTransactionFastPath();

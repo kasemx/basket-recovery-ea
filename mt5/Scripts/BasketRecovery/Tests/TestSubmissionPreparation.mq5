@@ -12,6 +12,7 @@
 #include <BasketRecovery/Application/Execution/SubmissionPreparationPolicy.mqh>
 #include <BasketRecovery/Application/Execution/SubmissionPreparationValidator.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionSubmissionPreparer.mqh>
+#include <BasketRecovery/Application/Execution/PreparedSubmissionValidator.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionRestartService.mqh>
 #include <BasketRecovery/Application/Execution/TradeTransactionRouter.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionDiagnostics.mqh>
@@ -338,6 +339,128 @@ void TestInvalidChecksumCommentIgnored(void)
                          "Invalid checksum comment must remain unrelated");
   }
 
+CTradeExecutionRequest BuildOpenPositionRequest(const string requestId,const string idem,const string basketIdValue)
+  {
+   return CTradeExecutionRequest::Create(requestId,idem,"corr",CBasketId(basketIdValue),1,
+                                         "hash","EURUSD",BRE_EXEC_INTENT_OPEN_POSITION,
+                                         BRE_DIRECTION_BUY,0,0.01,0.0,0.0,0.0,1000,
+                                         CCommandId("cmd"),"test");
+  }
+
+void TestCachedEnvelopeRestoresMissingQueuedEntry(void)
+  {
+   CPendingExecutionRegistry registry;
+   CInMemoryPendingExecutionStore store;
+   CTestClock clock;
+   CInMemoryMarketDataProvider marketData;
+   marketData.SetQuote(BuildFreshQuote("EURUSD",1.0990,1.1000,10,0));
+   marketData.SetAccount(CAccountContextSnapshot::Create(1,10000.0,10000.0,0.0,10000.0,true));
+   CExecutionSubmissionPreparer preparer(CSubmissionPreparationPolicy::Default(),
+                                         CSubmissionPreparationValidator(&marketData,CMarketSafetyConfig()),
+                                         &registry,&store,&clock);
+   CBasketAggregate basket=BuildActiveBasket("restore-basket",1,"hash");
+   CTradeExecutionRequest request=BuildOpenPositionRequest("req-restore","idem-restore","restore-basket");
+   CTestAssert::True(preparer.Prepare(request,basket,202606001).IsSuccess(),"Initial preparation must succeed");
+   registry.Clear();
+   CSubmissionPreparationResult second=preparer.Prepare(request,basket,202606001);
+   CTestAssert::True(second.IsSuccess(),"Cached preparation must succeed");
+   CTestAssert::True(second.ReusedExistingEnvelope(),"Cached envelope must be reused");
+   CPendingExecutionEntry entry;
+   CTestAssert::True(registry.TryGetByExecutionRequestId("req-restore",entry),"Registry entry must be restored");
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_QUEUED,(int)entry.Status(),"Restored entry must be QUEUED");
+   CTestAssert::True(entry.IsPreparedQueued(),"Restored entry must be prepared queued");
+  }
+
+void TestCachedEnvelopeRestoredEntryPassesValidator(void)
+  {
+   CPendingExecutionRegistry registry;
+   CInMemoryPendingExecutionStore store;
+   CTestClock clock;
+   CInMemoryMarketDataProvider marketData;
+   marketData.SetQuote(BuildFreshQuote("EURUSD",1.0990,1.1000,10,0));
+   marketData.SetAccount(CAccountContextSnapshot::Create(1,10000.0,10000.0,0.0,10000.0,true));
+   CExecutionSubmissionPreparer preparer(CSubmissionPreparationPolicy::Default(),
+                                         CSubmissionPreparationValidator(&marketData,CMarketSafetyConfig()),
+                                         &registry,&store,&clock);
+   CBasketAggregate basket=BuildActiveBasket("validator-basket",1,"hash");
+   CTradeExecutionRequest request=BuildOpenPositionRequest("req-val","idem-val","validator-basket");
+   CTestAssert::True(preparer.Prepare(request,basket,202606001).IsSuccess(),"Initial preparation must succeed");
+   registry.Clear();
+   CTestAssert::True(preparer.Prepare(request,basket,202606001).IsSuccess(),"Cached restore must succeed");
+   CPreparedSubmissionValidator validator(&registry,&store,&clock);
+   CPendingExecutionEntry entry;
+   CBrokerSubmissionEnvelope envelope;
+   ENUM_BRE_PREPARED_SUBMISSION_FAILURE_REASON failureReason=BRE_SUBMIT_FAIL_NONE;
+   string failureMessage="";
+   CTestAssert::True(validator.Validate("req-val",entry,envelope,failureReason,failureMessage),
+                     "Restored entry must pass prepared submission validator");
+  }
+
+void TestCachedEnvelopeMatchingEntryIsIdempotent(void)
+  {
+   CPendingExecutionRegistry registry;
+   CInMemoryPendingExecutionStore store;
+   CTestClock clock;
+   CInMemoryMarketDataProvider marketData;
+   marketData.SetQuote(BuildFreshQuote("EURUSD",1.0990,1.1000,10,0));
+   marketData.SetAccount(CAccountContextSnapshot::Create(1,10000.0,10000.0,0.0,10000.0,true));
+   CExecutionSubmissionPreparer preparer(CSubmissionPreparationPolicy::Default(),
+                                         CSubmissionPreparationValidator(&marketData,CMarketSafetyConfig()),
+                                         &registry,&store,&clock);
+   CBasketAggregate basket=BuildActiveBasket("idem-basket",1,"hash");
+   CTradeExecutionRequest request=BuildOpenPositionRequest("req-idem","idem-idem","idem-basket");
+   CTestAssert::True(preparer.Prepare(request,basket,202606001).IsSuccess(),"First preparation must succeed");
+   CTestAssert::True(preparer.Prepare(request,basket,202606001).IsSuccess(),"Second cached preparation must succeed");
+   CPendingExecutionEntry entries[];
+   int count=store.RestoreEntries(entries);
+   CTestAssert::EqualInt(1,count,"Only one pending entry must exist in store");
+   CTestAssert::EqualInt(1,registry.Count(),"Only one pending entry must exist in registry");
+  }
+
+void TestCachedEnvelopeMismatchedEntryFailsSafely(void)
+  {
+   CPendingExecutionRegistry registry;
+   CInMemoryPendingExecutionStore store;
+   CTestClock clock;
+   CInMemoryMarketDataProvider marketData;
+   marketData.SetQuote(BuildFreshQuote("EURUSD",1.0990,1.1000,10,0));
+   marketData.SetAccount(CAccountContextSnapshot::Create(1,10000.0,10000.0,0.0,10000.0,true));
+   CExecutionSubmissionPreparer preparer(CSubmissionPreparationPolicy::Default(),
+                                         CSubmissionPreparationValidator(&marketData,CMarketSafetyConfig()),
+                                         &registry,&store,&clock);
+   CBasketAggregate basket=BuildActiveBasket("mismatch-basket",1,"hash");
+   CTradeExecutionRequest request=BuildOpenPositionRequest("req-mismatch","idem-mismatch","mismatch-basket");
+   CTestAssert::True(preparer.Prepare(request,basket,202606001).IsSuccess(),"Initial preparation must succeed");
+   CPendingExecutionEntry tampered;
+   CTestAssert::True(registry.TryGetByExecutionRequestId("req-mismatch",tampered),"Entry must exist");
+   tampered.SetRequestedVolume(0.02);
+   registry.Upsert(tampered);
+   CSubmissionPreparationResult second=preparer.Prepare(request,basket,202606001);
+   CTestAssert::False(second.IsSuccess(),"Mismatched cached entry must fail safely");
+   CTestAssert::True(StringFind(second.FailureMessage(),"mismatch")>=0,"Mismatch failure must include diagnostic detail");
+  }
+
+void TestCachedEnvelopeNoDuplicatePendingEntry(void)
+  {
+   CPendingExecutionRegistry registry;
+   CInMemoryPendingExecutionStore store;
+   CTestClock clock;
+   CInMemoryMarketDataProvider marketData;
+   marketData.SetQuote(BuildFreshQuote("EURUSD",1.0990,1.1000,10,0));
+   marketData.SetAccount(CAccountContextSnapshot::Create(1,10000.0,10000.0,0.0,10000.0,true));
+   CExecutionSubmissionPreparer preparer(CSubmissionPreparationPolicy::Default(),
+                                         CSubmissionPreparationValidator(&marketData,CMarketSafetyConfig()),
+                                         &registry,&store,&clock);
+   CBasketAggregate basket=BuildActiveBasket("dupreg-basket",1,"hash");
+   CTradeExecutionRequest request=BuildOpenPositionRequest("req-dupreg","idem-dupreg","dupreg-basket");
+   CTestAssert::True(preparer.Prepare(request,basket,202606001).IsSuccess(),"Initial preparation must succeed");
+   registry.Clear();
+   CTestAssert::True(preparer.Prepare(request,basket,202606001).IsSuccess(),"Cached restore must succeed");
+   CTestAssert::EqualInt(1,registry.Count(),"Restore must not create duplicate registry entries");
+   CPendingExecutionEntry entries[];
+   CTestAssert::EqualInt(1,store.RestoreEntries(entries),"Restore must not create duplicate store entries");
+  }
+
 void OnStart(void)
   {
    CTestAssert::Reset();
@@ -357,6 +480,11 @@ void OnStart(void)
    TestRestartPersistenceRestoresQueuedPrepared();
    TestTransactionCorrelationViaStampedComment();
    TestInvalidChecksumCommentIgnored();
+   TestCachedEnvelopeRestoresMissingQueuedEntry();
+   TestCachedEnvelopeRestoredEntryPassesValidator();
+   TestCachedEnvelopeMatchingEntryIsIdempotent();
+   TestCachedEnvelopeMismatchedEntryFailsSafely();
+   TestCachedEnvelopeNoDuplicatePendingEntry();
 
    CTestAssert::Summary("TestSubmissionPreparation");
    if(!CTestAssert::AllPassed())

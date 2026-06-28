@@ -201,6 +201,8 @@ private:
       fields+=m_writer.FieldInt("signal_direction",(long)dto.signalDirection)+",";
       fields+=m_writer.FieldString("signal_symbol",dto.signalSymbol)+",";
       fields+=m_writer.FieldBool("signal_has_details",dto.signalDetails.hasDetails)+",";
+      fields+=m_writer.FieldDouble("signal_range_low",dto.signalDetails.rangeLow)+",";
+      fields+=m_writer.FieldDouble("signal_range_high",dto.signalDetails.rangeHigh)+",";
       fields+=m_writer.FieldDouble("signal_stop_loss",dto.signalDetails.stopLoss)+",";
       fields+=m_writer.FieldDouble("signal_tp1",dto.signalDetails.tp1)+",";
       fields+=m_writer.FieldDouble("signal_tp2",dto.signalDetails.tp2)+",";

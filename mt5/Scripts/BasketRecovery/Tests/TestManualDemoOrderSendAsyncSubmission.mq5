@@ -436,6 +436,53 @@ void TestMockTransportIsOnlyBrokerCall(CDemoManualSubmissionTestHarness &h)
    CTestAssert::EqualInt(1,h.mockTransport.CallCount(),"single broker transport call");
   }
 
+void TestTriggerRetainedWhenPendingEntryMissing(CDemoManualSubmissionTestHarness &h)
+  {
+   h.Reset();
+   CBrokerSubmissionEnvelope envelope;
+   CBasketAggregate basket;
+   CTestAssert::True(h.Prepare("req-miss","idem-miss","b-miss",basket,envelope),"prepare");
+   CPendingExecutionEntry entry;
+   h.registry.TryGetByExecutionRequestId("req-miss",entry);
+   string token=h.IssueToken(entry,h.clock.Now()+300);
+   h.registry.Clear();
+   CDemoManualSubmissionResult result=h.SubmitPrepared("req-miss","b-miss",token,"trigger-retain");
+   CTestAssert::False(result.IsSuccess(),"Missing pending entry must reject submit");
+   CTestAssert::EqualInt((int)BRE_LIVE_SAFETY_REQUEST_NOT_FOUND,(int)result.RejectionReason(),"missing pending maps to request not found");
+   CTestAssert::False(result.TriggerTokenConsumed(),"Trigger must not be consumed before broker call");
+   CTestAssert::False(h.triggerRegistry.IsConsumed("trigger-retain"),"Trigger registry must retain token");
+   CTestAssert::EqualInt(0,h.mockTransport.CallCount(),"No OrderSendAsync without pending entry");
+   CTestAssert::True(StringLen(result.Detail())>0,"Failure detail must be preserved");
+  }
+
+void TestSubmitFailurePreservesDetail(CDemoManualSubmissionTestHarness &h)
+  {
+   h.Reset();
+   CDemoManualSubmissionResult result=h.SubmitPrepared("req-noprep","b-noprep","bad-token","trigger-detail");
+   CTestAssert::False(result.IsSuccess(),"Submit without preparation must fail");
+   CTestAssert::False(result.RejectionReason()==BRE_LIVE_SAFETY_NONE,"Failure reason must not be NONE");
+   CTestAssert::True(StringFind(result.Detail(),"Pending execution entry not found")>=0,
+                     "Failure detail must propagate validator message");
+  }
+
+void TestCachedRestoreAllowsBrokerAttempt(CDemoManualSubmissionTestHarness &h)
+  {
+   h.Reset();
+   h.mockTransport.SetNextAccepted(true,TRADE_RETCODE_PLACED,0,910400);
+   CBrokerSubmissionEnvelope envelope;
+   CBasketAggregate basket;
+   CTestAssert::True(h.Prepare("req-cache","idem-cache","b-cache",basket,envelope),"prepare");
+   CPendingExecutionEntry entry;
+   h.registry.TryGetByExecutionRequestId("req-cache",entry);
+   string token=h.IssueToken(entry,h.clock.Now()+300);
+   h.registry.Clear();
+   CTestAssert::True(h.Prepare("req-cache","idem-cache","b-cache",basket,envelope),"cached restore prepare");
+   CDemoManualSubmissionResult result=h.SubmitPrepared("req-cache","b-cache",token,"trigger-cache");
+   CTestAssert::True(result.IsSuccess(),"Cached restore must allow broker submission");
+   CTestAssert::True(result.TriggerTokenConsumed(),"Trigger must be consumed after broker attempt");
+   CTestAssert::EqualInt(1,h.mockTransport.CallCount(),"OrderSendAsync must be invoked once");
+  }
+
 void OnStart(void)
   {
    CTestAssert::Reset();
@@ -454,6 +501,9 @@ void OnStart(void)
    TestManualRouteIsolation(harness);
    TestRouterResolvesInjectedTransaction(harness);
    TestMockTransportIsOnlyBrokerCall(harness);
+   TestTriggerRetainedWhenPendingEntryMissing(harness);
+   TestSubmitFailurePreservesDetail(harness);
+   TestCachedRestoreAllowsBrokerAttempt(harness);
 
    CTestAssert::Summary("TestManualDemoOrderSendAsyncSubmission");
    if(!CTestAssert::AllPassed())

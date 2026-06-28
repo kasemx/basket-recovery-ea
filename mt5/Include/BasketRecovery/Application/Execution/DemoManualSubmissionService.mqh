@@ -21,6 +21,7 @@
 #include <BasketRecovery/Domain/Execution/ExecutionAuthorizationStatus.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionAuthorizationScope.mqh>
 #include <BasketRecovery/Domain/Execution/PreparedSubmissionResult.mqh>
+#include <BasketRecovery/Domain/Execution/PreparedSubmissionFailureReason.mqh>
 #include <BasketRecovery/Domain/Market/MarketQuote.mqh>
 #include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5AsyncSubmissionGateway.mqh>
 
@@ -46,6 +47,42 @@ private:
       if(consumeTrigger)
          return CDemoManualSubmissionResult::Rejected(reason,detail,BRE_TRADE_EXEC_STATUS_NONE,true);
       return CDemoManualSubmissionResult::Rejected(reason,detail);
+     }
+
+   ENUM_BRE_LIVE_SUBMISSION_SAFETY_REJECTION_REASON MapPreparedSubmissionFailureReason(
+      const ENUM_BRE_PREPARED_SUBMISSION_FAILURE_REASON reason) const
+     {
+      switch(reason)
+        {
+         case BRE_SUBMIT_FAIL_NOT_FOUND:
+            return BRE_LIVE_SAFETY_REQUEST_NOT_FOUND;
+         case BRE_SUBMIT_FAIL_NOT_QUEUED:
+         case BRE_SUBMIT_FAIL_NOT_PREPARED:
+            return BRE_LIVE_SAFETY_NOT_QUEUED_PREPARED;
+         case BRE_SUBMIT_FAIL_ENVELOPE_EXPIRED:
+            return BRE_LIVE_SAFETY_ENVELOPE_EXPIRED;
+         case BRE_SUBMIT_FAIL_ENVELOPE_MISMATCH:
+         case BRE_SUBMIT_FAIL_ALREADY_SUBMITTED:
+         case BRE_SUBMIT_FAIL_BLOCKED_STATE:
+         case BRE_SUBMIT_FAIL_GATEWAY_REJECTED:
+         case BRE_SUBMIT_FAIL_GATEWAY_UNKNOWN:
+            return BRE_LIVE_SAFETY_REQUEST_NOT_FOUND;
+         case BRE_SUBMIT_FAIL_VALIDATION:
+            return BRE_LIVE_SAFETY_REQUEST_NOT_FOUND;
+         default:
+            return BRE_LIVE_SAFETY_REQUEST_NOT_FOUND;
+        }
+     }
+
+   string            FormatSubmitFailureDetail(const CPreparedSubmissionResult &submitResult) const
+     {
+      string detail=submitResult.FailureMessage();
+      if(detail!="")
+         return detail;
+      ENUM_BRE_PREPARED_SUBMISSION_FAILURE_REASON reason=submitResult.FailureReason();
+      if(reason!=BRE_SUBMIT_FAIL_NONE)
+         return PreparedSubmissionFailureReasonLabel(reason);
+      return "Prepared submission failed";
      }
 
    bool              ValidateAuthorizationToken(const string plaintextToken,
@@ -212,25 +249,30 @@ public:
 
       bool brokerInvoked=(m_asyncGateway!=NULL && m_asyncGateway.WasBrokerInvoked());
       bool authConsumed=false;
+      bool triggerConsumed=false;
       if(brokerInvoked)
         {
+         m_triggerRegistry.Consume(triggerToken);
+         triggerConsumed=true;
          authConsumed=m_authRegistry.ConsumeToken(tokenHash);
          if(submitResult.IsSuccess() && submitResult.ResultingStatus()==BRE_TRADE_EXEC_STATUS_SUBMITTED)
             m_authRegistry.IncrementSessionSubmissionCount();
         }
 
-      m_triggerRegistry.Consume(triggerToken);
-
       if(submitResult.IsSuccess())
          return CDemoManualSubmissionResult::Submitted(submitResult.ResultingStatus(),
                                                        brokerInvoked,
                                                        authConsumed,
-                                                       true);
+                                                       triggerConsumed);
 
       ENUM_BRE_TRADE_EXECUTION_STATUS status=submitResult.ResultingStatus();
       if(status==BRE_TRADE_EXEC_STATUS_NONE)
          status=BRE_TRADE_EXEC_STATUS_REJECTED;
-      return CDemoManualSubmissionResult::Submitted(status,brokerInvoked,authConsumed,true);
+
+      ENUM_BRE_LIVE_SUBMISSION_SAFETY_REJECTION_REASON rejectReason=
+         MapPreparedSubmissionFailureReason(submitResult.FailureReason());
+      string detail=FormatSubmitFailureDetail(submitResult);
+      return CDemoManualSubmissionResult::Rejected(rejectReason,detail,status,triggerConsumed,brokerInvoked);
      }
   };
 

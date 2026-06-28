@@ -55,7 +55,8 @@ public:
    static CDemoManualSubmissionResult Rejected(const ENUM_BRE_LIVE_SUBMISSION_SAFETY_REJECTION_REASON reason,
                                                const string detail,
                                                const ENUM_BRE_TRADE_EXECUTION_STATUS status=BRE_TRADE_EXEC_STATUS_NONE,
-                                               const bool triggerTokenConsumed=false)
+                                               const bool triggerTokenConsumed=false,
+                                               const bool brokerInvoked=false)
      {
       CDemoManualSubmissionResult result;
       result.m_success=false;
@@ -63,6 +64,8 @@ public:
       result.m_rejectionReason=reason;
       result.m_detail=detail;
       result.m_triggerTokenConsumed=triggerTokenConsumed;
+      result.m_brokerInvoked=brokerInvoked;
+      result.m_orderSendAsyncAccepted=brokerInvoked;
       return result;
      }
   };

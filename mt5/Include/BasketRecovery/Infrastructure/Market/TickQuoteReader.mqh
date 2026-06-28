@@ -7,6 +7,59 @@
 
 class CTickQuoteReader
   {
+private:
+   static double     ResolveTickValue(const string symbol)
+     {
+      double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
+      if(tickValue>0.0)
+         return tickValue;
+
+      tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE_PROFIT);
+      if(tickValue>0.0)
+         return tickValue;
+
+      double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
+      if(tickSize<=0.0)
+         tickSize=SymbolInfoDouble(symbol,SYMBOL_POINT);
+      double contractSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_CONTRACT_SIZE);
+      if(tickSize>0.0 && contractSize>0.0)
+        {
+         tickValue=tickSize*contractSize;
+         if(tickValue>0.0)
+            return tickValue;
+        }
+
+      if(tickSize<=0.0)
+         return 0.0;
+
+      double bid=SymbolInfoDouble(symbol,SYMBOL_BID);
+      double ask=SymbolInfoDouble(symbol,SYMBOL_ASK);
+      if(bid<=0.0 || ask<=0.0)
+         return 0.0;
+
+      double volumeMin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
+      if(volumeMin<=0.0)
+         volumeMin=1.0;
+
+      double profitBuy=0.0;
+      if(OrderCalcProfit(ORDER_TYPE_BUY,symbol,volumeMin,bid,bid+tickSize,profitBuy))
+        {
+         double absProfit=MathAbs(profitBuy);
+         if(absProfit>0.0)
+            return absProfit/volumeMin;
+        }
+
+      double profitSell=0.0;
+      if(OrderCalcProfit(ORDER_TYPE_SELL,symbol,volumeMin,ask,ask-tickSize,profitSell))
+        {
+         double absProfit=MathAbs(profitSell);
+         if(absProfit>0.0)
+            return absProfit/volumeMin;
+        }
+
+      return 0.0;
+     }
+
 public:
    static CResult<CMarketQuote> ReadOnce(const string symbol)
      {
@@ -47,7 +100,7 @@ public:
                                               point,
                                               (int)SymbolInfoInteger(symbol,SYMBOL_DIGITS),
                                               SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE),
-                                              SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE),
+                                              ResolveTickValue(symbol),
                                               (datetime)tick.time,
                                               0,
                                               sessionStatus,

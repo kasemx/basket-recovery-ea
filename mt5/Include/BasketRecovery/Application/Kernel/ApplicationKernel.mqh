@@ -290,6 +290,12 @@ public:
       if(m_evaluateUseCase!=NULL)
          m_evaluateUseCase.ConfigureRecoveryCandidatePlanning(planningService);
      }
+
+   void              ConfigureManualRecoveryCandidateRegistration(CManualRecoveryCandidateRegistrationService *registrationService)
+     {
+      if(m_evaluateUseCase!=NULL)
+         m_evaluateUseCase.ConfigureManualRecoveryCandidateRegistration(registrationService);
+     }
   };
 
 #endif

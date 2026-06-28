@@ -48,6 +48,15 @@
 #include <BasketRecovery/Application/Execution/ManualDemoAuthorizationValidationService.mqh>
 #include <BasketRecovery/Application/Execution/DemoManualSubmissionService.mqh>
 #include <BasketRecovery/Application/Execution/DemoManualSubmissionValidationService.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateRegistry.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateRegistrationService.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateEventBuffer.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateTriggerRegistry.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateSubmissionService.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateSubmissionValidationService.mqh>
+#include <BasketRecovery/Application/Execution/RecoveryCandidateSubmissionValidator.mqh>
+#include <BasketRecovery/Application/Execution/RecoveryStepExecutionTracker.mqh>
+#include <BasketRecovery/Application/Execution/ManualRecoveryCandidateValidationArtifact.mqh>
 #include <BasketRecovery/Application/Execution/DemoManualSubmissionTriggerRegistry.mqh>
 #include <BasketRecovery/Application/Execution/SubmitPreparedExecutionUseCase.mqh>
 #include <BasketRecovery/Infrastructure/Execution/Mt5/IMt5AsyncOrderSendTransport.mqh>
@@ -88,7 +97,8 @@ public:
                                          const string basketExecutionKillSwitchBasketId,
                                          const int maxAuthorizedRequestsPerSession,
                                          const int authorizationTokenExpirySeconds,
-                                         const double maxManualDemoOpenVolume)
+                                         const double maxManualDemoOpenVolume,
+                                         const int manualRecoveryCandidateExpirySeconds)
      {
       CResult<CEAConfiguration> configurationResult=
          CMt5ConfigurationLoader::LoadFromInputs(profileName,logFilePath,logLevel,accountLabel,apiBaseUrl,apiKey,
@@ -104,7 +114,7 @@ public:
                                                  globalExecutionKillSwitch,basketExecutionKillSwitch,
                                                  basketExecutionKillSwitchBasketId,
                                                  maxAuthorizedRequestsPerSession,authorizationTokenExpirySeconds,
-                                                 maxManualDemoOpenVolume);
+                                                 maxManualDemoOpenVolume,manualRecoveryCandidateExpirySeconds);
 
       if(configurationResult.IsFail())
         {
@@ -365,6 +375,22 @@ public:
       kernel.ConfigureRecoveryCandidatePlanning(recoveryCandidatePlanningService);
       context.RegisterRecoveryCandidateRuntime(recoveryCandidateEventBuffer,recoveryCandidatePlanningService);
 
+      CManualRecoveryCandidateRegistry *manualRecoveryCandidateRegistry=new CManualRecoveryCandidateRegistry();
+      CManualRecoveryCandidateEventBuffer *manualRecoveryCandidateEventBuffer=new CManualRecoveryCandidateEventBuffer();
+      CRecoveryStepExecutionTracker *recoveryStepExecutionTracker=new CRecoveryStepExecutionTracker();
+      CManualRecoveryCandidateTriggerRegistry *manualRecoveryTriggerRegistry=new CManualRecoveryCandidateTriggerRegistry();
+      CManualRecoveryCandidateRegistrationService *manualRecoveryRegistrationService=
+         new CManualRecoveryCandidateRegistrationService(manualRecoveryCandidateRegistry,
+                                                         manualRecoveryCandidateEventBuffer,
+                                                         snapshotStore,
+                                                         pendingExecutionRegistry,
+                                                         recoveryStepExecutionTracker,
+                                                         clock,
+                                                         container.UniqueIdGenerator(),
+                                                         configuration.DemoAuthorizationConfig().ManualRecoveryCandidateExpirySeconds(),
+                                                         configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
+      kernel.ConfigureManualRecoveryCandidateRegistration(manualRecoveryRegistrationService);
+
       CFilePendingExecutionStore *pendingExecutionStore=
          new CFilePendingExecutionStore("BasketRecovery/pending_executions.dat");
       pendingExecutionStore.RestoreFromDisk();
@@ -447,6 +473,37 @@ public:
                                                 asyncSubmissionGateway,
                                                 asyncSubmissionDiagnostics,
                                                 liveAsyncTransport);
+
+      CRecoveryCandidateSubmissionValidator *recoveryCandidateSubmissionValidator=
+         new CRecoveryCandidateSubmissionValidator(snapshotStore,
+                                                   pendingExecutionRegistry,
+                                                   recoveryStepExecutionTracker,
+                                                   configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
+      CManualRecoveryCandidateSubmissionService *manualRecoverySubmissionService=
+         new CManualRecoveryCandidateSubmissionService(configuration.DemoAuthorizationConfig(),
+                                                       manualRecoveryCandidateRegistry,
+                                                       manualRecoveryTriggerRegistry,
+                                                       manualRecoveryCandidateEventBuffer,
+                                                       recoveryCandidateSubmissionValidator,
+                                                       recoveryStepExecutionTracker,
+                                                       authorizationRegistry,
+                                                       submissionPreparer,
+                                                       demoManualSubmissionService,
+                                                       clock);
+      CManualRecoveryCandidateSubmissionValidationService *manualRecoverySubmissionValidationService=
+         new CManualRecoveryCandidateSubmissionValidationService();
+      manualRecoverySubmissionValidationService.Configure(configuration.DemoAuthorizationConfig(),
+                                                          manualRecoverySubmissionService,
+                                                          persistenceManager.BasketRepository(),
+                                                          marketDataProvider,
+                                                          configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
+      context.RegisterManualRecoveryCandidateRuntime(manualRecoveryCandidateRegistry,
+                                                     manualRecoveryRegistrationService,
+                                                     manualRecoverySubmissionValidationService,
+                                                     manualRecoverySubmissionService,
+                                                     recoveryStepExecutionTracker);
+      CManualRecoveryCandidateValidationArtifact::TryRestoreToRegistry(*manualRecoveryCandidateRegistry);
+      // Sprint 7D: manual recovery route only; automatic recovery execution remains disabled.
       // Sprint 6G: OrderSendAsync exists only in CMt5AsyncSubmissionGateway; manual route only.
 
       CFastPathDiagnosticReporter *diagnosticReporter=kernel.DiagnosticReporter();
