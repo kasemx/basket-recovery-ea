@@ -291,6 +291,12 @@ public:
          m_evaluateUseCase.ConfigureRecoveryCandidatePlanning(planningService);
      }
 
+   void              ConfigureProfitLevelCloseCandidatePlanning(CProfitLevelCloseCandidatePlanningService *planningService)
+     {
+      if(m_evaluateUseCase!=NULL)
+         m_evaluateUseCase.ConfigureProfitLevelCloseCandidatePlanning(planningService);
+     }
+
    void              ConfigureManualRecoveryCandidateRegistration(CManualRecoveryCandidateRegistrationService *registrationService)
      {
       if(m_evaluateUseCase!=NULL)

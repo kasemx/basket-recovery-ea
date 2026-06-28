@@ -118,7 +118,10 @@ public:
                                         CCloseModeHelper::FromString(levelReader.ReadString("close_mode","WORST_ENTRY_FIRST")),
                                         levelReader.ReadBool("partial_close",true),
                                         levelReader.ReadBool("enable_trailing",false),
-                                        levelReader.ReadBool("enabled",true));
+                                        levelReader.ReadBool("enabled",true),
+                                        CProfitLevelTriggerTypeHelper::FromString(levelReader.ReadString("trigger_type","INFER_FROM_SOURCE")),
+                                        levelReader.ReadDouble("trigger_value",price),
+                                        levelReader.HasKey("trigger_value") || hasPrice);
         }
       return CProfitDistributionPlan::Create(requireFloating,defaultCloseMode,levels,levelCount);
      }

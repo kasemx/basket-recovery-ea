@@ -11,6 +11,7 @@
 #include <BasketRecovery/Application/Services/StrategyDecisionCommandMapper.mqh>
 #include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Application/Strategy/RecoveryCandidatePlanningService.mqh>
+#include <BasketRecovery/Application/Strategy/ProfitLevelCloseCandidatePlanningService.mqh>
 #include <BasketRecovery/Application/Execution/ManualRecoveryCandidateRegistrationService.mqh>
 #include <BasketRecovery/Application/Commands/StrategyCommands.mqh>
 #include <BasketRecovery/Application/Commands/CommandBase.mqh>
@@ -30,6 +31,7 @@ private:
    IPositionSnapshotStore  *m_snapshotStore;
    CRecoveryDecisionRiskGateService *m_riskGateService;
    CRecoveryCandidatePlanningService *m_candidatePlanningService;
+   CProfitLevelCloseCandidatePlanningService *m_profitLevelClosePlanningService;
    CManualRecoveryCandidateRegistrationService *m_manualRecoveryRegistrationService;
 
 public:
@@ -47,6 +49,16 @@ public:
 
    CRecoveryDecisionRiskGateService* RiskGateService(void) const { return m_riskGateService; }
    CRecoveryCandidatePlanningService* CandidatePlanningService(void) const { return m_candidatePlanningService; }
+
+   void              ConfigureProfitLevelCloseCandidatePlanning(CProfitLevelCloseCandidatePlanningService *planningService)
+     {
+      m_profitLevelClosePlanningService=planningService;
+     }
+
+   CProfitLevelCloseCandidatePlanningService* ProfitLevelClosePlanningService(void) const
+     {
+      return m_profitLevelClosePlanningService;
+     }
 
    void              ConfigureManualRecoveryCandidateRegistration(CManualRecoveryCandidateRegistrationService *registrationService)
      {
@@ -74,6 +86,7 @@ public:
       m_snapshotStore=snapshotStore;
       m_riskGateService=NULL;
       m_candidatePlanningService=NULL;
+      m_profitLevelClosePlanningService=NULL;
       m_manualRecoveryRegistrationService=NULL;
      }
 
@@ -93,6 +106,16 @@ public:
                                                         gateInput.QuoteSequence());
 
       return m_candidatePlanningService.ApplyPlanning(basket,decisions,context,gateInput,riskContext);
+     }
+
+   void              ApplyProfitLevelCloseCandidatePlanning(const CBasketAggregate &basket,
+                                                          const CStrategyEvaluationContext &context,
+                                                          const CRecoveryRiskGateInput &gateInput) const
+     {
+      if(m_profitLevelClosePlanningService==NULL)
+         return;
+
+      m_profitLevelClosePlanningService.EvaluateAndEmit(basket,context,gateInput);
      }
 
    CStrategyDecisionSet ApplyRecoveryRiskGate(const CBasketAggregate &basket,
@@ -160,6 +183,7 @@ public:
       contextResult.TryGetValue(context);
       CStrategyDecisionSet decisions=m_strategyEngine.EvaluateAll(context);
       decisions=ApplyRecoveryCandidatePlanning(basket,decisions,context,gateInput);
+      ApplyProfitLevelCloseCandidatePlanning(basket,context,gateInput);
       decisions=ApplyRecoveryRiskGate(basket,decisions,gateInput,context);
       RegisterManualRecoveryCandidates(basket,decisions,context,gateInput);
 
@@ -230,6 +254,7 @@ public:
       contextResult.TryGetValue(context);
       CStrategyDecisionSet decisions=m_strategyEngine.EvaluateAll(context);
       decisions=ApplyRecoveryCandidatePlanning(basket,decisions,context,gateInput);
+      ApplyProfitLevelCloseCandidatePlanning(basket,context,gateInput);
       decisions=ApplyRecoveryRiskGate(basket,decisions,gateInput,context);
       RegisterManualRecoveryCandidates(basket,decisions,context,gateInput);
 

@@ -389,6 +389,14 @@ public:
       kernel.ConfigureRecoveryCandidatePlanning(recoveryCandidatePlanningService);
       context.RegisterRecoveryCandidateRuntime(recoveryCandidateEventBuffer,recoveryCandidatePlanningService);
 
+      CProfitLevelCloseCandidateEventBuffer *profitLevelCloseCandidateEventBuffer=new CProfitLevelCloseCandidateEventBuffer();
+      CProfitLevelCloseCandidatePlanningService *profitLevelCloseCandidatePlanningService=
+         new CProfitLevelCloseCandidatePlanningService(pendingExecutionRegistry,
+                                                       profitLevelCloseCandidateEventBuffer,
+                                                       configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
+      kernel.ConfigureProfitLevelCloseCandidatePlanning(profitLevelCloseCandidatePlanningService);
+      context.RegisterProfitLevelCloseCandidateRuntime(profitLevelCloseCandidateEventBuffer,profitLevelCloseCandidatePlanningService);
+
       CManualRecoveryCandidateRegistry *manualRecoveryCandidateRegistry=new CManualRecoveryCandidateRegistry();
       CManualRecoveryCandidateEventBuffer *manualRecoveryCandidateEventBuffer=new CManualRecoveryCandidateEventBuffer();
       CRecoveryStepExecutionTracker *recoveryStepExecutionTracker=new CRecoveryStepExecutionTracker();

@@ -3,6 +3,7 @@
 
 #include <BasketRecovery/Domain/Strategy/Enums/CloseMode.mqh>
 #include <BasketRecovery/Domain/Strategy/Enums/ExecutionZoneExpansionMode.mqh>
+#include <BasketRecovery/Domain/Strategy/Enums/ProfitLevelTriggerType.mqh>
 
 class CProfitLevel
   {
@@ -17,6 +18,9 @@ private:
    bool                        m_partialClose;
    bool                        m_enableTrailing;
    bool                        m_enabled;
+   ENUM_BRE_PROFIT_LEVEL_TRIGGER_TYPE m_triggerType;
+   double                      m_triggerValue;
+   bool                        m_hasTriggerValue;
 
 public:
                      CProfitLevel(void) {}
@@ -33,6 +37,9 @@ public:
       m_partialClose=other.m_partialClose;
       m_enableTrailing=other.m_enableTrailing;
       m_enabled=other.m_enabled;
+      m_triggerType=other.m_triggerType;
+      m_triggerValue=other.m_triggerValue;
+      m_hasTriggerValue=other.m_hasTriggerValue;
      }
 
    string                      LevelId(void) const { return m_levelId; }
@@ -45,6 +52,9 @@ public:
    bool                        PartialClose(void) const { return m_partialClose; }
    bool                        EnableTrailing(void) const { return m_enableTrailing; }
    bool                        Enabled(void) const { return m_enabled; }
+   ENUM_BRE_PROFIT_LEVEL_TRIGGER_TYPE TriggerType(void) const { return m_triggerType; }
+   double                      TriggerValue(void) const { return m_triggerValue; }
+   bool                        HasTriggerValue(void) const { return m_hasTriggerValue; }
 
    static CProfitLevel         Create(const string levelId,
                                         const int levelIndex,
@@ -55,7 +65,10 @@ public:
                                         const ENUM_BRE_CLOSE_MODE closeMode,
                                         const bool partialClose,
                                         const bool enableTrailing,
-                                        const bool enabled)
+                                        const bool enabled,
+                                        const ENUM_BRE_PROFIT_LEVEL_TRIGGER_TYPE triggerType=BRE_PROFIT_LEVEL_TRIGGER_INFER_FROM_SOURCE,
+                                        const double triggerValue=0.0,
+                                        const bool hasTriggerValue=false)
      {
       CProfitLevel level;
       level.m_levelId=levelId;
@@ -68,6 +81,9 @@ public:
       level.m_partialClose=partialClose;
       level.m_enableTrailing=enableTrailing;
       level.m_enabled=enabled;
+      level.m_triggerType=triggerType;
+      level.m_triggerValue=triggerValue;
+      level.m_hasTriggerValue=hasTriggerValue;
       return level;
      }
   };

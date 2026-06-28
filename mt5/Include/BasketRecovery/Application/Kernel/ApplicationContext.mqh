@@ -50,6 +50,8 @@
 #include <BasketRecovery/Application/Risk/RecoveryRiskEventBuffer.mqh>
 #include <BasketRecovery/Application/Strategy/RecoveryCandidateEventBuffer.mqh>
 #include <BasketRecovery/Application/Strategy/RecoveryCandidatePlanningService.mqh>
+#include <BasketRecovery/Application/Strategy/ProfitLevelCloseCandidateEventBuffer.mqh>
+#include <BasketRecovery/Application/Strategy/ProfitLevelCloseCandidatePlanningService.mqh>
 #include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerPositionReader.mqh>
@@ -94,6 +96,8 @@ private:
    CRecoveryDecisionRiskGateService *m_recoveryRiskGateService;
    CRecoveryCandidateEventBuffer *m_recoveryCandidateEventBuffer;
    CRecoveryCandidatePlanningService *m_recoveryCandidatePlanningService;
+   CProfitLevelCloseCandidateEventBuffer *m_profitLevelCloseCandidateEventBuffer;
+   CProfitLevelCloseCandidatePlanningService *m_profitLevelCloseCandidatePlanningService;
    CManualRecoveryCandidateRegistry *m_manualRecoveryCandidateRegistry;
    CManualRecoveryCandidateRegistrationService *m_manualRecoveryRegistrationService;
    CManualRecoveryCandidateSubmissionValidationService *m_manualRecoverySubmissionValidationService;
@@ -140,6 +144,8 @@ public:
       m_recoveryRiskGateService=NULL;
       m_recoveryCandidateEventBuffer=NULL;
       m_recoveryCandidatePlanningService=NULL;
+      m_profitLevelCloseCandidateEventBuffer=NULL;
+      m_profitLevelCloseCandidatePlanningService=NULL;
       m_manualRecoveryCandidateRegistry=NULL;
       m_manualRecoveryRegistrationService=NULL;
       m_manualRecoverySubmissionValidationService=NULL;
@@ -213,6 +219,13 @@ public:
      {
       m_recoveryCandidateEventBuffer=eventBuffer;
       m_recoveryCandidatePlanningService=planningService;
+     }
+
+   void              RegisterProfitLevelCloseCandidateRuntime(CProfitLevelCloseCandidateEventBuffer *eventBuffer,
+                                                                CProfitLevelCloseCandidatePlanningService *planningService)
+     {
+      m_profitLevelCloseCandidateEventBuffer=eventBuffer;
+      m_profitLevelCloseCandidatePlanningService=planningService;
      }
 
    void              RegisterManualRecoveryCandidateRuntime(CManualRecoveryCandidateRegistry *registry,

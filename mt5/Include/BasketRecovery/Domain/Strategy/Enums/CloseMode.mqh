@@ -43,11 +43,11 @@ public:
          return BRE_CLOSE_MODE_FIFO;
       if(value=="LIFO")
          return BRE_CLOSE_MODE_LIFO;
-      if(value=="LARGEST_LOT_FIRST")
+      if(value=="LARGEST_LOT_FIRST" || value=="LARGEST_VOLUME_FIRST")
          return BRE_CLOSE_MODE_LARGEST_LOT_FIRST;
       if(value=="SMALLEST_LOT_FIRST")
          return BRE_CLOSE_MODE_SMALLEST_LOT_FIRST;
-      if(value=="PROFIT_BASED")
+      if(value=="PROFIT_BASED" || value=="LARGEST_PROFIT_FIRST")
          return BRE_CLOSE_MODE_PROFIT_BASED;
       if(value=="RISK_BASED")
          return BRE_CLOSE_MODE_RISK_BASED;
