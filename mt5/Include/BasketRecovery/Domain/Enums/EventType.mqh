@@ -44,7 +44,10 @@ enum ENUM_BRE_EVENT_TYPE
    BRE_EVENT_EXECUTION_UNKNOWN,
    BRE_EVENT_RECOVERY_RISK_VALIDATED,
    BRE_EVENT_RECOVERY_BLOCKED_BY_RISK,
-   BRE_EVENT_RISK_REDUCTION_SUGGESTED
+   BRE_EVENT_RISK_REDUCTION_SUGGESTED,
+   BRE_EVENT_RECOVERY_CANDIDATE_EVALUATED,
+   BRE_EVENT_RECOVERY_CANDIDATE_DUE,
+   BRE_EVENT_RECOVERY_CANDIDATE_BLOCKED_BY_RISK
   };
 
 class CEventTypeHelper
@@ -95,6 +98,9 @@ public:
          case BRE_EVENT_RECOVERY_RISK_VALIDATED: return "RecoveryRiskValidated";
          case BRE_EVENT_RECOVERY_BLOCKED_BY_RISK: return "RecoveryBlockedByRisk";
          case BRE_EVENT_RISK_REDUCTION_SUGGESTED: return "RiskReductionSuggested";
+         case BRE_EVENT_RECOVERY_CANDIDATE_EVALUATED: return "RecoveryCandidateEvaluated";
+         case BRE_EVENT_RECOVERY_CANDIDATE_DUE: return "RecoveryCandidateDue";
+         case BRE_EVENT_RECOVERY_CANDIDATE_BLOCKED_BY_RISK: return "RecoveryCandidateBlockedByRisk";
          default: return "None";
         }
      }

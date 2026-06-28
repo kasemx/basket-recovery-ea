@@ -284,6 +284,12 @@ public:
       if(m_evaluateUseCase!=NULL)
          m_evaluateUseCase.ConfigureRecoveryRiskGate(riskGateService);
      }
+
+   void              ConfigureRecoveryCandidatePlanning(CRecoveryCandidatePlanningService *planningService)
+     {
+      if(m_evaluateUseCase!=NULL)
+         m_evaluateUseCase.ConfigureRecoveryCandidatePlanning(planningService);
+     }
   };
 
 #endif

@@ -344,6 +344,7 @@ public:
    void                              SetIdentity(const CBasketId &id,const string correlationKey,
                                                  const ENUM_BRE_TRADE_DIRECTION direction,const string symbol);
    void                              SetLifecycleState(const ENUM_BRE_BASKET_LIFECYCLE_STATE state) { m_lifecycleState=state; }
+   void                              SetRecoveryActive(const bool value) { m_modeFlags.SetRecoveryActive(value); }
    void                              SetModeFlagsFromDto(const CBasketPersistenceDto &dto);
    void                              SetLegacyProfileSnapshot(const bool hasSnapshot,const string profileName,
                                                                 const CRiskProfileConfig &risk,

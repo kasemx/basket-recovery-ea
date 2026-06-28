@@ -42,6 +42,8 @@
 #include <BasketRecovery/Infrastructure/Execution/InMemoryExecutionAuthorizationStore.mqh>
 #include <BasketRecovery/Infrastructure/Execution/Mt5AccountExecutionEligibilityProvider.mqh>
 #include <BasketRecovery/Application/Risk/RecoveryRiskEventBuffer.mqh>
+#include <BasketRecovery/Application/Strategy/RecoveryCandidateEventBuffer.mqh>
+#include <BasketRecovery/Application/Strategy/RecoveryCandidatePlanningService.mqh>
 #include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerPositionReader.mqh>
@@ -83,6 +85,8 @@ private:
    CMt5LiveAsyncOrderSendTransport *m_liveAsyncTransport;
    CRecoveryRiskEventBuffer *m_recoveryRiskEventBuffer;
    CRecoveryDecisionRiskGateService *m_recoveryRiskGateService;
+   CRecoveryCandidateEventBuffer *m_recoveryCandidateEventBuffer;
+   CRecoveryCandidatePlanningService *m_recoveryCandidatePlanningService;
    bool                m_initialized;
 
 public:
@@ -121,6 +125,8 @@ public:
       m_liveAsyncTransport=NULL;
       m_recoveryRiskEventBuffer=NULL;
       m_recoveryRiskGateService=NULL;
+      m_recoveryCandidateEventBuffer=NULL;
+      m_recoveryCandidatePlanningService=NULL;
       m_initialized=false;
      }
 
@@ -180,6 +186,13 @@ public:
      {
       m_recoveryRiskEventBuffer=eventBuffer;
       m_recoveryRiskGateService=gateService;
+     }
+
+   void              RegisterRecoveryCandidateRuntime(CRecoveryCandidateEventBuffer *eventBuffer,
+                                                      CRecoveryCandidatePlanningService *planningService)
+     {
+      m_recoveryCandidateEventBuffer=eventBuffer;
+      m_recoveryCandidatePlanningService=planningService;
      }
 
    void              RegisterSubmissionPreparationRuntime(CExecutionSubmissionPreparer *preparer,

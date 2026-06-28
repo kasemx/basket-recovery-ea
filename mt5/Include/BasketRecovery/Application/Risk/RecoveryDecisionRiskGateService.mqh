@@ -81,37 +81,6 @@ private:
    CRecoveryRiskEventBuffer     *m_eventBuffer;
    int                           m_quoteStaleThresholdMs;
 
-   CStrategyRiskEvaluationContext BuildRiskContext(const CBasketAggregate &basket,
-                                                   const CMarketQuote &quote,
-                                                   const CAccountContextSnapshot &account,
-                                                   const ulong quoteSequence)
-     {
-      bool unresolved=m_pendingRegistry!=NULL &&
-                      CRecoveryPendingExecutionChecker::HasUnresolvedForBasket(*m_pendingRegistry,basket.Id());
-      CBasketRiskSnapshot snapshot=CBasketRiskReadModelService::TryCalculateBasketRisk(basket,
-                                                                                       quote,
-                                                                                       account,
-                                                                                       m_snapshotStore,
-                                                                                       CRiskCalculationSettings::CreateDefault());
-      CStrategyProfile profile;
-      basket.StrategyProfile(profile);
-      CRiskLimitProfile riskProfile=CRiskLimitProfile::FromRiskPlan(profile.StrategyId(),profile.RiskPlan());
-      CRiskCalculationContext context=CRiskCalculationContext::Create(account,
-                                                                      quote,
-                                                                      riskProfile,
-                                                                      basket.SignalDetails().StopLoss().Value(),
-                                                                      basket.Direction(),
-                                                                      CRiskCalculationSettings::CreateDefault());
-      CRiskReductionPlan reductionPlan=CRiskReductionPlanner::Plan(snapshot,context);
-      return CStrategyRiskEvaluationContext::Create(riskProfile,
-                                                    snapshot,
-                                                    basket.SignalDetails().StopLoss().Value(),
-                                                    quoteSequence,
-                                                    unresolved,
-                                                    reductionPlan,
-                                                    reductionPlan.HasPlan());
-     }
-
    void              EmitGateEvents(const CBasketAggregate &basket,
                                     const CRecoveryDecisionRiskGateResult &result,
                                     const CRecoveryRiskGateInput &gateInput)
@@ -158,6 +127,37 @@ public:
       m_pendingRegistry=pendingRegistry;
       m_eventBuffer=eventBuffer;
       m_quoteStaleThresholdMs=quoteStaleThresholdMs;
+     }
+
+   CStrategyRiskEvaluationContext BuildRiskContext(const CBasketAggregate &basket,
+                                                   const CMarketQuote &quote,
+                                                   const CAccountContextSnapshot &account,
+                                                   const ulong quoteSequence)
+     {
+      bool unresolved=m_pendingRegistry!=NULL &&
+                      CRecoveryPendingExecutionChecker::HasUnresolvedForBasket(*m_pendingRegistry,basket.Id());
+      CBasketRiskSnapshot snapshot=CBasketRiskReadModelService::TryCalculateBasketRisk(basket,
+                                                                                       quote,
+                                                                                       account,
+                                                                                       m_snapshotStore,
+                                                                                       CRiskCalculationSettings::CreateDefault());
+      CStrategyProfile profile;
+      basket.StrategyProfile(profile);
+      CRiskLimitProfile riskProfile=CRiskLimitProfile::FromRiskPlan(profile.StrategyId(),profile.RiskPlan());
+      CRiskCalculationContext context=CRiskCalculationContext::Create(account,
+                                                                      quote,
+                                                                      riskProfile,
+                                                                      basket.SignalDetails().StopLoss().Value(),
+                                                                      basket.Direction(),
+                                                                      CRiskCalculationSettings::CreateDefault());
+      CRiskReductionPlan reductionPlan=CRiskReductionPlanner::Plan(snapshot,context);
+      return CStrategyRiskEvaluationContext::Create(riskProfile,
+                                                    snapshot,
+                                                    basket.SignalDetails().StopLoss().Value(),
+                                                    quoteSequence,
+                                                    unresolved,
+                                                    reductionPlan,
+                                                    reductionPlan.HasPlan());
      }
 
    CStrategyDecisionSet ApplyGate(const CBasketAggregate &basket,

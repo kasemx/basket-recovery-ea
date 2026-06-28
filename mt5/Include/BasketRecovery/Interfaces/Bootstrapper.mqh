@@ -356,6 +356,15 @@ public:
       kernel.ConfigureRecoveryRiskGate(recoveryRiskGateService);
       context.RegisterRecoveryRiskRuntime(recoveryRiskEventBuffer,recoveryRiskGateService);
 
+      CRecoveryCandidateEventBuffer *recoveryCandidateEventBuffer=new CRecoveryCandidateEventBuffer();
+      CRecoveryCandidatePlanningService *recoveryCandidatePlanningService=
+         new CRecoveryCandidatePlanningService(snapshotStore,
+                                               pendingExecutionRegistry,
+                                               recoveryCandidateEventBuffer,
+                                               configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
+      kernel.ConfigureRecoveryCandidatePlanning(recoveryCandidatePlanningService);
+      context.RegisterRecoveryCandidateRuntime(recoveryCandidateEventBuffer,recoveryCandidatePlanningService);
+
       CFilePendingExecutionStore *pendingExecutionStore=
          new CFilePendingExecutionStore("BasketRecovery/pending_executions.dat");
       pendingExecutionStore.RestoreFromDisk();
