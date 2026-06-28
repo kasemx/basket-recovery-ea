@@ -14,6 +14,7 @@ private:
    string                          m_basketExecutionKillSwitchBasketId;
    int                             m_maxAuthorizedRequestsPerSession;
    int                             m_authorizationTokenExpirySeconds;
+   double                          m_maxManualDemoOpenVolume;
 
 public:
                      CDemoExecutionAuthorizationConfig(void)
@@ -26,6 +27,7 @@ public:
       m_basketExecutionKillSwitchBasketId="";
       m_maxAuthorizedRequestsPerSession=1;
       m_authorizationTokenExpirySeconds=300;
+      m_maxManualDemoOpenVolume=0.01;
      }
 
    ENUM_BRE_EXECUTION_RUNTIME_MODE ExecutionRuntimeMode(void) const { return m_executionRuntimeMode; }
@@ -36,6 +38,7 @@ public:
    string            BasketExecutionKillSwitchBasketId(void) const { return m_basketExecutionKillSwitchBasketId; }
    int               MaxAuthorizedRequestsPerSession(void) const { return m_maxAuthorizedRequestsPerSession; }
    int               AuthorizationTokenExpirySeconds(void) const { return m_authorizationTokenExpirySeconds; }
+   double            MaxManualDemoOpenVolume(void) const { return m_maxManualDemoOpenVolume; }
 
    void              SetExecutionRuntimeMode(const ENUM_BRE_EXECUTION_RUNTIME_MODE value) { m_executionRuntimeMode=value; }
    void              SetEnableLiveDemoExecution(const bool value) { m_enableLiveDemoExecution=value; }
@@ -45,6 +48,7 @@ public:
    void              SetBasketExecutionKillSwitchBasketId(const string value) { m_basketExecutionKillSwitchBasketId=value; }
    void              SetMaxAuthorizedRequestsPerSession(const int value) { m_maxAuthorizedRequestsPerSession=value; }
    void              SetAuthorizationTokenExpirySeconds(const int value) { m_authorizationTokenExpirySeconds=value; }
+   void              SetMaxManualDemoOpenVolume(const double value) { m_maxManualDemoOpenVolume=value; }
 
    void              ApplyDefaultOff(void)
      {
@@ -56,6 +60,7 @@ public:
       m_basketExecutionKillSwitchBasketId="";
       m_maxAuthorizedRequestsPerSession=1;
       m_authorizationTokenExpirySeconds=300;
+      m_maxManualDemoOpenVolume=0.01;
      }
   };
 

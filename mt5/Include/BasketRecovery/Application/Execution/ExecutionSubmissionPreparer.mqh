@@ -216,6 +216,89 @@ public:
 
       return CSubmissionPreparationResult::Ok(envelope,false);
      }
+
+   CSubmissionPreparationResult PrepareForValidationSeed(const CTradeExecutionRequest &request,
+                                                         const CBasketAggregate &basket,
+                                                         const long magicNumber)
+     {
+      datetime nowUtc=m_clock!=NULL ? m_clock.Now() : TimeCurrent();
+
+      ENUM_BRE_SUBMISSION_PREPARATION_FAILURE_REASON failureReason=BRE_PREP_FAIL_NONE;
+      string failureMessage="";
+      if(!m_validator.ValidateSealedRequest(request,failureReason,failureMessage))
+         return CSubmissionPreparationResult::Fail(failureReason,failureMessage);
+
+      CMarketQuote quote;
+      if(!m_validator.ValidateRequestContextForValidationSeed(request,basket,quote,failureReason,failureMessage))
+        {
+         CPendingExecutionEntry rejectedEntry;
+         rejectedEntry.SetExecutionRequestId(request.ExecutionRequestId());
+         rejectedEntry.SetIdempotencyKey(request.IdempotencyKey());
+         return FailEntry(rejectedEntry,failureReason,failureMessage);
+        }
+
+      if(quote.FreshnessAgeMs()>m_policy.QuoteFreshnessMs())
+        {
+         CPendingExecutionEntry rejectedEntry;
+         rejectedEntry.SetExecutionRequestId(request.ExecutionRequestId());
+         rejectedEntry.SetIdempotencyKey(request.IdempotencyKey());
+         return FailEntry(rejectedEntry,BRE_PREP_FAIL_STALE_QUOTE,"Quote freshness expired for preparation");
+        }
+
+      CExecutionRequestFingerprint fingerprint=CExecutionRequestFingerprint::Compute(request);
+      string brokerComment=CBrokerCommentStamp::Build(request.ExecutionRequestId(),
+                                                      request.IdempotencyKey(),
+                                                      request.BasketId(),
+                                                      request.IntentType(),
+                                                      m_policy.MaxCommentLength());
+      string correlationToken=CBrokerCommentStamp::ExtractCorrelationToken(brokerComment);
+
+      CPendingExecutionEntry entry;
+      if(m_registry!=NULL && m_registry.TryGetByExecutionRequestId(request.ExecutionRequestId(),entry))
+        {
+         if(!CBrokerSubmissionTransitionGate::PreparationMaySetStatus(entry.Status()))
+           {
+            return CSubmissionPreparationResult::Fail(BRE_PREP_FAIL_VALIDATION,"Pending entry status does not allow preparation");
+           }
+        }
+      else
+        {
+         entry=CPendingExecutionEntry();
+         entry.SetExecutionRequestId(request.ExecutionRequestId());
+         entry.SetIdempotencyKey(request.IdempotencyKey());
+         entry.SetBasketId(request.BasketId());
+         entry.SetExpectedBasketVersion((int)request.ExpectedBasketVersion());
+         entry.SetStrategyProfileHash(request.StrategyProfileHash());
+         entry.SetIntentType(request.IntentType());
+         entry.SetSymbol(request.Symbol());
+         entry.SetRequestedVolume(request.RequestedVolume());
+         entry.SetCreatedAtUtc(nowUtc);
+         entry.SetStatus(BRE_TRADE_EXEC_STATUS_CREATED);
+        }
+
+      if(m_registry!=NULL)
+        {
+         if(CPendingExecutionCommentCollisionDetector::HasActiveCommentCollision(*m_registry,brokerComment,request.ExecutionRequestId()))
+            return FailEntry(entry,BRE_PREP_FAIL_COMMENT_COLLISION,"Broker comment collision detected");
+         if(CPendingExecutionCommentCollisionDetector::HasActiveCorrelationCollision(*m_registry,correlationToken,request.ExecutionRequestId()))
+            return FailEntry(entry,BRE_PREP_FAIL_CORRELATION_COLLISION,"Correlation token collision detected");
+        }
+
+      if(entry.Status()==BRE_TRADE_EXEC_STATUS_CREATED)
+         entry.SetStatus(BRE_TRADE_EXEC_STATUS_QUEUED);
+
+      CBrokerSubmissionEnvelope envelope=BuildEnvelope(request,basket,quote,magicNumber,brokerComment,
+                                                         correlationToken,fingerprint,nowUtc);
+      entry.IncrementPreparationAttemptCount();
+      entry.SetLastPreparationFailureReason(BRE_PREP_FAIL_NONE);
+      ApplyPreparationMetadata(entry,envelope,quote);
+
+      UpsertEntry(entry);
+      if(m_store!=NULL)
+         m_store.SavePreparedState(entry,envelope);
+
+      return CSubmissionPreparationResult::Ok(envelope,false);
+     }
   };
 
 #endif

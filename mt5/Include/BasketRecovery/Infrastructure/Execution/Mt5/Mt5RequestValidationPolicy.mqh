@@ -142,6 +142,83 @@ public:
       CTradeExecutionResult ok;
       return CResult<CTradeExecutionResult>::Ok(ok);
      }
+
+   CResult<CTradeExecutionResult> ValidateBeforeOrderCheckExceptAccount(const CTradeExecutionRequest &request,
+                                                                        const CBasketAggregate &basket) const
+     {
+      if(basket.LifecycleState()!=BRE_STATE_ACTIVE)
+         return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_BASKET_NOT_ACTIVE,"Basket lifecycle is not ACTIVE"));
+
+      CVoidResult guardResult=CBasketRuntimeGuard::ValidateStrategyCommandContext(basket,
+                                                                                   request.ExpectedBasketVersion(),
+                                                                                   request.StrategyProfileHash());
+      if(guardResult.IsFail())
+        {
+         if(guardResult.ErrorCode()==BRE_ERR_BASKET_VERSION_STALE)
+            return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_STALE_BASKET_VERSION,guardResult.ErrorMessage()));
+         if(guardResult.ErrorCode()==BRE_ERR_STRATEGY_HASH_MISMATCH)
+            return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_PROFILE_HASH_MISMATCH,guardResult.ErrorMessage()));
+         return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_VALIDATION,guardResult.ErrorMessage()));
+        }
+
+      CVoidResult symbolResult=m_validator.ValidateSymbolSelected(request.Symbol());
+      if(symbolResult.IsFail())
+         return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_VALIDATION,symbolResult.ErrorMessage()));
+
+      CVoidResult hoursResult=m_validator.ValidateTradingHours(request.Symbol());
+      if(hoursResult.IsFail())
+         return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_MARKET_UNAVAILABLE,hoursResult.ErrorMessage()));
+
+      if(m_marketDataProvider==NULL)
+         return CResult<CTradeExecutionResult>::Fail(BRE_ERR_EXEC_REQUEST_INVALID,"Market data provider is not configured");
+
+      CResult<CMarketQuote> quoteResult=m_marketDataProvider.TryGetQuote(request.Symbol());
+      if(quoteResult.IsFail())
+         return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_MARKET_UNAVAILABLE,quoteResult.ErrorMessage()));
+
+      CMarketQuote quote;
+      quoteResult.TryGetValue(quote);
+
+      if(quote.FreshnessAgeMs()>m_marketSafetyConfig.QuoteStaleThresholdMs())
+         return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_LIVE_QUOTE_STALE,"Quote is stale"));
+
+      if(quote.SpreadPoints()>m_marketSafetyConfig.MaxSpreadPoints())
+         return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_MAX_SPREAD,"Spread exceeds configured maximum"));
+
+      if(request.IntentType()==BRE_EXEC_INTENT_OPEN_POSITION)
+        {
+         if(request.Direction()==BRE_DIRECTION_NONE)
+            return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_VALIDATION,"Direction is required for open"));
+         CVoidResult volumeResult=m_validator.ValidateVolume(request.Symbol(),request.RequestedVolume());
+         if(volumeResult.IsFail())
+            return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_VOLUME_CONSTRAINT,volumeResult.ErrorMessage()));
+
+         double price=(request.Direction()==BRE_DIRECTION_BUY) ? quote.Ask() : quote.Bid();
+         if(request.RequestedPrice()>0.0)
+           {
+            if(request.Direction()==BRE_DIRECTION_BUY && request.RequestedPrice()<quote.Ask())
+               return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_VALIDATION,"Buy price below ask"));
+            if(request.Direction()==BRE_DIRECTION_SELL && request.RequestedPrice()>quote.Bid())
+               return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_VALIDATION,"Sell price above bid"));
+            price=request.RequestedPrice();
+           }
+
+         CVoidResult stopsResult=m_validator.ValidateStopsLevel(request.Symbol(),price,
+                                                                request.RequestedStopLoss(),
+                                                                request.RequestedTakeProfit());
+         if(stopsResult.IsFail())
+            return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_VALIDATION,stopsResult.ErrorMessage()));
+
+         CVoidResult freezeResult=m_validator.ValidateFreezeLevel(request.Symbol(),price,
+                                                                  request.RequestedStopLoss(),
+                                                                  request.RequestedTakeProfit());
+         if(freezeResult.IsFail())
+            return CResult<CTradeExecutionResult>::Ok(Reject(BRE_EXEC_FAIL_VALIDATION,freezeResult.ErrorMessage()));
+        }
+
+      CTradeExecutionResult ok;
+      return CResult<CTradeExecutionResult>::Ok(ok);
+     }
   };
 
 #endif

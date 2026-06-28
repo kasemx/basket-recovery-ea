@@ -31,6 +31,13 @@
 #include <BasketRecovery/Domain/Execution/LiveSubmissionSafetyRejectionReason.mqh>
 #include <BasketRecovery/Application/Execution/ManualDemoAuthorizationValidationService.mqh>
 #include <BasketRecovery/Application/Execution/ManualDemoAuthorizationUseCase.mqh>
+#include <BasketRecovery/Application/Execution/DemoManualSubmissionValidationService.mqh>
+#include <BasketRecovery/Application/Execution/DemoManualSubmissionService.mqh>
+#include <BasketRecovery/Application/Execution/DemoManualSubmissionTriggerRegistry.mqh>
+#include <BasketRecovery/Application/Execution/SubmitPreparedExecutionUseCase.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5AsyncSubmissionGateway.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5AsyncSubmissionDiagnostics.mqh>
+#include <BasketRecovery/Domain/Execution/DemoManualSubmissionResult.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionAuthorizationRegistry.mqh>
 #include <BasketRecovery/Infrastructure/Execution/InMemoryExecutionAuthorizationStore.mqh>
 #include <BasketRecovery/Infrastructure/Execution/Mt5AccountExecutionEligibilityProvider.mqh>
@@ -65,6 +72,13 @@ private:
    CExecutionAuthorizationRegistry *m_authorizationRegistry;
    CInMemoryExecutionAuthorizationStore *m_authorizationStore;
    CMt5AccountExecutionEligibilityProvider *m_accountEligibilityProvider;
+   CDemoManualSubmissionValidationService *m_demoManualSubmissionValidationService;
+   CDemoManualSubmissionService *m_demoManualSubmissionService;
+   CDemoManualSubmissionTriggerRegistry *m_demoSubmissionTriggerRegistry;
+   CSubmitPreparedExecutionUseCase *m_submitPreparedExecutionUseCase;
+   CMt5AsyncSubmissionGateway *m_asyncSubmissionGateway;
+   CMt5AsyncSubmissionDiagnostics *m_asyncSubmissionDiagnostics;
+   CMt5LiveAsyncOrderSendTransport *m_liveAsyncTransport;
    bool                m_initialized;
 
 public:
@@ -94,6 +108,13 @@ public:
       m_authorizationRegistry=NULL;
       m_authorizationStore=NULL;
       m_accountEligibilityProvider=NULL;
+      m_demoManualSubmissionValidationService=NULL;
+      m_demoManualSubmissionService=NULL;
+      m_demoSubmissionTriggerRegistry=NULL;
+      m_submitPreparedExecutionUseCase=NULL;
+      m_asyncSubmissionGateway=NULL;
+      m_asyncSubmissionDiagnostics=NULL;
+      m_liveAsyncTransport=NULL;
       m_initialized=false;
      }
 
@@ -168,6 +189,37 @@ public:
       m_accountEligibilityProvider=eligibilityProvider;
      }
 
+   void              RegisterDemoManualSubmissionRuntime(CDemoManualSubmissionValidationService *validationService,
+                                                           CDemoManualSubmissionService *submissionService,
+                                                           CDemoManualSubmissionTriggerRegistry *triggerRegistry,
+                                                           CSubmitPreparedExecutionUseCase *submitUseCase,
+                                                           CMt5AsyncSubmissionGateway *asyncGateway,
+                                                           CMt5AsyncSubmissionDiagnostics *asyncDiagnostics,
+                                                           CMt5LiveAsyncOrderSendTransport *liveAsyncTransport)
+     {
+      m_demoManualSubmissionValidationService=validationService;
+      m_demoManualSubmissionService=submissionService;
+      m_demoSubmissionTriggerRegistry=triggerRegistry;
+      m_submitPreparedExecutionUseCase=submitUseCase;
+      m_asyncSubmissionGateway=asyncGateway;
+      m_asyncSubmissionDiagnostics=asyncDiagnostics;
+      m_liveAsyncTransport=liveAsyncTransport;
+     }
+
+   CDemoManualSubmissionResult TryProcessManualDemoSubmission(const string executionRequestId,
+                                                              const string authorizationToken,
+                                                              const string triggerToken,
+                                                              const string basketIdValue)
+     {
+      if(m_demoManualSubmissionValidationService==NULL)
+         return CDemoManualSubmissionResult::Rejected(BRE_LIVE_SAFETY_LIVE_DISABLED,
+                                                      "Demo manual submission route is not configured");
+      return m_demoManualSubmissionValidationService.TryProcessManualSubmission(executionRequestId,
+                                                                                  authorizationToken,
+                                                                                  triggerToken,
+                                                                                  basketIdValue);
+     }
+
    CExecutionAuthorizationResult TryProcessManualDemoAuthorizationValidation(const string executionRequestId,
                                                                                const string authorizationToken,
                                                                                const string basketIdValue)
@@ -205,6 +257,11 @@ public:
    bool              IsDemoAuthorizationWiredToAutomaticTimer(void) const { return false; }
    bool              IsDemoAuthorizationWiredToRestIntake(void) const { return false; }
    bool              IsDemoAuthorizationWiredToOnTick(void) const { return false; }
+   bool              IsDemoManualSubmissionWiredToStrategy(void) const { return false; }
+   bool              IsDemoManualSubmissionWiredToAutomaticTimer(void) const { return false; }
+   bool              IsDemoManualSubmissionWiredToRestIntake(void) const { return false; }
+   bool              IsDemoManualSubmissionWiredToOnTick(void) const { return false; }
+   bool              IsDemoManualSubmissionWiredToOnTradeTransaction(void) const { return false; }
    bool              IsLiveSubmissionApiWiredToProductionRuntime(void) const { return false; }
 
    void              Shutdown(void)
@@ -293,6 +350,41 @@ public:
         {
          delete m_pendingExecutionStore;
          m_pendingExecutionStore=NULL;
+        }
+      if(m_demoManualSubmissionValidationService!=NULL)
+        {
+         delete m_demoManualSubmissionValidationService;
+         m_demoManualSubmissionValidationService=NULL;
+        }
+      if(m_demoManualSubmissionService!=NULL)
+        {
+         delete m_demoManualSubmissionService;
+         m_demoManualSubmissionService=NULL;
+        }
+      if(m_demoSubmissionTriggerRegistry!=NULL)
+        {
+         delete m_demoSubmissionTriggerRegistry;
+         m_demoSubmissionTriggerRegistry=NULL;
+        }
+      if(m_submitPreparedExecutionUseCase!=NULL)
+        {
+         delete m_submitPreparedExecutionUseCase;
+         m_submitPreparedExecutionUseCase=NULL;
+        }
+      if(m_liveAsyncTransport!=NULL)
+        {
+         delete m_liveAsyncTransport;
+         m_liveAsyncTransport=NULL;
+        }
+      if(m_asyncSubmissionGateway!=NULL)
+        {
+         delete m_asyncSubmissionGateway;
+         m_asyncSubmissionGateway=NULL;
+        }
+      if(m_asyncSubmissionDiagnostics!=NULL)
+        {
+         delete m_asyncSubmissionDiagnostics;
+         m_asyncSubmissionDiagnostics=NULL;
         }
       if(m_demoAuthorizationValidationService!=NULL)
         {

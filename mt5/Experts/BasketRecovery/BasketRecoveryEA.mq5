@@ -4,7 +4,8 @@
 
 #include <BasketRecovery/Interfaces/Bootstrapper.mqh>
 #include <BasketRecovery/Infrastructure/MT5/Mt5TradeTransactionNormalizer.mqh>
-#include <BasketRecovery/Domain/Execution/ExecutionAuthorizationStatus.mqh>
+#include <BasketRecovery/Domain/Execution/DemoManualSubmissionResult.mqh>
+#include <BasketRecovery/Domain/Execution/TradeExecutionStatus.mqh>
 #include <BasketRecovery/Domain/Execution/LiveSubmissionSafetyRejectionReason.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionAuthorizationResult.mqh>
 
@@ -40,6 +41,10 @@ input int    InpAuthorizationTokenExpirySeconds = 300;
 input string InpManualDemoAuthorizationToken = "";
 input string InpManualDemoAuthorizationRequestId = "";
 input string InpManualDemoAuthorizationBasketId = "";
+input string InpManualDemoSubmissionRequestId = "";
+input string InpManualDemoSubmissionTriggerToken = "";
+input double InpMaxManualDemoOpenVolume = 0.01;
+input bool   InpManualDemoValidationAutoShutdown = false;
 input string InpManualExecutionDryRunBasketId = "";
 input string InpManualExecutionDryRunTriggerToken = "";
 input double InpManualExecutionDryRunLotSize = 0.01;
@@ -47,6 +52,7 @@ input double InpManualExecutionDryRunLotSize = 0.01;
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
 int g_manualValidationTimerTicks=0;
+int g_manualSubmissionTimerTicks=0;
 
 int OnInit()
   {
@@ -80,7 +86,8 @@ int OnInit()
                                                  InpBasketExecutionKillSwitch,
                                                  InpBasketExecutionKillSwitchBasketId,
                                                  InpMaxAuthorizedRequestsPerSession,
-                                                 InpAuthorizationTokenExpirySeconds);
+                                                 InpAuthorizationTokenExpirySeconds,
+                                                 InpMaxManualDemoOpenVolume);
    if(g_applicationContext==NULL)
      {
       Print("BasketRecoveryEA initialization failed");
@@ -154,6 +161,48 @@ void OnTimer()
    int evaluationsScheduled=0;
    g_applicationContext.OnApplicationTimer(commandsProcessed,eventsProcessed,evaluationsScheduled);
 
+   if(InpManualDemoSubmissionRequestId!="")
+     {
+      if(InpEnableExecutionDiagnostics ||
+         (InpManualDemoAuthorizationToken!="" && InpManualDemoSubmissionTriggerToken!=""))
+        {
+         if(InpEnableExecutionDiagnostics)
+            Print("BRE broker_state_before | positions=",PositionsTotal(),
+                  " | orders=",OrdersTotal(),
+                  " | deals_history=",HistoryDealsTotal());
+
+         CDemoManualSubmissionResult submitResult=g_applicationContext.TryProcessManualDemoSubmission(
+            InpManualDemoSubmissionRequestId,
+            InpManualDemoAuthorizationToken,
+            InpManualDemoSubmissionTriggerToken,
+            InpManualDemoAuthorizationBasketId);
+
+         if(InpEnableExecutionDiagnostics)
+            Print("BRE broker_state_after | positions=",PositionsTotal(),
+                  " | orders=",OrdersTotal(),
+                  " | deals_history=",HistoryDealsTotal());
+
+         if(submitResult.IsSuccess())
+            Print("Manual demo submission accepted | status=",
+                  TradeExecutionStatusLabel(submitResult.ResultingStatus()),
+                  " | order_send_async=",submitResult.OrderSendAsyncAccepted()?"true":"false");
+         else
+            Print("Manual demo submission rejected | reason=",
+                  LiveSubmissionSafetyRejectionReasonLabel(submitResult.RejectionReason()),
+                  " | detail=",submitResult.Detail());
+
+         if(InpManualDemoValidationAutoShutdown)
+           {
+            g_manualSubmissionTimerTicks++;
+            if(g_manualSubmissionTimerTicks>=12)
+              {
+               ExpertRemove();
+               TerminalClose(0);
+              }
+           }
+        }
+     }
+
    if(InpManualDemoAuthorizationRequestId!="")
      {
       if(InpEnableExecutionDiagnostics || InpManualDemoAuthorizationToken!="")
@@ -207,4 +256,11 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,
       g_tradeTransactionNormalizer.Normalize(trans,request,result);
 
    g_applicationContext.ApplyNormalizedTransaction(normalized);
+
+   if(InpEnableExecutionDiagnostics)
+      Print("BRE OnTradeTransaction | type=",trans.type,
+            " | order=",trans.order,
+            " | deal=",trans.deal,
+            " | symbol=",trans.symbol,
+            " | comment=",request.comment);
   }

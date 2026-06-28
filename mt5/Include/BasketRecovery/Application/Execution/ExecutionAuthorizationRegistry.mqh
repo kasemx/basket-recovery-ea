@@ -2,6 +2,7 @@
 #define BRE_APP_EXECUTION_AUTHORIZATION_REGISTRY_MQH
 
 #include <BasketRecovery/Domain/Execution/ManualDemoExecutionAuthorization.mqh>
+#include <BasketRecovery/Domain/Execution/ExecutionAuthorizationStatus.mqh>
 #include <BasketRecovery/Application/Execution/Ports/IExecutionAuthorizationStore.mqh>
 
 class CExecutionAuthorizationRegistry
@@ -10,6 +11,8 @@ private:
    CManualDemoExecutionAuthorization m_records[];
    IExecutionAuthorizationStore     *m_store;
    int                               m_sessionAuthorizedCount;
+   int                               m_sessionSubmissionCount;
+   string                            m_sessionLockedSymbol;
 
    int               FindIndexByTokenHash(const string tokenHash) const
      {
@@ -26,7 +29,12 @@ public:
      {
       m_store=store;
       m_sessionAuthorizedCount=0;
+      m_sessionSubmissionCount=0;
+      m_sessionLockedSymbol="";
      }
+
+   int               SessionSubmissionCount(void) const { return m_sessionSubmissionCount; }
+   string            SessionLockedSymbol(void) const { return m_sessionLockedSymbol; }
 
    int               SessionAuthorizedCount(void) const { return m_sessionAuthorizedCount; }
 
@@ -74,6 +82,56 @@ public:
 
    void              IncrementSessionAuthorizedCount(void) { m_sessionAuthorizedCount++; }
 
+   void              IncrementSessionSubmissionCount(void) { m_sessionSubmissionCount++; }
+
+   bool              HasSubmissionSessionCapacity(const int maxSubmissionsPerSession) const
+     {
+      if(maxSubmissionsPerSession<=0)
+         return false;
+      return m_sessionSubmissionCount<maxSubmissionsPerSession;
+     }
+
+   bool              IsSessionSymbolAllowed(const string symbol) const
+     {
+      if(m_sessionLockedSymbol=="")
+         return true;
+      return m_sessionLockedSymbol==symbol;
+     }
+
+   void              LockSessionSymbol(const string symbol)
+     {
+      if(m_sessionLockedSymbol=="")
+         m_sessionLockedSymbol=symbol;
+     }
+
+   bool              ConsumeToken(const string tokenHash)
+     {
+      int index=FindIndexByTokenHash(tokenHash);
+      if(index<0)
+         return false;
+      if(m_records[index].Consumed())
+         return false;
+      m_records[index].SetConsumed(true);
+      if(m_store!=NULL)
+         m_store.Save(m_records[index]);
+      return true;
+     }
+
+   bool              TryGetAuthorizedForRequest(const string executionRequestId,
+                                                 CManualDemoExecutionAuthorization &record) const
+     {
+      for(int i=0;i<ArraySize(m_records);i++)
+        {
+         if(m_records[i].ExecutionRequestId()!=executionRequestId)
+            continue;
+         if(m_records[i].Status()!=BRE_AUTH_STATUS_AUTHORIZED_FOR_FUTURE_SUBMISSION)
+            continue;
+         record=m_records[i];
+         return true;
+      }
+      return false;
+     }
+
    int               RestoreFromStore(void)
      {
       if(m_store==NULL)
@@ -90,6 +148,8 @@ public:
      {
       ArrayResize(m_records,0);
       m_sessionAuthorizedCount=0;
+      m_sessionSubmissionCount=0;
+      m_sessionLockedSymbol="";
       if(m_store!=NULL)
          m_store.Clear();
      }

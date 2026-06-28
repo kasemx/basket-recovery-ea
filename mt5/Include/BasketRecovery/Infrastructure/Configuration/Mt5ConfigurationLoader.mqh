@@ -38,7 +38,8 @@ public:
                                                  const bool basketExecutionKillSwitch,
                                                  const string basketExecutionKillSwitchBasketId,
                                                  const int maxAuthorizedRequestsPerSession,
-                                                 const int authorizationTokenExpirySeconds)
+                                                 const int authorizationTokenExpirySeconds,
+                                                 const double maxManualDemoOpenVolume)
      {
       CEAConfiguration configuration;
       configuration.SetProfileName(profileName);
@@ -75,6 +76,7 @@ public:
       demoConfig.SetBasketExecutionKillSwitchBasketId(basketExecutionKillSwitchBasketId);
       demoConfig.SetMaxAuthorizedRequestsPerSession(maxAuthorizedRequestsPerSession);
       demoConfig.SetAuthorizationTokenExpirySeconds(authorizationTokenExpirySeconds);
+      demoConfig.SetMaxManualDemoOpenVolume(maxManualDemoOpenVolume>0.0 ? maxManualDemoOpenVolume : 0.01);
       configuration.SetDemoAuthorizationConfig(demoConfig);
 
       if(profileName=="")
@@ -86,7 +88,7 @@ public:
       if(logLevel<0 || logLevel>5)
          return CResult<CEAConfiguration>::Fail(BRE_ERR_CONFIG_INVALID,"Log level must be between 0 and 5");
 
-      if(executionRuntimeMode<BRE_EXEC_RUNTIME_DISABLED || executionRuntimeMode>BRE_EXEC_RUNTIME_DEMO_AUTHORIZATION)
+      if(executionRuntimeMode<BRE_EXEC_RUNTIME_DISABLED || executionRuntimeMode>BRE_EXEC_RUNTIME_DEMO_MANUAL_SUBMISSION)
          return CResult<CEAConfiguration>::Fail(BRE_ERR_CONFIG_INVALID,"Execution runtime mode is invalid");
 
       configuration.SetIsValid(true);

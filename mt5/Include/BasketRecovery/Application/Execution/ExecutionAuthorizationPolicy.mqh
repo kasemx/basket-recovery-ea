@@ -22,8 +22,21 @@ public:
       return config.ExecutionRuntimeMode()==BRE_EXEC_RUNTIME_DEMO_AUTHORIZATION;
      }
 
+   static bool       AllowsDemoManualSubmission(const CDemoExecutionAuthorizationConfig &config)
+     {
+      if(config.GlobalExecutionKillSwitch())
+         return false;
+      if(!config.EnableLiveDemoExecution())
+         return false;
+      if(!config.RequireManualDemoAuthorization())
+         return false;
+      return config.ExecutionRuntimeMode()==BRE_EXEC_RUNTIME_DEMO_MANUAL_SUBMISSION;
+     }
+
    static ENUM_BRE_EXECUTION_AUTHORIZATION_SCOPE ResolveScope(const CDemoExecutionAuthorizationConfig &config)
      {
+      if(AllowsDemoManualSubmission(config))
+         return BRE_AUTH_SCOPE_DEMO_SINGLE_REQUEST;
       if(!AllowsFutureSubmissionAuthorization(config))
          return BRE_AUTH_SCOPE_LIVE_DISABLED;
       return BRE_AUTH_SCOPE_DEMO_SINGLE_REQUEST;

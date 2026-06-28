@@ -46,6 +46,13 @@
 #include <BasketRecovery/Application/Execution/ExecutionAuthorizationRegistry.mqh>
 #include <BasketRecovery/Application/Execution/ManualDemoAuthorizationUseCase.mqh>
 #include <BasketRecovery/Application/Execution/ManualDemoAuthorizationValidationService.mqh>
+#include <BasketRecovery/Application/Execution/DemoManualSubmissionService.mqh>
+#include <BasketRecovery/Application/Execution/DemoManualSubmissionValidationService.mqh>
+#include <BasketRecovery/Application/Execution/DemoManualSubmissionTriggerRegistry.mqh>
+#include <BasketRecovery/Application/Execution/SubmitPreparedExecutionUseCase.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5/IMt5AsyncOrderSendTransport.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5AsyncSubmissionGateway.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5AsyncSubmissionDiagnostics.mqh>
 #include <BasketRecovery/Shared/Constants/FeatureFlags.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
@@ -80,7 +87,8 @@ public:
                                          const bool basketExecutionKillSwitch,
                                          const string basketExecutionKillSwitchBasketId,
                                          const int maxAuthorizedRequestsPerSession,
-                                         const int authorizationTokenExpirySeconds)
+                                         const int authorizationTokenExpirySeconds,
+                                         const double maxManualDemoOpenVolume)
      {
       CResult<CEAConfiguration> configurationResult=
          CMt5ConfigurationLoader::LoadFromInputs(profileName,logFilePath,logLevel,accountLabel,apiBaseUrl,apiKey,
@@ -95,7 +103,8 @@ public:
                                                  enableLiveDemoExecution,requireManualDemoAuthorization,
                                                  globalExecutionKillSwitch,basketExecutionKillSwitch,
                                                  basketExecutionKillSwitchBasketId,
-                                                 maxAuthorizedRequestsPerSession,authorizationTokenExpirySeconds);
+                                                 maxAuthorizedRequestsPerSession,authorizationTokenExpirySeconds,
+                                                 maxManualDemoOpenVolume);
 
       if(configurationResult.IsFail())
         {
@@ -380,6 +389,45 @@ public:
                                                authorizationStore,
                                                accountEligibilityProvider);
       // Sprint 6F: authorization evaluates safety gates only; no submission gateway is wired.
+
+      CMt5AsyncSubmissionDiagnostics *asyncSubmissionDiagnostics=
+         new CMt5AsyncSubmissionDiagnostics(logger,configuration.EnableExecutionDiagnostics(),64);
+      CMt5LiveAsyncOrderSendTransport *liveAsyncTransport=new CMt5LiveAsyncOrderSendTransport();
+      CMt5AsyncSubmissionGateway *asyncSubmissionGateway=
+         new CMt5AsyncSubmissionGateway(liveAsyncTransport,asyncSubmissionDiagnostics,10);
+      CSubmitPreparedExecutionUseCase *submitPreparedExecutionUseCase=
+         new CSubmitPreparedExecutionUseCase(pendingExecutionRegistry,
+                                             asyncSubmissionGateway,
+                                             pendingExecutionStore,
+                                             clock,
+                                             NULL);
+      CDemoManualSubmissionTriggerRegistry *demoSubmissionTriggerRegistry=
+         new CDemoManualSubmissionTriggerRegistry();
+      CDemoManualSubmissionService *demoManualSubmissionService=
+         new CDemoManualSubmissionService(configuration.DemoAuthorizationConfig(),
+                                          authorizationRegistry,
+                                          demoSubmissionTriggerRegistry,
+                                          pendingExecutionRegistry,
+                                          pendingExecutionStore,
+                                          accountEligibilityProvider,
+                                          clock,
+                                          submitPreparedExecutionUseCase,
+                                          asyncSubmissionGateway,
+                                          configuration.MarketSafetyConfig());
+      CDemoManualSubmissionValidationService *demoManualSubmissionValidationService=
+         new CDemoManualSubmissionValidationService();
+      demoManualSubmissionValidationService.Configure(configuration.DemoAuthorizationConfig(),
+                                                      demoManualSubmissionService,
+                                                      persistenceManager.BasketRepository(),
+                                                      marketDataProvider);
+      context.RegisterDemoManualSubmissionRuntime(demoManualSubmissionValidationService,
+                                                demoManualSubmissionService,
+                                                demoSubmissionTriggerRegistry,
+                                                submitPreparedExecutionUseCase,
+                                                asyncSubmissionGateway,
+                                                asyncSubmissionDiagnostics,
+                                                liveAsyncTransport);
+      // Sprint 6G: OrderSendAsync exists only in CMt5AsyncSubmissionGateway; manual route only.
 
       CFastPathDiagnosticReporter *diagnosticReporter=kernel.DiagnosticReporter();
       if(diagnosticReporter!=NULL)

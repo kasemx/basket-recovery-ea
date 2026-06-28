@@ -98,8 +98,7 @@ public:
    virtual CResult<CAccountContextSnapshot> TryGetAccountSnapshot(void) const
      {
       long login=AccountInfoInteger(ACCOUNT_LOGIN);
-      bool tradeAllowed=(AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)>0 &&
-                         AccountInfoInteger(ACCOUNT_TRADE_EXPERT)>0);
+      bool tradeAllowed=(AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)>0);
       CAccountContextSnapshot snapshot=CAccountContextSnapshot::Create(login,
                                                                        AccountInfoDouble(ACCOUNT_BALANCE),
                                                                        AccountInfoDouble(ACCOUNT_EQUITY),

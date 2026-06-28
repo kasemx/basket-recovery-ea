@@ -110,6 +110,52 @@ public:
       quoteResult.TryGetValue(quoteOut);
       return true;
      }
+
+   bool              ValidateRequestContextForValidationSeed(const CTradeExecutionRequest &request,
+                                                             const CBasketAggregate &basket,
+                                                             CMarketQuote &quoteOut,
+                                                             ENUM_BRE_SUBMISSION_PREPARATION_FAILURE_REASON &failureReason,
+                                                             string &failureMessage) const
+     {
+      CResult<CTradeExecutionResult> validation=m_policy.ValidateBeforeOrderCheckExceptAccount(request,basket);
+      if(validation.IsFail())
+        {
+         failureReason=BRE_PREP_FAIL_VALIDATION;
+         failureMessage=validation.ErrorMessage();
+         return false;
+        }
+
+      CTradeExecutionResult validationResult;
+      validation.TryGetValue(validationResult);
+      if(validationResult.Status()==BRE_TRADE_EXEC_STATUS_REJECTED ||
+         validationResult.Status()==BRE_TRADE_EXEC_STATUS_FAILED)
+        {
+         failureReason=MapFailureReason(validationResult.FailureReason());
+         failureMessage=validationResult.Message();
+         if(StringFind(failureMessage,"stops")>=0)
+            failureReason=BRE_PREP_FAIL_INVALID_STOPS;
+         if(StringFind(failureMessage,"freeze")>=0)
+            failureReason=BRE_PREP_FAIL_INVALID_FREEZE;
+         return false;
+        }
+
+      if(m_marketDataProvider==NULL)
+        {
+         failureReason=BRE_PREP_FAIL_MARKET_UNAVAILABLE;
+         failureMessage="Market data provider is not configured";
+         return false;
+        }
+
+      CResult<CMarketQuote> quoteResult=m_marketDataProvider.TryGetQuote(request.Symbol());
+      if(quoteResult.IsFail())
+        {
+         failureReason=BRE_PREP_FAIL_MARKET_UNAVAILABLE;
+         failureMessage=quoteResult.ErrorMessage();
+         return false;
+        }
+      quoteResult.TryGetValue(quoteOut);
+      return true;
+     }
   };
 
 #endif
