@@ -11,6 +11,7 @@ public:
    virtual          ~IPendingExecutionStore(void) {}
    virtual CVoidResult SavePreparedState(const CPendingExecutionEntry &entry,
                                          const CBrokerSubmissionEnvelope &envelope)=0;
+   virtual CVoidResult SaveEntryState(const CPendingExecutionEntry &entry)=0;
    virtual CResult<CBrokerSubmissionEnvelope> FindEnvelopeByIdempotencyKey(const string idempotencyKey) const=0;
    virtual int         RestoreEntries(CPendingExecutionEntry &entries[]) const=0;
    virtual CVoidResult Clear(void)=0;

@@ -14,6 +14,8 @@
 #include <BasketRecovery/Infrastructure/Snapshot/InMemoryBrokerPositionReader.mqh>
 #include <BasketRecovery/Infrastructure/MT5/Mt5TradeTransactionAdapter.mqh>
 #include <BasketRecovery/Infrastructure/Logging/FileLogger.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionLifecycleService.mqh>
+#include <BasketRecovery/Infrastructure/Execution/InMemoryPendingExecutionStore.mqh>
 #include <BasketRecovery/Domain/Execution/PendingExecutionTransitionRules.mqh>
 
 class CPendingExecutionTestHarness
@@ -24,6 +26,8 @@ public:
    CTestClock                              *clock;
    CFileLogger                             *logger;
    CPendingExecutionDiagnostics            *diagnostics;
+   CInMemoryPendingExecutionStore          *store;
+   CPendingExecutionLifecycleService       *lifecycle;
    CInMemoryBrokerPositionReader           *brokerReader;
    CExecutionReconciliationScheduler       *reconciliationScheduler;
    CBasketFastStateRegistry                *fastStateRegistry;
@@ -39,11 +43,13 @@ public:
       logger=new CFileLogger();
       logger.Initialize("BasketRecovery/logs/pending_exec_test.log",1);
       diagnostics=new CPendingExecutionDiagnostics(logger,false,64);
+      store=new CInMemoryPendingExecutionStore();
+      lifecycle=new CPendingExecutionLifecycleService(registry,store,events,clock);
       brokerReader=new CInMemoryBrokerPositionReader();
-      reconciliationScheduler=new CExecutionReconciliationScheduler(registry,brokerReader,diagnostics,8);
+      reconciliationScheduler=new CExecutionReconciliationScheduler(registry,brokerReader,diagnostics,8,lifecycle);
       fastStateRegistry=new CBasketFastStateRegistry();
-      router=new CTradeTransactionRouter(registry,diagnostics,events,fastStateRegistry,clock);
-      timeoutMonitor=new CExecutionTimeoutMonitor(registry,reconciliationScheduler,diagnostics,clock);
+      router=new CTradeTransactionRouter(registry,diagnostics,events,fastStateRegistry,clock,lifecycle);
+      timeoutMonitor=new CExecutionTimeoutMonitor(registry,reconciliationScheduler,brokerReader,diagnostics,clock,lifecycle);
       injection=new CPendingExecutionTestInjectionService(registry,router);
      }
 
@@ -54,6 +60,8 @@ public:
       if(router!=NULL) delete router;
       if(reconciliationScheduler!=NULL) delete reconciliationScheduler;
       if(fastStateRegistry!=NULL) delete fastStateRegistry;
+      if(lifecycle!=NULL) delete lifecycle;
+      if(store!=NULL) delete store;
       if(brokerReader!=NULL) delete brokerReader;
       if(diagnostics!=NULL) delete diagnostics;
       if(logger!=NULL) delete logger;
@@ -242,7 +250,7 @@ void TestPartialFillAccumulation(CPendingExecutionTestHarness &h)
    CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_FILLED,(int)updated.Status(),"accumulated fill completes");
   }
 
-void TestTimeoutEntersReconcilingNotRetry(CPendingExecutionTestHarness &h)
+void TestTimeoutTerminalizesWithoutRetry(CPendingExecutionTestHarness &h)
   {
    h.Reset();
    h.clock.SetNow(2000);
@@ -256,10 +264,10 @@ void TestTimeoutEntersReconcilingNotRetry(CPendingExecutionTestHarness &h)
 
    CPendingExecutionEntry updated;
    h.registry.TryGetByExecutionRequestId("req-timeout",updated);
-   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_RECONCILING,(int)updated.Status(),"timeout must enter reconciling");
-   CTestAssert::True(CPendingExecutionTransitionRules::BlocksBlindResend(updated.Status()),
-                     "timed out/reconciling path must block blind resend");
-   CTestAssert::True(h.reconciliationScheduler.PendingCount()>0,"reconciliation request must be queued");
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_TIMED_OUT,(int)updated.Status(),"confirmed no-fill timeout must terminalize");
+   CTestAssert::False(CPendingExecutionTransitionRules::BlocksBlindResend(updated.Status()),
+                      "timed out terminal audit must not block blind resend via reconciling gate");
+   CTestAssert::EqualInt(0,h.reconciliationScheduler.PendingCount(),"terminal timeout must not queue reconciliation");
   }
 
 void TestLateFillAfterTimeoutThroughReconciliation(CPendingExecutionTestHarness &h)
@@ -281,16 +289,17 @@ void TestLateFillAfterTimeoutThroughReconciliation(CPendingExecutionTestHarness 
    CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_FILLED,(int)updated.Status(),"late fill resolves to filled");
   }
 
-void TestUnknownBlocksResubmission(CPendingExecutionTestHarness &h)
+void TestUnknownReconcilingBlocksResubmission(CPendingExecutionTestHarness &h)
   {
    h.Reset();
    CBrokerRequestCorrelation broker;
-   CPendingExecutionEntry entry=BuildEntry("req-unknown",BRE_TRADE_EXEC_STATUS_UNKNOWN,"EURUSD",0.10,broker);
+   CPendingExecutionEntry entry=BuildEntry("req-unknown",BRE_TRADE_EXEC_STATUS_RECONCILING,"EURUSD",0.10,broker);
+   entry.SetCorrelationState(BRE_PENDING_CORRELATION_RECONCILING);
    h.injection.RegisterPendingEntry(entry);
 
-   CTestAssert::True(entry.BlocksBlindResend(),"unknown entry blocks blind resend");
-   CTestAssert::True(CPendingExecutionTransitionRules::BlocksBlindResend(BRE_TRADE_EXEC_STATUS_UNKNOWN),
-                     "unknown status blocks blind resend in rules");
+   CTestAssert::True(entry.BlocksBlindResend(),"unknown reconciling entry blocks blind resend");
+   CTestAssert::True(CPendingExecutionTransitionRules::BlocksBlindResend(BRE_TRADE_EXEC_STATUS_RECONCILING),
+                     "unknown reconciling status blocks blind resend in rules");
   }
 
 void TestUnrelatedTransactionIgnored(CPendingExecutionTestHarness &h)
@@ -354,9 +363,9 @@ void OnStart(void)
    TestDuplicateTransactionIgnored(harness);
    TestOutOfOrderCannotRegress(harness);
    TestPartialFillAccumulation(harness);
-   TestTimeoutEntersReconcilingNotRetry(harness);
+   TestTimeoutTerminalizesWithoutRetry(harness);
    TestLateFillAfterTimeoutThroughReconciliation(harness);
-   TestUnknownBlocksResubmission(harness);
+   TestUnknownReconcilingBlocksResubmission(harness);
    TestUnrelatedTransactionIgnored(harness);
    TestDiagnosticsBounded(harness);
    TestInjectionRouteWithoutMt5(harness);

@@ -24,6 +24,7 @@
 #include <BasketRecovery/Application/Execution/SubmissionPreparationPolicy.mqh>
 #include <BasketRecovery/Application/Execution/SubmissionPreparationValidator.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionRestartService.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionLifecycleService.mqh>
 #include <BasketRecovery/Application/Execution/Ports/IPendingExecutionStore.mqh>
 #include <BasketRecovery/Infrastructure/Execution/InMemoryPendingExecutionStore.mqh>
 #include <BasketRecovery/Domain/Execution/SubmissionPreparationResult.mqh>
@@ -73,6 +74,7 @@ private:
    CExecutionReconciliationScheduler *m_executionReconciliationScheduler;
    CExecutionTimeoutMonitor *m_executionTimeoutMonitor;
    CPendingExecutionTestInjectionService *m_pendingExecutionTestInjection;
+   CPendingExecutionLifecycleService *m_pendingExecutionLifecycle;
    CMt5BrokerPositionReader *m_executionReconciliationReader;
    CExecutionSubmissionPreparer *m_submissionPreparer;
    IPendingExecutionStore *m_pendingExecutionStore;
@@ -118,6 +120,7 @@ public:
       m_executionReconciliationScheduler=NULL;
       m_executionTimeoutMonitor=NULL;
       m_pendingExecutionTestInjection=NULL;
+      m_pendingExecutionLifecycle=NULL;
       m_executionReconciliationReader=NULL;
       m_submissionPreparer=NULL;
       m_pendingExecutionStore=NULL;
@@ -184,7 +187,8 @@ public:
                                                      CExecutionReconciliationScheduler *reconciliationScheduler,
                                                      CExecutionTimeoutMonitor *timeoutMonitor,
                                                      CPendingExecutionTestInjectionService *testInjection,
-                                                     CMt5BrokerPositionReader *reconciliationReader)
+                                                     CMt5BrokerPositionReader *reconciliationReader,
+                                                     CPendingExecutionLifecycleService *lifecycle)
      {
       m_pendingExecutionRegistry=registry;
       m_pendingExecutionDiagnostics=diagnostics;
@@ -194,6 +198,7 @@ public:
       m_executionTimeoutMonitor=timeoutMonitor;
       m_pendingExecutionTestInjection=testInjection;
       m_executionReconciliationReader=reconciliationReader;
+      m_pendingExecutionLifecycle=lifecycle;
      }
 
    void              RegisterRecoveryRiskRuntime(CRecoveryRiskEventBuffer *eventBuffer,
@@ -431,6 +436,11 @@ public:
         {
          delete m_executionReconciliationReader;
          m_executionReconciliationReader=NULL;
+        }
+      if(m_pendingExecutionLifecycle!=NULL)
+        {
+         delete m_pendingExecutionLifecycle;
+         m_pendingExecutionLifecycle=NULL;
         }
       if(m_submissionPreparer!=NULL)
         {

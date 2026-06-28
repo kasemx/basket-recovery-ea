@@ -15,6 +15,7 @@ public:
          case BRE_TRADE_EXEC_STATUS_RECONCILED:
          case BRE_TRADE_EXEC_STATUS_CANCELLED:
          case BRE_TRADE_EXEC_STATUS_FAILED:
+         case BRE_TRADE_EXEC_STATUS_TIMED_OUT:
             return true;
          default:
             return false;
@@ -23,9 +24,7 @@ public:
 
    static bool       BlocksBlindResend(const ENUM_BRE_TRADE_EXECUTION_STATUS status)
      {
-      return status==BRE_TRADE_EXEC_STATUS_UNKNOWN ||
-             status==BRE_TRADE_EXEC_STATUS_TIMED_OUT ||
-             status==BRE_TRADE_EXEC_STATUS_RECONCILING;
+      return status==BRE_TRADE_EXEC_STATUS_RECONCILING;
      }
 
    static int        StatusRank(const ENUM_BRE_TRADE_EXECUTION_STATUS status)
@@ -76,6 +75,7 @@ public:
                    toStatus==BRE_TRADE_EXEC_STATUS_ACCEPTED ||
                    toStatus==BRE_TRADE_EXEC_STATUS_REJECTED ||
                    toStatus==BRE_TRADE_EXEC_STATUS_TIMED_OUT ||
+                   toStatus==BRE_TRADE_EXEC_STATUS_RECONCILING ||
                    toStatus==BRE_TRADE_EXEC_STATUS_UNKNOWN ||
                    toStatus==BRE_TRADE_EXEC_STATUS_FAILED ||
                    toStatus==BRE_TRADE_EXEC_STATUS_CANCELLED;
@@ -85,6 +85,7 @@ public:
                    toStatus==BRE_TRADE_EXEC_STATUS_FILLED ||
                    toStatus==BRE_TRADE_EXEC_STATUS_REJECTED ||
                    toStatus==BRE_TRADE_EXEC_STATUS_TIMED_OUT ||
+                   toStatus==BRE_TRADE_EXEC_STATUS_RECONCILING ||
                    toStatus==BRE_TRADE_EXEC_STATUS_UNKNOWN ||
                    toStatus==BRE_TRADE_EXEC_STATUS_FAILED;
          case BRE_TRADE_EXEC_STATUS_PARTIALLY_FILLED:
@@ -92,16 +93,15 @@ public:
                    toStatus==BRE_TRADE_EXEC_STATUS_FILLED ||
                    toStatus==BRE_TRADE_EXEC_STATUS_REJECTED ||
                    toStatus==BRE_TRADE_EXEC_STATUS_TIMED_OUT ||
+                   toStatus==BRE_TRADE_EXEC_STATUS_RECONCILING ||
                    toStatus==BRE_TRADE_EXEC_STATUS_UNKNOWN ||
                    toStatus==BRE_TRADE_EXEC_STATUS_FAILED;
-         case BRE_TRADE_EXEC_STATUS_TIMED_OUT:
-            return toStatus==BRE_TRADE_EXEC_STATUS_RECONCILING;
          case BRE_TRADE_EXEC_STATUS_RECONCILING:
             return toStatus==BRE_TRADE_EXEC_STATUS_FILLED ||
                    toStatus==BRE_TRADE_EXEC_STATUS_PARTIALLY_FILLED ||
                    toStatus==BRE_TRADE_EXEC_STATUS_REJECTED ||
-                   toStatus==BRE_TRADE_EXEC_STATUS_UNKNOWN ||
-                   toStatus==BRE_TRADE_EXEC_STATUS_RECONCILED;
+                   toStatus==BRE_TRADE_EXEC_STATUS_RECONCILED ||
+                   toStatus==BRE_TRADE_EXEC_STATUS_CANCELLED;
          default:
             return false;
         }

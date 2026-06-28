@@ -63,6 +63,15 @@ public:
       return CVoidResult::Ok();
      }
 
+   virtual CVoidResult SaveEntryState(const CPendingExecutionEntry &entry)
+     {
+      int entryIndex=FindEntryIndex(entry.ExecutionRequestId());
+      if(entryIndex<0)
+         return CVoidResult::Fail(-1,"Pending execution entry not found");
+      m_entries[entryIndex]=entry;
+      return CVoidResult::Ok();
+     }
+
    virtual CResult<CBrokerSubmissionEnvelope> FindEnvelopeByIdempotencyKey(const string idempotencyKey) const
      {
       int index=FindEnvelopeIndex(idempotencyKey);

@@ -68,6 +68,18 @@ public:
          return CVoidResult::Fail(-1,"Failed to persist pending execution store");
       return CVoidResult::Ok();
      }
+
+   virtual CVoidResult SaveEntryState(const CPendingExecutionEntry &entry)
+     {
+      CVoidResult saved=CInMemoryPendingExecutionStore::SaveEntryState(entry);
+      if(saved.IsFail())
+         return saved;
+
+      string payload=ExportEntriesText()+"\f"+ExportEnvelopesText();
+      if(!WriteFileText(payload))
+         return CVoidResult::Fail(-1,"Failed to persist pending execution entry state");
+      return CVoidResult::Ok();
+     }
   };
 
 #endif

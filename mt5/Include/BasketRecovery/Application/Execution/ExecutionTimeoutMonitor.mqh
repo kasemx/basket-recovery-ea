@@ -4,16 +4,21 @@
 #include <BasketRecovery/Application/Execution/PendingExecutionRegistry.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionDiagnostics.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionReconciliationScheduler.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionLifecycleService.mqh>
+#include <BasketRecovery/Application/Execution/ExecutionReconciliationResolver.mqh>
+#include <BasketRecovery/Application/Ports/IBrokerPositionReader.mqh>
 #include <BasketRecovery/Application/Ports/IClock.mqh>
-#include <BasketRecovery/Domain/Execution/PendingExecutionTransitionRules.mqh>
+#include <BasketRecovery/Domain/Execution/PendingExecutionQuery.mqh>
 
 class CExecutionTimeoutMonitor
   {
 private:
    CPendingExecutionRegistry           *m_registry;
    CExecutionReconciliationScheduler   *m_reconciliationScheduler;
+   IBrokerPositionReader               *m_positionReader;
    CPendingExecutionDiagnostics        *m_diagnostics;
    IClock                              *m_clock;
+   CPendingExecutionLifecycleService   *m_lifecycle;
 
    void              EnqueueReconciliation(const CPendingExecutionEntry &entry,const string reason)
      {
@@ -34,18 +39,22 @@ private:
 public:
                      CExecutionTimeoutMonitor(CPendingExecutionRegistry *registry,
                                               CExecutionReconciliationScheduler *reconciliationScheduler,
+                                              IBrokerPositionReader *positionReader,
                                               CPendingExecutionDiagnostics *diagnostics,
-                                              IClock *clock)
+                                              IClock *clock,
+                                              CPendingExecutionLifecycleService *lifecycle=NULL)
      {
       m_registry=registry;
       m_reconciliationScheduler=reconciliationScheduler;
+      m_positionReader=positionReader;
       m_diagnostics=diagnostics;
       m_clock=clock;
+      m_lifecycle=lifecycle;
      }
 
    int               ScanDueTimeouts(void)
      {
-      if(m_registry==NULL || m_clock==NULL)
+      if(m_registry==NULL || m_clock==NULL || m_lifecycle==NULL)
          return 0;
 
       datetime nowUtc=m_clock.Now();
@@ -58,24 +67,51 @@ public:
          CPendingExecutionEntry entry;
          if(!m_registry.TryGetEntry(dueIndices[i],entry))
             continue;
-         if(entry.Status()==BRE_TRADE_EXEC_STATUS_TIMED_OUT ||
-            entry.Status()==BRE_TRADE_EXEC_STATUS_RECONCILING)
+         if(CPendingExecutionQuery::IsTerminalStatus(entry.Status()) ||
+            CPendingExecutionQuery::IsUnknownReconcilingStatus(entry.Status()))
             continue;
 
-         CPendingExecutionEntry updated;
-         if(!m_registry.TryTransition(dueIndices[i],BRE_TRADE_EXEC_STATUS_TIMED_OUT,updated))
-            continue;
-         entry=updated;
          if(m_diagnostics!=NULL)
             m_diagnostics.OnTimeoutDetected(entry.ExecutionRequestId());
 
-         if(!m_registry.TryTransition(dueIndices[i],BRE_TRADE_EXEC_STATUS_RECONCILING,updated))
+         double matchedVolume=0.0;
+         ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+            CExecutionReconciliationResolver::Resolve(entry,m_positionReader,matchedVolume);
+
+         if(resolved==BRE_TRADE_EXEC_STATUS_FILLED)
+           {
+            if(m_lifecycle.MarkFilled(entry.ExecutionRequestId(),matchedVolume))
+               handled++;
             continue;
-         entry=updated;
-         entry.SetCorrelationState(BRE_PENDING_CORRELATION_RECONCILING);
-         m_registry.TryUpdateEntry(dueIndices[i],entry);
-         EnqueueReconciliation(entry,"execution_timeout");
-         handled++;
+           }
+
+         if(resolved==BRE_TRADE_EXEC_STATUS_PARTIALLY_FILLED)
+           {
+            ENUM_BRE_TRADE_EXECUTION_STATUS fromStatus=entry.Status();
+            entry.SetFilledVolume(matchedVolume);
+            entry.SetStatus(BRE_TRADE_EXEC_STATUS_PARTIALLY_FILLED);
+            m_registry.TryUpdateEntry(dueIndices[i],entry);
+            m_lifecycle.OnRegistryEntryUpdated(entry,fromStatus);
+            handled++;
+            continue;
+           }
+
+         if(resolved==BRE_TRADE_EXEC_STATUS_REJECTED)
+           {
+            if(m_lifecycle.MarkTimedOut(entry.ExecutionRequestId()))
+               handled++;
+            continue;
+           }
+
+         if(m_lifecycle.MarkUnknownReconciling(entry.ExecutionRequestId()))
+           {
+            if(m_diagnostics!=NULL)
+               m_diagnostics.OnUnresolvedUnknown(entry.ExecutionRequestId());
+            CPendingExecutionEntry updated;
+            if(m_registry.TryGetByExecutionRequestId(entry.ExecutionRequestId(),updated))
+               EnqueueReconciliation(updated,"execution_timeout_unknown");
+            handled++;
+           }
         }
 
       return handled;

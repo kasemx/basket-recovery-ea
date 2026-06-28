@@ -36,7 +36,7 @@ inline string TradeExecutionStatusLabel(const ENUM_BRE_TRADE_EXECUTION_STATUS st
       case BRE_TRADE_EXEC_STATUS_CANCELLED: return "CANCELLED";
       case BRE_TRADE_EXEC_STATUS_UNKNOWN: return "UNKNOWN";
       case BRE_TRADE_EXEC_STATUS_ACKNOWLEDGED: return "ACKNOWLEDGED";
-      case BRE_TRADE_EXEC_STATUS_RECONCILING: return "RECONCILING";
+      case BRE_TRADE_EXEC_STATUS_RECONCILING: return "UNKNOWN_RECONCILING";
       case BRE_TRADE_EXEC_STATUS_RECONCILED: return "RECONCILED";
       default: return "NONE";
      }
@@ -50,7 +50,7 @@ inline bool TradeExecutionStatusIsTerminal(const ENUM_BRE_TRADE_EXECUTION_STATUS
       case BRE_TRADE_EXEC_STATUS_REJECTED:
       case BRE_TRADE_EXEC_STATUS_FAILED:
       case BRE_TRADE_EXEC_STATUS_CANCELLED:
-      case BRE_TRADE_EXEC_STATUS_UNKNOWN:
+      case BRE_TRADE_EXEC_STATUS_TIMED_OUT:
       case BRE_TRADE_EXEC_STATUS_RECONCILED:
          return true;
       default:

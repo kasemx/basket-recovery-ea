@@ -16,6 +16,7 @@
 #include <BasketRecovery/Application/Execution/TradeTransactionRouter.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionTestInjectionService.mqh>
 #include <BasketRecovery/Application/Execution/SimulatedBrokerSubmissionInjector.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionLifecycleService.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionTimeoutMonitor.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionReconciliationScheduler.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionRestartService.mqh>
@@ -51,6 +52,8 @@ public:
    CTradeTransactionRouter                 *router;
    CPendingExecutionTestInjectionService   *injection;
    CSimulatedBrokerSubmissionInjector      *brokerInjector;
+   CInMemoryBrokerPositionReader           *brokerReader;
+   CPendingExecutionLifecycleService       *lifecycle;
    CExecutionTimeoutMonitor                *timeoutMonitor;
    CExecutionReconciliationScheduler       *reconciliationScheduler;
 
@@ -74,15 +77,18 @@ public:
       router=new CTradeTransactionRouter(registry,NULL,events,NULL,clock);
       injection=new CPendingExecutionTestInjectionService(registry,router);
       brokerInjector=new CSimulatedBrokerSubmissionInjector(registry,injection);
-      CInMemoryBrokerPositionReader *brokerReader=new CInMemoryBrokerPositionReader();
-      reconciliationScheduler=new CExecutionReconciliationScheduler(registry,brokerReader,NULL,8);
-      timeoutMonitor=new CExecutionTimeoutMonitor(registry,reconciliationScheduler,NULL,clock);
+      brokerReader=new CInMemoryBrokerPositionReader();
+      lifecycle=new CPendingExecutionLifecycleService(registry,store,events,clock);
+      reconciliationScheduler=new CExecutionReconciliationScheduler(registry,brokerReader,NULL,8,lifecycle);
+      timeoutMonitor=new CExecutionTimeoutMonitor(registry,reconciliationScheduler,brokerReader,NULL,clock,lifecycle);
      }
 
                     ~CSimulatedSubmissionTestHarness(void)
      {
       if(timeoutMonitor!=NULL) delete timeoutMonitor;
       if(reconciliationScheduler!=NULL) delete reconciliationScheduler;
+      if(lifecycle!=NULL) delete lifecycle;
+      if(brokerReader!=NULL) delete brokerReader;
       if(brokerInjector!=NULL) delete brokerInjector;
       if(injection!=NULL) delete injection;
       if(router!=NULL) delete router;
@@ -311,7 +317,7 @@ void TestSubmittedRequestCannotResubmit(CSimulatedSubmissionTestHarness &h)
    CTestAssert::False(retry.GatewayInvoked(),"resubmit must not call gateway");
   }
 
-void TestTimeoutEntersReconciliationWithoutRetry(CSimulatedSubmissionTestHarness &h)
+void TestTimeoutTerminalizesWithoutRetry(CSimulatedSubmissionTestHarness &h)
   {
    h.Reset();
    CBrokerSubmissionEnvelope envelope;
@@ -322,10 +328,10 @@ void TestTimeoutEntersReconciliationWithoutRetry(CSimulatedSubmissionTestHarness
    CTestAssert::EqualInt(1,handled,"timeout must be handled");
    CPendingExecutionEntry entry;
    h.registry.TryGetByExecutionRequestId("req-to",entry);
-   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_RECONCILING,(int)entry.Status(),"timeout enters reconciling");
-   CTestAssert::True(CPendingExecutionTransitionRules::BlocksBlindResend(entry.Status()),"no blind resend after timeout");
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_TIMED_OUT,(int)entry.Status(),"confirmed no-fill timeout must terminalize");
+   CTestAssert::False(CPendingExecutionTransitionRules::BlocksBlindResend(entry.Status()),"terminal timeout is not unknown reconciling");
    CPreparedSubmissionResult resubmit=h.submitUseCase.Execute("req-to");
-   CTestAssert::False(resubmit.IsSuccess(),"resubmit blocked after timeout");
+   CTestAssert::False(resubmit.IsSuccess(),"resubmit blocked while submitted metadata remains");
   }
 
 void TestLateFillAfterTimeoutThroughReconciliation(CSimulatedSubmissionTestHarness &h)
@@ -339,6 +345,7 @@ void TestLateFillAfterTimeoutThroughReconciliation(CSimulatedSubmissionTestHarne
    h.timeoutMonitor.ScanDueTimeouts();
    CPendingExecutionEntry entry;
    h.registry.TryGetByExecutionRequestId("req-late",entry);
+   entry.SetStatus(BRE_TRADE_EXEC_STATUS_RECONCILING);
    entry.SetCorrelationState(BRE_PENDING_CORRELATION_RECONCILING);
    CBrokerRequestCorrelation broker=entry.BrokerCorrelation();
    broker.SetPositionTicket(5100);
@@ -436,7 +443,7 @@ void OnStart(void)
    TestExpiredEnvelopeCannotSubmit(harness);
    TestDuplicateSubmissionReturnsOriginalWithoutGatewayRecall(harness);
    TestSubmittedRequestCannotResubmit(harness);
-   TestTimeoutEntersReconciliationWithoutRetry(harness);
+   TestTimeoutTerminalizesWithoutRetry(harness);
    TestLateFillAfterTimeoutThroughReconciliation(harness);
    TestRestartRestoresQueuedAndSubmitted(harness);
    TestDuplicateTransactionAfterRestartIgnored(harness);

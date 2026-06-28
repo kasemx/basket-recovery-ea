@@ -37,6 +37,8 @@
 #include <BasketRecovery/Application/Kernel/DefaultTransitionRuleTable.mqh>
 #include <BasketRecovery/Domain/StateMachine/AlwaysTrueTransitionGuard.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionRestartService.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionLifecycleService.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionStartupReconciliationService.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionSubmissionPreparer.mqh>
 #include <BasketRecovery/Application/Execution/SubmissionPreparationPolicy.mqh>
 #include <BasketRecovery/Application/Execution/SubmissionPreparationValidator.mqh>
@@ -331,21 +333,32 @@ public:
          new CInMemoryPendingExecutionEventBuffer(32);
       CPendingExecutionDiagnostics *pendingExecutionDiagnostics=
          new CPendingExecutionDiagnostics(logger,configuration.EnableExecutionDiagnostics(),64);
+      CFilePendingExecutionStore *pendingExecutionStore=
+         new CFilePendingExecutionStore("BasketRecovery/pending_executions.dat");
+      pendingExecutionStore.RestoreFromDisk();
+      CPendingExecutionLifecycleService *pendingExecutionLifecycle=
+         new CPendingExecutionLifecycleService(pendingExecutionRegistry,
+                                               pendingExecutionStore,
+                                               pendingExecutionEventBuffer,
+                                               clock);
       CMt5BrokerPositionReader *executionReconciliationReader=new CMt5BrokerPositionReader();
       CExecutionReconciliationScheduler *executionReconciliationScheduler=
          new CExecutionReconciliationScheduler(pendingExecutionRegistry,executionReconciliationReader,
-                                               pendingExecutionDiagnostics,8);
+                                               pendingExecutionDiagnostics,8,pendingExecutionLifecycle);
       CTradeTransactionRouter *tradeTransactionRouter=
          new CTradeTransactionRouter(pendingExecutionRegistry,
                                      pendingExecutionDiagnostics,
                                      pendingExecutionEventBuffer,
                                      kernel.FastStateRegistry(),
-                                     clock);
+                                     clock,
+                                     pendingExecutionLifecycle);
       CExecutionTimeoutMonitor *executionTimeoutMonitor=
          new CExecutionTimeoutMonitor(pendingExecutionRegistry,
                                       executionReconciliationScheduler,
+                                      executionReconciliationReader,
                                       pendingExecutionDiagnostics,
-                                      clock);
+                                      clock,
+                                      pendingExecutionLifecycle);
       CPendingExecutionTestInjectionService *pendingExecutionTestInjection=
          new CPendingExecutionTestInjectionService(pendingExecutionRegistry,tradeTransactionRouter);
       context.RegisterPendingExecutionRuntime(pendingExecutionRegistry,
@@ -355,7 +368,8 @@ public:
                                               executionReconciliationScheduler,
                                               executionTimeoutMonitor,
                                               pendingExecutionTestInjection,
-                                              executionReconciliationReader);
+                                              executionReconciliationReader,
+                                              pendingExecutionLifecycle);
 
       CRecoveryRiskEventBuffer *recoveryRiskEventBuffer=new CRecoveryRiskEventBuffer(30000);
       CRecoveryDecisionRiskGateService *recoveryRiskGateService=
@@ -391,22 +405,20 @@ public:
                                                          configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
       kernel.ConfigureManualRecoveryCandidateRegistration(manualRecoveryRegistrationService);
 
-      CFilePendingExecutionStore *pendingExecutionStore=
-         new CFilePendingExecutionStore("BasketRecovery/pending_executions.dat");
-      pendingExecutionStore.RestoreFromDisk();
+      CFilePendingExecutionStore *pendingExecutionStoreRef=pendingExecutionStore;
       CSubmissionPreparationValidator preparationValidator(marketDataProvider,configuration.MarketSafetyConfig());
       CExecutionSubmissionPreparer *submissionPreparer=
          new CExecutionSubmissionPreparer(CSubmissionPreparationPolicy::Default(),
                                           preparationValidator,
                                           pendingExecutionRegistry,
-                                          pendingExecutionStore,
+                                          pendingExecutionStoreRef,
                                           clock);
       submissionPreparer.ConfigureRiskReadModel(snapshotStore,marketDataProvider);
       string restartWarnings[];
-      CPendingExecutionRestartService::RestorePreparedEntries(pendingExecutionStore,
+      CPendingExecutionRestartService::RestorePreparedEntries(pendingExecutionStoreRef,
                                                               pendingExecutionRegistry,
                                                               restartWarnings);
-      context.RegisterSubmissionPreparationRuntime(submissionPreparer,pendingExecutionStore);
+      context.RegisterSubmissionPreparationRuntime(submissionPreparer,pendingExecutionStoreRef);
       // Sprint 6E: CSimulatedSubmissionGateway / CSubmitPreparedExecutionUseCase remain test-only.
       // CSubmissionGatewayCompositionGuard blocks bootstrap auto-wire of simulated gateways.
 
@@ -502,6 +514,11 @@ public:
                                                      manualRecoverySubmissionValidationService,
                                                      manualRecoverySubmissionService,
                                                      recoveryStepExecutionTracker);
+      CPendingExecutionStartupReconciliationService::ReconcilePersistedEntries(pendingExecutionStoreRef,
+                                                                               pendingExecutionRegistry,
+                                                                               pendingExecutionLifecycle,
+                                                                               executionReconciliationReader,
+                                                                               manualRecoverySubmissionService);
       CManualRecoveryCandidateValidationArtifact::TryRestoreToRegistry(*manualRecoveryCandidateRegistry);
       // Sprint 7D: manual recovery route only; automatic recovery execution remains disabled.
       // Sprint 6G: OrderSendAsync exists only in CMt5AsyncSubmissionGateway; manual route only.

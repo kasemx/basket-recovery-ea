@@ -2,7 +2,7 @@
 #define BRE_APP_RECOVERY_PENDING_EXECUTION_CHECKER_MQH
 
 #include <BasketRecovery/Application/Execution/PendingExecutionRegistry.mqh>
-#include <BasketRecovery/Domain/Execution/TradeExecutionStatus.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionLifecycleService.mqh>
 #include <BasketRecovery/Shared/Types/Identifiers.mqh>
 
 class CRecoveryPendingExecutionChecker
@@ -10,17 +10,7 @@ class CRecoveryPendingExecutionChecker
 public:
    static bool       HasUnresolvedForBasket(const CPendingExecutionRegistry &registry,const CBasketId &basketId)
      {
-      for(int i=0;i<registry.Count();i++)
-        {
-         CPendingExecutionEntry entry;
-         if(!registry.TryGetEntry(i,entry))
-            continue;
-         if(entry.BasketId().Value()!=basketId.Value())
-            continue;
-         if(!TradeExecutionStatusIsTerminal(entry.Status()))
-            return true;
-        }
-      return false;
+      return CPendingExecutionLifecycleService::HasUnresolvedPendingExecution(registry,basketId);
      }
   };
 

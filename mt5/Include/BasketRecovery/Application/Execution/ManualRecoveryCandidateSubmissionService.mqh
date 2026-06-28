@@ -20,7 +20,9 @@
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 #include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 
-class CManualRecoveryCandidateSubmissionService
+#include <BasketRecovery/Application/Execution/PendingExecutionStartupReconciliationService.mqh>
+
+class CManualRecoveryCandidateSubmissionService : public IPendingExecutionFillNotifier
   {
 private:
    CDemoExecutionAuthorizationConfig       m_config;
@@ -234,7 +236,7 @@ public:
       return result;
      }
 
-   void              OnBrokerFillConfirmed(const string executionRequestId)
+   void              OnBrokerFillConfirmed(const string executionRequestId) override
      {
       if(m_candidateRegistry==NULL || m_stepTracker==NULL)
          return;

@@ -6,6 +6,7 @@
 #include <BasketRecovery/Application/Execution/PendingExecutionCorrelationMatcher.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionDiagnostics.mqh>
 #include <BasketRecovery/Application/Execution/InMemoryPendingExecutionEventBuffer.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionLifecycleService.mqh>
 #include <BasketRecovery/Application/FastPath/BasketFastStateRegistry.mqh>
 #include <BasketRecovery/Application/FastPath/ForceReevaluationFlag.mqh>
 #include <BasketRecovery/Application/Ports/IClock.mqh>
@@ -20,6 +21,7 @@ private:
    CInMemoryPendingExecutionEventBuffer *m_eventBuffer;
    CBasketFastStateRegistry             *m_fastStateRegistry;
    IClock                               *m_clock;
+   CPendingExecutionLifecycleService    *m_lifecycle;
 
    void              MarkForceReevaluate(const CBasketId &basketId,const datetime occurredAtUtc)
      {
@@ -52,13 +54,15 @@ public:
                                              CPendingExecutionDiagnostics *diagnostics,
                                              CInMemoryPendingExecutionEventBuffer *eventBuffer,
                                              CBasketFastStateRegistry *fastStateRegistry,
-                                             IClock *clock)
+                                             IClock *clock,
+                                             CPendingExecutionLifecycleService *lifecycle=NULL)
      {
       m_registry=registry;
       m_diagnostics=diagnostics;
       m_eventBuffer=eventBuffer;
       m_fastStateRegistry=fastStateRegistry;
       m_clock=clock;
+      m_lifecycle=lifecycle;
      }
 
    ENUM_BRE_TRADE_TRANSACTION_RESULT_CODE Route(const CTradeTransactionCorrelationContext &context)
@@ -136,6 +140,8 @@ public:
          entry.SetCorrelationState(CPendingExecutionCorrelationMatcher::ToCorrelationState(strategy));
          m_registry.TryUpdateEntry(index,entry);
          m_registry.MarkTransactionProcessed(context.TransactionKey());
+         if(m_lifecycle!=NULL)
+            m_lifecycle.OnTransactionTransitionAccepted(entry,fromStatus);
          if(m_diagnostics!=NULL)
             m_diagnostics.OnTransitionAccepted(entry.ExecutionRequestId(),fromStatus,entry.Status());
          MarkForceReevaluate(entry.BasketId(),context.OccurredAtUtc());

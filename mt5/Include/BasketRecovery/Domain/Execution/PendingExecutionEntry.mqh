@@ -149,9 +149,7 @@ public:
 
    bool              BlocksBlindResend(void) const
      {
-      return m_status==BRE_TRADE_EXEC_STATUS_UNKNOWN ||
-             m_status==BRE_TRADE_EXEC_STATUS_TIMED_OUT ||
-             m_status==BRE_TRADE_EXEC_STATUS_RECONCILING;
+      return m_status==BRE_TRADE_EXEC_STATUS_RECONCILING;
      }
   };
 

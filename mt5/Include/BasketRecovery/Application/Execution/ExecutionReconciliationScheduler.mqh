@@ -5,6 +5,7 @@
 #include <BasketRecovery/Application/Execution/PendingExecutionRegistry.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionReconciliationResolver.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionDiagnostics.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionLifecycleService.mqh>
 #include <BasketRecovery/Application/Ports/IBrokerPositionReader.mqh>
 #include <BasketRecovery/Domain/Execution/PendingExecutionTransitionRules.mqh>
 
@@ -15,6 +16,7 @@ private:
    CPendingExecutionRegistry       *m_registry;
    IBrokerPositionReader           *m_positionReader;
    CPendingExecutionDiagnostics    *m_diagnostics;
+   CPendingExecutionLifecycleService *m_lifecycle;
    int                              m_maxBatchSize;
 
    int               FindEntryIndex(const string executionRequestId) const
@@ -37,11 +39,13 @@ public:
                      CExecutionReconciliationScheduler(CPendingExecutionRegistry *registry,
                                                        IBrokerPositionReader *positionReader,
                                                        CPendingExecutionDiagnostics *diagnostics,
-                                                       const int maxBatchSize=8)
+                                                       const int maxBatchSize=8,
+                                                       CPendingExecutionLifecycleService *lifecycle=NULL)
      {
       m_registry=registry;
       m_positionReader=positionReader;
       m_diagnostics=diagnostics;
+      m_lifecycle=lifecycle;
       m_maxBatchSize=(maxBatchSize<=0 ? 8 : maxBatchSize);
      }
 
@@ -78,9 +82,19 @@ public:
          if(entry.Status()!=BRE_TRADE_EXEC_STATUS_RECONCILING)
             continue;
 
+         ENUM_BRE_TRADE_EXECUTION_STATUS fromStatus=entry.Status();
          double matchedVolume=0.0;
          ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
             CExecutionReconciliationResolver::Resolve(entry,m_positionReader,matchedVolume);
+
+         if(resolved==BRE_TRADE_EXEC_STATUS_UNKNOWN)
+           {
+            if(m_diagnostics!=NULL)
+               m_diagnostics.OnUnresolvedUnknown(entry.ExecutionRequestId());
+            processed++;
+            continue;
+           }
+
          CPendingExecutionEntry updated;
          if(!m_registry.TryTransition(index,resolved,updated))
             continue;
@@ -88,9 +102,8 @@ public:
          if(matchedVolume>0.0)
             updated.SetFilledVolume(matchedVolume);
          m_registry.TryUpdateEntry(index,updated);
-
-         if(resolved==BRE_TRADE_EXEC_STATUS_UNKNOWN && m_diagnostics!=NULL)
-            m_diagnostics.OnUnresolvedUnknown(updated.ExecutionRequestId());
+         if(m_lifecycle!=NULL)
+            m_lifecycle.OnRegistryEntryUpdated(updated,fromStatus);
 
          processed++;
         }
