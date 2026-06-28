@@ -28,6 +28,7 @@
 #include <BasketRecovery/Application/Ports/IMarketContextProvider.mqh>
 #include <BasketRecovery/Infrastructure/Market/MarketContextProviderAdapter.mqh>
 #include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
+#include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Domain/Configuration/ProfileSnapshot.mqh>
 
 class CApplicationKernel
@@ -227,7 +228,7 @@ public:
       m_createHandler=new CCreateBasketCommandHandler(repository,clock,idGenerator,profileSnapshot);
       m_activateHandler=new CActivateBasketCommandHandler(repository,m_transitionHandler,clock,idGenerator);
       m_closeHandler=new CCloseBasketCommandHandler(repository,m_transitionHandler,clock,idGenerator);
-      m_evaluateHandler=new CEvaluateStrategyCommandHandler(m_evaluateUseCase,m_marketAdapter);
+      m_evaluateHandler=new CEvaluateStrategyCommandHandler(m_evaluateUseCase,m_marketAdapter,m_marketAdapter);
       m_openRecoveryHandler=new COpenRecoveryPositionCommandHandler(repository,clock);
       m_closePositionsHandler=new CClosePositionsCommandHandler(repository,clock);
       m_moveStopHandler=new CMoveBasketStopLossCommandHandler(repository,clock);
@@ -276,6 +277,13 @@ public:
    CPersistenceManager*       PersistenceManager(void) { return m_persistenceManager; }
    CBindMigratedBasketStrategyUseCase* BindMigrationUseCase(void) { return m_bindMigrationUseCase; }
    CMarketContextProviderAdapter* MarketAdapter(void) { return m_marketAdapter; }
+   CEvaluateBasketStrategyUseCase* EvaluateUseCase(void) { return m_evaluateUseCase; }
+
+   void              ConfigureRecoveryRiskGate(CRecoveryDecisionRiskGateService *riskGateService)
+     {
+      if(m_evaluateUseCase!=NULL)
+         m_evaluateUseCase.ConfigureRecoveryRiskGate(riskGateService);
+     }
   };
 
 #endif

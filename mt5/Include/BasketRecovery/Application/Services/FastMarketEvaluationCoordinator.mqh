@@ -2,6 +2,7 @@
 #define BRE_APP_FAST_MARKET_EVALUATION_COORDINATOR_MQH
 
 #include <BasketRecovery/Application/Configuration/FastPathConfig.mqh>
+#include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Application/FastPath/BasketFastStateRegistry.mqh>
 #include <BasketRecovery/Application/FastPath/SymbolBasketIndex.mqh>
 #include <BasketRecovery/Application/FastPath/FastEvaluationTriggerPolicy.mqh>
@@ -248,9 +249,16 @@ public:
             continue;
            }
 
-         CResult<int> evalResult=m_evaluateUseCase.ExecuteFastPath(basket,market,riskContext,
-                                                                   m_stagingQueue,
-                                                                   basket.CorrelationKey());
+         CRecoveryRiskGateInput gateInput;
+         if(!m_marketAdapter.TryBuildRiskGateInput(basket,basket.CorrelationKey(),nowUtc,quoteSequence,gateInput))
+           {
+            CRecoveryRiskGateInput emptyInput;
+            gateInput=emptyInput;
+           }
+         CResult<int> evalResult=m_evaluateUseCase.ExecuteFastPathWithRiskGate(basket,market,riskContext,
+                                                                               m_stagingQueue,
+                                                                               basket.CorrelationKey(),
+                                                                               gateInput);
          if(evalResult.IsFail())
            {
             deferred++;

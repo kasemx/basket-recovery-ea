@@ -41,7 +41,10 @@ enum ENUM_BRE_EVENT_TYPE
    BRE_EVENT_EXECUTION_FILLED,
    BRE_EVENT_EXECUTION_REJECTED,
    BRE_EVENT_EXECUTION_TIMED_OUT,
-   BRE_EVENT_EXECUTION_UNKNOWN
+   BRE_EVENT_EXECUTION_UNKNOWN,
+   BRE_EVENT_RECOVERY_RISK_VALIDATED,
+   BRE_EVENT_RECOVERY_BLOCKED_BY_RISK,
+   BRE_EVENT_RISK_REDUCTION_SUGGESTED
   };
 
 class CEventTypeHelper
@@ -89,6 +92,9 @@ public:
          case BRE_EVENT_EXECUTION_REJECTED: return "ExecutionRejected";
          case BRE_EVENT_EXECUTION_TIMED_OUT: return "ExecutionTimedOut";
          case BRE_EVENT_EXECUTION_UNKNOWN: return "ExecutionUnknown";
+         case BRE_EVENT_RECOVERY_RISK_VALIDATED: return "RecoveryRiskValidated";
+         case BRE_EVENT_RECOVERY_BLOCKED_BY_RISK: return "RecoveryBlockedByRisk";
+         case BRE_EVENT_RISK_REDUCTION_SUGGESTED: return "RiskReductionSuggested";
          default: return "None";
         }
      }

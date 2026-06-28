@@ -4,6 +4,7 @@
 #include <BasketRecovery/Application/Ports/ICommandHandler.mqh>
 #include <BasketRecovery/Application/UseCases/EvaluateBasketStrategyUseCase.mqh>
 #include <BasketRecovery/Application/Ports/IMarketContextProvider.mqh>
+#include <BasketRecovery/Infrastructure/Market/MarketContextProviderAdapter.mqh>
 #include <BasketRecovery/Application/Handlers/Commands/StrategyCommandSupport.mqh>
 #include <BasketRecovery/Application/Commands/StrategyCommands.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
@@ -13,13 +14,16 @@ class CEvaluateStrategyCommandHandler : public ICommandHandler
 private:
    CEvaluateBasketStrategyUseCase *m_useCase;
    IMarketContextProvider       *m_marketProvider;
+   CMarketContextProviderAdapter *m_riskGateMarketAdapter;
 
 public:
                      CEvaluateStrategyCommandHandler(CEvaluateBasketStrategyUseCase *useCase,
-                                                     IMarketContextProvider *marketProvider)
+                                                     IMarketContextProvider *marketProvider,
+                                                     CMarketContextProviderAdapter *riskGateMarketAdapter=NULL)
      {
       m_useCase=useCase;
       m_marketProvider=marketProvider;
+      m_riskGateMarketAdapter=riskGateMarketAdapter;
      }
 
    virtual bool      CanHandle(const ICommand *command) const
@@ -44,6 +48,17 @@ public:
       CRiskRuntimeContext riskContext;
       if(m_marketProvider==NULL || !m_marketProvider.TryBuildForBasket(basket,market,riskContext))
          return CResult<CCommandExecutionResult>::EmptyOk();
+
+      CRecoveryRiskGateInput gateInput;
+      datetime nowUtc=TimeGMT();
+      if(m_riskGateMarketAdapter!=NULL &&
+         m_riskGateMarketAdapter.TryBuildRiskGateInput(basket,evaluateCommand.CorrelationKey(),nowUtc,0,gateInput))
+        {
+         CResult<int> result=m_useCase.ExecuteWithRiskGate(*evaluateCommand,market,riskContext,gateInput);
+         if(result.IsFail())
+            return CResult<CCommandExecutionResult>::Fail(result.ErrorCode(),result.ErrorMessage());
+         return CResult<CCommandExecutionResult>::EmptyOk();
+        }
 
       CResult<int> result=m_useCase.Execute(*evaluateCommand,market,riskContext);
       if(result.IsFail())

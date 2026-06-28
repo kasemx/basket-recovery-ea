@@ -347,6 +347,15 @@ public:
                                               pendingExecutionTestInjection,
                                               executionReconciliationReader);
 
+      CRecoveryRiskEventBuffer *recoveryRiskEventBuffer=new CRecoveryRiskEventBuffer(30000);
+      CRecoveryDecisionRiskGateService *recoveryRiskGateService=
+         new CRecoveryDecisionRiskGateService(snapshotStore,
+                                              pendingExecutionRegistry,
+                                              recoveryRiskEventBuffer,
+                                              configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
+      kernel.ConfigureRecoveryRiskGate(recoveryRiskGateService);
+      context.RegisterRecoveryRiskRuntime(recoveryRiskEventBuffer,recoveryRiskGateService);
+
       CFilePendingExecutionStore *pendingExecutionStore=
          new CFilePendingExecutionStore("BasketRecovery/pending_executions.dat");
       pendingExecutionStore.RestoreFromDisk();

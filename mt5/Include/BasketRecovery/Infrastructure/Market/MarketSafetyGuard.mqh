@@ -73,6 +73,8 @@ public:
       return CVoidResult::Ok();
      }
 
+   CMarketSafetyConfig Config(void) const { return m_config; }
+
    CVoidResult       ValidateForEvaluation(const CMarketQuote &quote,
                                            const CAccountContextSnapshot &account,
                                            string &outWarningKey)

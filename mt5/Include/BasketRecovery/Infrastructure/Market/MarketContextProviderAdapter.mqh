@@ -5,6 +5,7 @@
 #include <BasketRecovery/Application/Ports/IMarketDataProvider.mqh>
 #include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
 #include <BasketRecovery/Application/Risk/BasketRiskReadModelService.mqh>
+#include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Infrastructure/Market/MarketSafetyGuard.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 
@@ -91,6 +92,44 @@ public:
                                                                            account,
                                                                            m_snapshotStore,
                                                                            CRiskCalculationSettings::CreateDefault());
+      return true;
+     }
+
+   bool              TryBuildRiskGateInput(const CBasketAggregate &basket,
+                                           const string correlationKey,
+                                           const datetime timestampUtc,
+                                           const ulong quoteSequence,
+                                           CRecoveryRiskGateInput &outInput)
+     {
+      if(m_marketData==NULL)
+         return false;
+
+      string symbol=basket.Symbol();
+      CResult<CMarketQuote> quoteResult=m_marketData.TryGetQuote(symbol);
+      if(quoteResult.IsFail())
+         return false;
+
+      CMarketQuote quote;
+      quoteResult.TryGetValue(quote);
+
+      CResult<CAccountContextSnapshot> accountResult=m_marketData.TryGetAccountSnapshot();
+      if(accountResult.IsFail())
+         return false;
+
+      CAccountContextSnapshot account;
+      accountResult.TryGetValue(account);
+
+      string warningKey="";
+      if(m_safetyGuard.ValidateForEvaluation(quote,account,warningKey).IsFail())
+         return false;
+
+      outInput=CRecoveryRiskGateInput::Create(quote,
+                                              account,
+                                              quoteSequence,
+                                              m_safetyGuard.Config().QuoteStaleThresholdMs(),
+                                              basket.StrategyProfileHash(),
+                                              correlationKey,
+                                              timestampUtc);
       return true;
      }
   };

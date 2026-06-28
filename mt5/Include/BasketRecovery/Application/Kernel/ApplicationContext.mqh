@@ -41,6 +41,8 @@
 #include <BasketRecovery/Application/Execution/ExecutionAuthorizationRegistry.mqh>
 #include <BasketRecovery/Infrastructure/Execution/InMemoryExecutionAuthorizationStore.mqh>
 #include <BasketRecovery/Infrastructure/Execution/Mt5AccountExecutionEligibilityProvider.mqh>
+#include <BasketRecovery/Application/Risk/RecoveryRiskEventBuffer.mqh>
+#include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerPositionReader.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
@@ -79,6 +81,8 @@ private:
    CMt5AsyncSubmissionGateway *m_asyncSubmissionGateway;
    CMt5AsyncSubmissionDiagnostics *m_asyncSubmissionDiagnostics;
    CMt5LiveAsyncOrderSendTransport *m_liveAsyncTransport;
+   CRecoveryRiskEventBuffer *m_recoveryRiskEventBuffer;
+   CRecoveryDecisionRiskGateService *m_recoveryRiskGateService;
    bool                m_initialized;
 
 public:
@@ -115,6 +119,8 @@ public:
       m_asyncSubmissionGateway=NULL;
       m_asyncSubmissionDiagnostics=NULL;
       m_liveAsyncTransport=NULL;
+      m_recoveryRiskEventBuffer=NULL;
+      m_recoveryRiskGateService=NULL;
       m_initialized=false;
      }
 
@@ -167,6 +173,13 @@ public:
       m_executionTimeoutMonitor=timeoutMonitor;
       m_pendingExecutionTestInjection=testInjection;
       m_executionReconciliationReader=reconciliationReader;
+     }
+
+   void              RegisterRecoveryRiskRuntime(CRecoveryRiskEventBuffer *eventBuffer,
+                                                 CRecoveryDecisionRiskGateService *gateService)
+     {
+      m_recoveryRiskEventBuffer=eventBuffer;
+      m_recoveryRiskGateService=gateService;
      }
 
    void              RegisterSubmissionPreparationRuntime(CExecutionSubmissionPreparer *preparer,
@@ -300,6 +313,16 @@ public:
         {
          delete m_executionDiagnostics;
          m_executionDiagnostics=NULL;
+        }
+      if(m_recoveryRiskGateService!=NULL)
+        {
+         delete m_recoveryRiskGateService;
+         m_recoveryRiskGateService=NULL;
+        }
+      if(m_recoveryRiskEventBuffer!=NULL)
+        {
+         delete m_recoveryRiskEventBuffer;
+         m_recoveryRiskEventBuffer=NULL;
         }
       if(m_pendingExecutionTestInjection!=NULL)
         {
@@ -545,6 +568,8 @@ public:
 
    CPendingExecutionTestInjectionService* PendingExecutionTestInjection(void) const { return m_pendingExecutionTestInjection; }
    CPendingExecutionRegistry* PendingExecutionRegistry(void) const { return m_pendingExecutionRegistry; }
+   CRecoveryRiskEventBuffer* RecoveryRiskEventBuffer(void) const { return m_recoveryRiskEventBuffer; }
+   CRecoveryDecisionRiskGateService* RecoveryRiskGateService(void) const { return m_recoveryRiskGateService; }
    CInMemoryPendingExecutionEventBuffer* PendingExecutionEventBuffer(void) const { return m_pendingExecutionEventBuffer; }
    CPendingExecutionDiagnostics* PendingExecutionDiagnostics(void) const { return m_pendingExecutionDiagnostics; }
    CExecutionSubmissionPreparer* SubmissionPreparer(void) const { return m_submissionPreparer; }

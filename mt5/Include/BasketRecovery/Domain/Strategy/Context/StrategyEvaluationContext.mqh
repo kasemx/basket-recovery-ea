@@ -7,6 +7,7 @@
 #include <BasketRecovery/Domain/Strategy/Context/ProfitLevelRuntimeState.mqh>
 #include <BasketRecovery/Domain/Strategy/Context/RiskRuntimeContext.mqh>
 #include <BasketRecovery/Domain/Strategy/Context/PositionRuntimeView.mqh>
+#include <BasketRecovery/Domain/Strategy/Context/StrategyRiskEvaluationContext.mqh>
 
 class CStrategyEvaluationContext
   {
@@ -19,6 +20,7 @@ private:
    CPositionRuntimeView        m_positions[];
    double                      m_adverseMovePips;
    double                      m_floatingProfitUsd;
+   CStrategyRiskEvaluationContext m_riskEvaluationContext;
 
 public:
                      CStrategyEvaluationContext(void) {}
@@ -31,6 +33,7 @@ public:
       m_riskContext=other.m_riskContext;
       m_adverseMovePips=other.m_adverseMovePips;
       m_floatingProfitUsd=other.m_floatingProfitUsd;
+      m_riskEvaluationContext=other.m_riskEvaluationContext;
       int profitLevelCount=ArraySize(other.m_profitLevelStates);
       ArrayResize(m_profitLevelStates,profitLevelCount);
       for(int i=0;i<profitLevelCount;i++)
@@ -47,6 +50,7 @@ public:
    CRiskRuntimeContext         RiskContext(void) const { return m_riskContext; }
    double                      AdverseMovePips(void) const { return m_adverseMovePips; }
    double                      FloatingProfitUsd(void) const { return m_floatingProfitUsd; }
+   CStrategyRiskEvaluationContext RiskEvaluationContext(void) const { return m_riskEvaluationContext; }
    int                         ProfitLevelStateCount(void) const { return ArraySize(m_profitLevelStates); }
    int                         PositionCount(void) const { return ArraySize(m_positions); }
 
@@ -75,6 +79,11 @@ public:
            }
         }
       return false;
+     }
+
+   void                          SetRiskEvaluationContext(const CStrategyRiskEvaluationContext &value)
+     {
+      m_riskEvaluationContext=value;
      }
 
    static CStrategyEvaluationContext Create(const CStrategyProfile &profile,

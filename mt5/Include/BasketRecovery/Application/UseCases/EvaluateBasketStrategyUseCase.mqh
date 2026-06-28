@@ -9,6 +9,7 @@
 #include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
 #include <BasketRecovery/Application/Services/StrategyEvaluationContextFactory.mqh>
 #include <BasketRecovery/Application/Services/StrategyDecisionCommandMapper.mqh>
+#include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Application/Commands/StrategyCommands.mqh>
 #include <BasketRecovery/Application/Commands/CommandBase.mqh>
 #include <BasketRecovery/Domain/Basket/BasketRuntimeGuard.mqh>
@@ -25,9 +26,17 @@ private:
    IClock                  *m_clock;
    IUniqueIdGenerator      *m_idGenerator;
    IPositionSnapshotStore  *m_snapshotStore;
+   CRecoveryDecisionRiskGateService *m_riskGateService;
 
 public:
    IBasketRepository* Repository(void) const { return m_repository; }
+
+   void              ConfigureRecoveryRiskGate(CRecoveryDecisionRiskGateService *riskGateService)
+     {
+      m_riskGateService=riskGateService;
+     }
+
+   CRecoveryDecisionRiskGateService* RiskGateService(void) const { return m_riskGateService; }
 
 public:
                      CEvaluateBasketStrategyUseCase(IBasketRepository *repository,
@@ -43,11 +52,35 @@ public:
       m_clock=clock;
       m_idGenerator=idGenerator;
       m_snapshotStore=snapshotStore;
+      m_riskGateService=NULL;
+     }
+
+   CStrategyDecisionSet ApplyRecoveryRiskGate(const CBasketAggregate &basket,
+                                            const CStrategyDecisionSet &decisions,
+                                            const CRecoveryRiskGateInput &gateInput,
+                                            CStrategyEvaluationContext &context) const
+     {
+      if(m_riskGateService==NULL || !gateInput.HasQuote())
+         return decisions;
+
+      CStrategyRiskEvaluationContext riskContext;
+      CStrategyDecisionSet gated=m_riskGateService.ApplyGate(basket,decisions,gateInput,riskContext);
+      context.SetRiskEvaluationContext(riskContext);
+      return gated;
      }
 
    CResult<int>      Execute(const CEvaluateStrategyCommand &command,
                              const CMarketContext &market,
                              const CRiskRuntimeContext &riskContext)
+     {
+      CRecoveryRiskGateInput emptyGateInput;
+      return ExecuteWithRiskGate(command,market,riskContext,emptyGateInput);
+     }
+
+   CResult<int>      ExecuteWithRiskGate(const CEvaluateStrategyCommand &command,
+                                         const CMarketContext &market,
+                                         const CRiskRuntimeContext &riskContext,
+                                         const CRecoveryRiskGateInput &gateInput)
      {
       if(m_repository==NULL)
          return CResult<int>::Fail(BRE_ERR_BASKET_NOT_FOUND,"Basket repository is required");
@@ -74,6 +107,7 @@ public:
       CStrategyEvaluationContext context;
       contextResult.TryGetValue(context);
       CStrategyDecisionSet decisions=m_strategyEngine.EvaluateAll(context);
+      decisions=ApplyRecoveryRiskGate(basket,decisions,gateInput,context);
 
       CStrategyDecisionCommandMapper mapper;
       ICommand *mappedCommands[];
@@ -119,6 +153,17 @@ public:
                                      ICommandQueue *stagingQueue,
                                      const string correlationKey)
      {
+      CRecoveryRiskGateInput emptyGateInput;
+      return ExecuteFastPathWithRiskGate(basket,market,riskContext,stagingQueue,correlationKey,emptyGateInput);
+     }
+
+   CResult<int>      ExecuteFastPathWithRiskGate(const CBasketAggregate &basket,
+                                                 const CMarketContext &market,
+                                                 const CRiskRuntimeContext &riskContext,
+                                                 ICommandQueue *stagingQueue,
+                                                 const string correlationKey,
+                                                 const CRecoveryRiskGateInput &gateInput)
+     {
       if(stagingQueue==NULL)
          return CResult<int>::Fail(BRE_ERR_COMMAND_INVALID,"Staging queue is required");
 
@@ -130,6 +175,7 @@ public:
       CStrategyEvaluationContext context;
       contextResult.TryGetValue(context);
       CStrategyDecisionSet decisions=m_strategyEngine.EvaluateAll(context);
+      decisions=ApplyRecoveryRiskGate(basket,decisions,gateInput,context);
 
       CStrategyDecisionCommandMapper mapper;
       ICommand *mappedCommands[];

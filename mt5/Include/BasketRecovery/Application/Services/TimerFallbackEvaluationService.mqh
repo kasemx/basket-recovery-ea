@@ -8,6 +8,7 @@
 #include <BasketRecovery/Infrastructure/Market/MarketContextProviderAdapter.mqh>
 #include <BasketRecovery/Application/UseCases/EvaluateBasketStrategyUseCase.mqh>
 #include <BasketRecovery/Application/FastPath/FastCommandStagingBuffer.mqh>
+#include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Domain/Enums/BasketLifecycleState.mqh>
 
 class CTimerFallbackEvaluationService
@@ -74,8 +75,16 @@ public:
          if(!m_marketAdapter.TryBuildForBasket(basket,market,riskContext))
             continue;
 
-         if(m_evaluateUseCase.ExecuteFastPath(basket,market,riskContext,m_stagingQueue,
-                                              basket.CorrelationKey()).IsOk())
+         CRecoveryRiskGateInput gateInput;
+         datetime nowUtc=TimeGMT();
+         if(m_marketAdapter.TryBuildRiskGateInput(basket,basket.CorrelationKey(),nowUtc,0,gateInput))
+           {
+            if(m_evaluateUseCase.ExecuteFastPathWithRiskGate(basket,market,riskContext,m_stagingQueue,
+                                                            basket.CorrelationKey(),gateInput).IsOk())
+               evaluated++;
+           }
+         else if(m_evaluateUseCase.ExecuteFastPath(basket,market,riskContext,m_stagingQueue,
+                                                  basket.CorrelationKey()).IsOk())
             evaluated++;
         }
 
