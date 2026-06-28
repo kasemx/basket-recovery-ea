@@ -302,6 +302,12 @@ public:
       if(m_evaluateUseCase!=NULL)
          m_evaluateUseCase.ConfigureManualRecoveryCandidateRegistration(registrationService);
      }
+
+   void              ConfigureManualProfitCloseCandidateRegistration(CManualProfitCloseCandidateRegistrationService *registrationService)
+     {
+      if(m_evaluateUseCase!=NULL)
+         m_evaluateUseCase.ConfigureManualProfitCloseCandidateRegistration(registrationService);
+     }
   };
 
 #endif

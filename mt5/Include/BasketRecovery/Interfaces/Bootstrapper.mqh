@@ -59,6 +59,16 @@
 #include <BasketRecovery/Application/Execution/RecoveryCandidateSubmissionValidator.mqh>
 #include <BasketRecovery/Application/Execution/RecoveryStepExecutionTracker.mqh>
 #include <BasketRecovery/Application/Execution/ManualRecoveryCandidateValidationArtifact.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateRegistry.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateRegistrationService.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateEventBuffer.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateTriggerRegistry.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseSubmissionService.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateSubmissionValidationService.mqh>
+#include <BasketRecovery/Application/Execution/ProfitCloseCandidateSubmissionValidator.mqh>
+#include <BasketRecovery/Application/Execution/ProfitLevelCloseExecutionTracker.mqh>
+#include <BasketRecovery/Application/Execution/CompositePendingExecutionFillNotifier.mqh>
+#include <BasketRecovery/Infrastructure/MT5/Mt5AccountPositionModelProvider.mqh>
 #include <BasketRecovery/Application/Execution/DemoManualSubmissionTriggerRegistry.mqh>
 #include <BasketRecovery/Application/Execution/SubmitPreparedExecutionUseCase.mqh>
 #include <BasketRecovery/Infrastructure/Execution/Mt5/IMt5AsyncOrderSendTransport.mqh>
@@ -100,7 +110,8 @@ public:
                                          const int maxAuthorizedRequestsPerSession,
                                          const int authorizationTokenExpirySeconds,
                                          const double maxManualDemoOpenVolume,
-                                         const int manualRecoveryCandidateExpirySeconds)
+                                         const int manualRecoveryCandidateExpirySeconds,
+                                         const int manualProfitCloseCandidateExpirySeconds)
      {
       CResult<CEAConfiguration> configurationResult=
          CMt5ConfigurationLoader::LoadFromInputs(profileName,logFilePath,logLevel,accountLabel,apiBaseUrl,apiKey,
@@ -116,7 +127,8 @@ public:
                                                  globalExecutionKillSwitch,basketExecutionKillSwitch,
                                                  basketExecutionKillSwitchBasketId,
                                                  maxAuthorizedRequestsPerSession,authorizationTokenExpirySeconds,
-                                                 maxManualDemoOpenVolume,manualRecoveryCandidateExpirySeconds);
+                                                 maxManualDemoOpenVolume,manualRecoveryCandidateExpirySeconds,
+                                                 manualProfitCloseCandidateExpirySeconds);
 
       if(configurationResult.IsFail())
         {
@@ -413,6 +425,12 @@ public:
                                                          configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
       kernel.ConfigureManualRecoveryCandidateRegistration(manualRecoveryRegistrationService);
 
+      CMt5AccountPositionModelProvider *accountPositionModelProvider=new CMt5AccountPositionModelProvider();
+      CManualProfitCloseCandidateRegistry *manualProfitCloseCandidateRegistry=new CManualProfitCloseCandidateRegistry();
+      CManualProfitCloseCandidateEventBuffer *manualProfitCloseCandidateEventBuffer=new CManualProfitCloseCandidateEventBuffer();
+      CProfitLevelCloseExecutionTracker *profitLevelCloseExecutionTracker=new CProfitLevelCloseExecutionTracker();
+      CManualProfitCloseCandidateTriggerRegistry *manualProfitCloseTriggerRegistry=new CManualProfitCloseCandidateTriggerRegistry();
+
       CFilePendingExecutionStore *pendingExecutionStoreRef=pendingExecutionStore;
       CSubmissionPreparationValidator preparationValidator(marketDataProvider,configuration.MarketSafetyConfig());
       CExecutionSubmissionPreparer *submissionPreparer=
@@ -453,6 +471,24 @@ public:
                                                authorizationRegistry,
                                                authorizationStore,
                                                accountEligibilityProvider);
+
+      CProfitCloseCandidateSubmissionValidator *profitCloseCandidateSubmissionValidator=
+         new CProfitCloseCandidateSubmissionValidator(snapshotStore,
+                                                      pendingExecutionRegistry,
+                                                      profitLevelCloseExecutionTracker,
+                                                      accountEligibilityProvider,
+                                                      configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
+      CManualProfitCloseCandidateRegistrationService *manualProfitCloseRegistrationService=
+         new CManualProfitCloseCandidateRegistrationService(manualProfitCloseCandidateRegistry,
+                                                            manualProfitCloseCandidateEventBuffer,
+                                                            profitCloseCandidateSubmissionValidator,
+                                                            profitLevelCloseExecutionTracker,
+                                                            snapshotStore,
+                                                            accountPositionModelProvider,
+                                                            clock,
+                                                            container.UniqueIdGenerator(),
+                                                            configuration.DemoAuthorizationConfig().ManualProfitCloseCandidateExpirySeconds());
+      kernel.ConfigureManualProfitCloseCandidateRegistration(manualProfitCloseRegistrationService);
       // Sprint 6F: authorization evaluates safety gates only; no submission gateway is wired.
 
       CMt5AsyncSubmissionDiagnostics *asyncSubmissionDiagnostics=
@@ -522,13 +558,44 @@ public:
                                                      manualRecoverySubmissionValidationService,
                                                      manualRecoverySubmissionService,
                                                      recoveryStepExecutionTracker);
+
+      CManualProfitCloseSubmissionService *manualProfitCloseSubmissionService=
+         new CManualProfitCloseSubmissionService(configuration.DemoAuthorizationConfig(),
+                                                 manualProfitCloseCandidateRegistry,
+                                                 manualProfitCloseTriggerRegistry,
+                                                 manualProfitCloseCandidateEventBuffer,
+                                                 profitCloseCandidateSubmissionValidator,
+                                                 profitLevelCloseExecutionTracker,
+                                                 authorizationRegistry,
+                                                 submissionPreparer,
+                                                 demoManualSubmissionService,
+                                                 persistenceManager.BasketRepository(),
+                                                 clock,
+                                                 container.UniqueIdGenerator());
+      CManualProfitCloseCandidateSubmissionValidationService *manualProfitCloseSubmissionValidationService=
+         new CManualProfitCloseCandidateSubmissionValidationService();
+      manualProfitCloseSubmissionValidationService.Configure(configuration.DemoAuthorizationConfig(),
+                                                             manualProfitCloseSubmissionService,
+                                                             persistenceManager.BasketRepository(),
+                                                             marketDataProvider,
+                                                             configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
+      context.RegisterManualProfitCloseCandidateRuntime(manualProfitCloseCandidateRegistry,
+                                                        manualProfitCloseRegistrationService,
+                                                        manualProfitCloseSubmissionValidationService,
+                                                        manualProfitCloseSubmissionService,
+                                                        profitLevelCloseExecutionTracker);
+
+      CCompositePendingExecutionFillNotifier *startupFillNotifier=new CCompositePendingExecutionFillNotifier();
+      startupFillNotifier.AddNotifier(manualRecoverySubmissionService);
+      startupFillNotifier.AddNotifier(manualProfitCloseSubmissionService);
       CPendingExecutionStartupReconciliationService::ReconcilePersistedEntries(pendingExecutionStoreRef,
                                                                                pendingExecutionRegistry,
                                                                                pendingExecutionLifecycle,
                                                                                executionReconciliationReader,
-                                                                               manualRecoverySubmissionService);
+                                                                               startupFillNotifier);
       CManualRecoveryCandidateValidationArtifact::TryRestoreToRegistry(*manualRecoveryCandidateRegistry);
       // Sprint 7D: manual recovery route only; automatic recovery execution remains disabled.
+      // Sprint 8C: manual profit close route only; automatic partial-close execution remains disabled.
       // Sprint 6G: OrderSendAsync exists only in CMt5AsyncSubmissionGateway; manual route only.
 
       CFastPathDiagnosticReporter *diagnosticReporter=kernel.DiagnosticReporter();

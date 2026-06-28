@@ -38,6 +38,11 @@
 #include <BasketRecovery/Application/Execution/ManualRecoveryCandidateSubmissionService.mqh>
 #include <BasketRecovery/Application/Execution/ManualRecoveryCandidateRegistry.mqh>
 #include <BasketRecovery/Application/Execution/ManualRecoveryCandidateRegistrationService.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateSubmissionValidationService.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseSubmissionService.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateRegistry.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateRegistrationService.mqh>
+#include <BasketRecovery/Application/Execution/ProfitLevelCloseExecutionTracker.mqh>
 #include <BasketRecovery/Application/Execution/RecoveryStepExecutionTracker.mqh>
 #include <BasketRecovery/Application/Execution/DemoManualSubmissionTriggerRegistry.mqh>
 #include <BasketRecovery/Application/Execution/SubmitPreparedExecutionUseCase.mqh>
@@ -103,6 +108,11 @@ private:
    CManualRecoveryCandidateSubmissionValidationService *m_manualRecoverySubmissionValidationService;
    CManualRecoveryCandidateSubmissionService *m_manualRecoverySubmissionService;
    CRecoveryStepExecutionTracker *m_recoveryStepExecutionTracker;
+   CManualProfitCloseCandidateRegistry *m_manualProfitCloseCandidateRegistry;
+   CManualProfitCloseCandidateRegistrationService *m_manualProfitCloseRegistrationService;
+   CManualProfitCloseCandidateSubmissionValidationService *m_manualProfitCloseSubmissionValidationService;
+   CManualProfitCloseSubmissionService *m_manualProfitCloseSubmissionService;
+   CProfitLevelCloseExecutionTracker *m_profitLevelCloseExecutionTracker;
    bool                m_initialized;
 
 public:
@@ -151,6 +161,11 @@ public:
       m_manualRecoverySubmissionValidationService=NULL;
       m_manualRecoverySubmissionService=NULL;
       m_recoveryStepExecutionTracker=NULL;
+      m_manualProfitCloseCandidateRegistry=NULL;
+      m_manualProfitCloseRegistrationService=NULL;
+      m_manualProfitCloseSubmissionValidationService=NULL;
+      m_manualProfitCloseSubmissionService=NULL;
+      m_profitLevelCloseExecutionTracker=NULL;
       m_initialized=false;
      }
 
@@ -243,6 +258,21 @@ public:
 
    CManualRecoveryCandidateRegistry* ManualRecoveryCandidateRegistry(void) const { return m_manualRecoveryCandidateRegistry; }
    CRecoveryStepExecutionTracker* RecoveryStepExecutionTracker(void) const { return m_recoveryStepExecutionTracker; }
+   CManualProfitCloseCandidateRegistry* ManualProfitCloseCandidateRegistry(void) const { return m_manualProfitCloseCandidateRegistry; }
+   CProfitLevelCloseExecutionTracker* ProfitLevelCloseExecutionTracker(void) const { return m_profitLevelCloseExecutionTracker; }
+
+   void              RegisterManualProfitCloseCandidateRuntime(CManualProfitCloseCandidateRegistry *registry,
+                                                               CManualProfitCloseCandidateRegistrationService *registrationService,
+                                                               CManualProfitCloseCandidateSubmissionValidationService *validationService,
+                                                               CManualProfitCloseSubmissionService *submissionService,
+                                                               CProfitLevelCloseExecutionTracker *levelTracker)
+     {
+      m_manualProfitCloseCandidateRegistry=registry;
+      m_manualProfitCloseRegistrationService=registrationService;
+      m_manualProfitCloseSubmissionValidationService=validationService;
+      m_manualProfitCloseSubmissionService=submissionService;
+      m_profitLevelCloseExecutionTracker=levelTracker;
+     }
 
    void              RegisterSubmissionPreparationRuntime(CExecutionSubmissionPreparer *preparer,
                                                           IPendingExecutionStore *store)
@@ -311,6 +341,22 @@ public:
                                                                                             magicNumber);
      }
 
+   CDemoManualSubmissionResult TryProcessManualProfitCloseSubmission(const string candidateId,
+                                                                     const string authorizationToken,
+                                                                     const string triggerToken,
+                                                                     const string basketIdValue,
+                                                                     const long magicNumber)
+     {
+      if(m_manualProfitCloseSubmissionValidationService==NULL)
+         return CDemoManualSubmissionResult::Rejected(BRE_LIVE_SAFETY_LIVE_DISABLED,
+                                                      "Manual profit close submission route is not configured");
+      return m_manualProfitCloseSubmissionValidationService.TryProcessManualProfitCloseSubmission(candidateId,
+                                                                                                  authorizationToken,
+                                                                                                  triggerToken,
+                                                                                                  basketIdValue,
+                                                                                                  magicNumber);
+     }
+
    bool              IsManualRecoverySubmissionWiredToStrategy(void) const
      {
       return m_manualRecoverySubmissionValidationService!=NULL &&
@@ -318,6 +364,14 @@ public:
      }
 
    bool              IsManualRecoverySubmissionWiredToAutomaticTimer(void) const { return false; }
+
+   bool              IsManualProfitCloseSubmissionWiredToStrategy(void) const
+     {
+      return m_manualProfitCloseSubmissionValidationService!=NULL &&
+             m_manualProfitCloseSubmissionValidationService.IsWiredToStrategyEngine();
+     }
+
+   bool              IsManualProfitCloseSubmissionWiredToAutomaticTimer(void) const { return false; }
 
    CExecutionAuthorizationResult TryProcessManualDemoAuthorizationValidation(const string executionRequestId,
                                                                                const string authorizationToken,
@@ -552,7 +606,8 @@ public:
             CMt5TradeTransactionAdapter::BuildContext(transaction,0);
          ENUM_BRE_TRADE_TRANSACTION_RESULT_CODE routeResult=m_tradeTransactionRouter.Route(context);
          if((routeResult==BRE_TRADE_TX_RESULT_ACCEPTED || routeResult==BRE_TRADE_TX_RESULT_RECONCILED) &&
-            m_pendingExecutionRegistry!=NULL && m_manualRecoverySubmissionService!=NULL)
+            m_pendingExecutionRegistry!=NULL &&
+            (m_manualRecoverySubmissionService!=NULL || m_manualProfitCloseSubmissionService!=NULL))
            {
             ENUM_BRE_CORRELATION_MATCH_STRATEGY strategy=BRE_CORRELATION_MATCH_NONE;
             int index=m_pendingExecutionRegistry.TryCorrelate(context,strategy);
@@ -561,7 +616,12 @@ public:
                CPendingExecutionEntry entry;
                if(m_pendingExecutionRegistry.TryGetEntry(index,entry) &&
                   entry.Status()==BRE_TRADE_EXEC_STATUS_FILLED)
-                  m_manualRecoverySubmissionService.OnBrokerFillConfirmed(entry.ExecutionRequestId());
+                 {
+                  if(m_manualRecoverySubmissionService!=NULL)
+                     m_manualRecoverySubmissionService.OnBrokerFillConfirmed(entry.ExecutionRequestId());
+                  if(m_manualProfitCloseSubmissionService!=NULL)
+                     m_manualProfitCloseSubmissionService.OnBrokerFillConfirmed(entry.ExecutionRequestId());
+                 }
               }
            }
         }

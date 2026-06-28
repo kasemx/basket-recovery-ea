@@ -40,7 +40,8 @@ public:
                                                  const int maxAuthorizedRequestsPerSession,
                                                  const int authorizationTokenExpirySeconds,
                                                  const double maxManualDemoOpenVolume,
-                                                 const int manualRecoveryCandidateExpirySeconds)
+                                                 const int manualRecoveryCandidateExpirySeconds,
+                                                 const int manualProfitCloseCandidateExpirySeconds)
      {
       CEAConfiguration configuration;
       configuration.SetProfileName(profileName);
@@ -82,6 +83,10 @@ public:
                                                          ? manualRecoveryCandidateExpirySeconds
                                                          : 30);
       demoConfig.SetMaxRecoverySubmissionsPerSession(1);
+      demoConfig.SetManualProfitCloseCandidateExpirySeconds(manualProfitCloseCandidateExpirySeconds>0
+                                                            ? manualProfitCloseCandidateExpirySeconds
+                                                            : 30);
+      demoConfig.SetMaxProfitCloseSubmissionsPerSession(1);
       configuration.SetDemoAuthorizationConfig(demoConfig);
 
       if(profileName=="")

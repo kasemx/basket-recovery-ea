@@ -193,10 +193,13 @@ public:
       if(!m_preparedValidator.Validate(executionRequestId,entry,envelope,prepReason,prepMessage))
          return Reject(BRE_LIVE_SAFETY_REQUEST_NOT_FOUND,prepMessage);
 
-      if(entry.IntentType()!=BRE_EXEC_INTENT_OPEN_POSITION)
-         return Reject(BRE_LIVE_SAFETY_INTENT_NOT_ALLOWED,"Only OPEN_POSITION is allowed for demo manual submission");
+      if(entry.IntentType()!=BRE_EXEC_INTENT_OPEN_POSITION &&
+         entry.IntentType()!=BRE_EXEC_INTENT_CLOSE_POSITION)
+         return Reject(BRE_LIVE_SAFETY_INTENT_NOT_ALLOWED,
+                       "Only OPEN_POSITION and CLOSE_POSITION are allowed for demo manual submission");
 
-      if(entry.RequestedVolume()>m_config.MaxManualDemoOpenVolume())
+      if(entry.IntentType()==BRE_EXEC_INTENT_OPEN_POSITION &&
+         entry.RequestedVolume()>m_config.MaxManualDemoOpenVolume())
          return Reject(BRE_LIVE_SAFETY_VOLUME_EXCEEDS_DEMO_MAX,"Requested volume exceeds demo maximum");
 
       if(!m_authRegistry.IsSessionSymbolAllowed(entry.Symbol()))

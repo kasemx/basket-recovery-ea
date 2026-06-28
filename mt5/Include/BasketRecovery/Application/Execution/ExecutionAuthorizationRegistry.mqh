@@ -13,6 +13,7 @@ private:
    int                               m_sessionAuthorizedCount;
    int                               m_sessionSubmissionCount;
    int                               m_sessionRecoverySubmissionCount;
+   int                               m_sessionProfitCloseSubmissionCount;
    string                            m_sessionLockedSymbol;
 
    int               FindIndexByTokenHash(const string tokenHash) const
@@ -32,6 +33,7 @@ public:
       m_sessionAuthorizedCount=0;
       m_sessionSubmissionCount=0;
       m_sessionRecoverySubmissionCount=0;
+      m_sessionProfitCloseSubmissionCount=0;
       m_sessionLockedSymbol="";
      }
 
@@ -89,6 +91,17 @@ public:
    int               SessionRecoverySubmissionCount(void) const { return m_sessionRecoverySubmissionCount; }
 
    void              IncrementRecoverySubmissionCount(void) { m_sessionRecoverySubmissionCount++; }
+
+   int               SessionProfitCloseSubmissionCount(void) const { return m_sessionProfitCloseSubmissionCount; }
+
+   void              IncrementProfitCloseSubmissionCount(void) { m_sessionProfitCloseSubmissionCount++; }
+
+   bool              HasProfitCloseSubmissionSessionCapacity(const int maxProfitCloseSubmissionsPerSession) const
+     {
+      if(maxProfitCloseSubmissionsPerSession<=0)
+         return false;
+      return m_sessionProfitCloseSubmissionCount<maxProfitCloseSubmissionsPerSession;
+     }
 
    bool              HasRecoverySubmissionSessionCapacity(const int maxRecoverySubmissionsPerSession) const
      {
@@ -163,6 +176,7 @@ public:
       m_sessionAuthorizedCount=0;
       m_sessionSubmissionCount=0;
       m_sessionRecoverySubmissionCount=0;
+      m_sessionProfitCloseSubmissionCount=0;
       m_sessionLockedSymbol="";
       if(m_store!=NULL)
          m_store.Clear();

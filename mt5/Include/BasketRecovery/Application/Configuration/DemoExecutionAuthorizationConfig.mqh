@@ -17,6 +17,8 @@ private:
    double                          m_maxManualDemoOpenVolume;
    int                             m_manualRecoveryCandidateExpirySeconds;
    int                             m_maxRecoverySubmissionsPerSession;
+   int                             m_manualProfitCloseCandidateExpirySeconds;
+   int                             m_maxProfitCloseSubmissionsPerSession;
 
 public:
                      CDemoExecutionAuthorizationConfig(void)
@@ -32,6 +34,8 @@ public:
       m_maxManualDemoOpenVolume=0.01;
       m_manualRecoveryCandidateExpirySeconds=30;
       m_maxRecoverySubmissionsPerSession=1;
+      m_manualProfitCloseCandidateExpirySeconds=30;
+      m_maxProfitCloseSubmissionsPerSession=1;
      }
 
    ENUM_BRE_EXECUTION_RUNTIME_MODE ExecutionRuntimeMode(void) const { return m_executionRuntimeMode; }
@@ -45,6 +49,8 @@ public:
    double            MaxManualDemoOpenVolume(void) const { return m_maxManualDemoOpenVolume; }
    int               ManualRecoveryCandidateExpirySeconds(void) const { return m_manualRecoveryCandidateExpirySeconds; }
    int               MaxRecoverySubmissionsPerSession(void) const { return m_maxRecoverySubmissionsPerSession; }
+   int               ManualProfitCloseCandidateExpirySeconds(void) const { return m_manualProfitCloseCandidateExpirySeconds; }
+   int               MaxProfitCloseSubmissionsPerSession(void) const { return m_maxProfitCloseSubmissionsPerSession; }
 
    void              SetExecutionRuntimeMode(const ENUM_BRE_EXECUTION_RUNTIME_MODE value) { m_executionRuntimeMode=value; }
    void              SetEnableLiveDemoExecution(const bool value) { m_enableLiveDemoExecution=value; }
@@ -57,6 +63,8 @@ public:
    void              SetMaxManualDemoOpenVolume(const double value) { m_maxManualDemoOpenVolume=value; }
    void              SetManualRecoveryCandidateExpirySeconds(const int value) { m_manualRecoveryCandidateExpirySeconds=value; }
    void              SetMaxRecoverySubmissionsPerSession(const int value) { m_maxRecoverySubmissionsPerSession=value; }
+   void              SetManualProfitCloseCandidateExpirySeconds(const int value) { m_manualProfitCloseCandidateExpirySeconds=value; }
+   void              SetMaxProfitCloseSubmissionsPerSession(const int value) { m_maxProfitCloseSubmissionsPerSession=value; }
 
    void              ApplyDefaultOff(void)
      {
@@ -71,6 +79,8 @@ public:
       m_maxManualDemoOpenVolume=0.01;
       m_manualRecoveryCandidateExpirySeconds=30;
       m_maxRecoverySubmissionsPerSession=1;
+      m_manualProfitCloseCandidateExpirySeconds=30;
+      m_maxProfitCloseSubmissionsPerSession=1;
      }
   };
 

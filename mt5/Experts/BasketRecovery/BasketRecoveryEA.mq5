@@ -51,12 +51,55 @@ input double InpManualExecutionDryRunLotSize = 0.01;
 input string InpManualRecoveryCandidateId = "";
 input string InpManualRecoverySubmissionTriggerToken = "";
 input int    InpManualRecoveryCandidateExpirySeconds = 30;
+input string InpManualProfitCloseCandidateId = "";
+input string InpManualProfitCloseSubmissionTriggerToken = "";
+input int    InpManualProfitCloseCandidateExpirySeconds = 30;
 
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
 int g_manualValidationTimerTicks=0;
 int g_manualSubmissionTimerTicks=0;
 bool g_manualRecoverySubmitAttempted=false;
+bool g_manualProfitCloseSubmitAttempted=false;
+
+void ProcessManualProfitCloseSubmissionChartValidation(void)
+  {
+   if(g_applicationContext==NULL || g_manualProfitCloseSubmitAttempted)
+      return;
+   if(InpManualProfitCloseCandidateId=="")
+      return;
+   if(!(InpEnableExecutionDiagnostics ||
+        (InpManualDemoAuthorizationToken!="" && InpManualProfitCloseSubmissionTriggerToken!="")))
+      return;
+
+   g_manualProfitCloseSubmitAttempted=true;
+
+   if(InpEnableExecutionDiagnostics)
+      Print("BRE broker_state_before | positions=",PositionsTotal(),
+            " | orders=",OrdersTotal(),
+            " | deals_history=",HistoryDealsTotal());
+
+   CDemoManualSubmissionResult profitCloseResult=g_applicationContext.TryProcessManualProfitCloseSubmission(
+      InpManualProfitCloseCandidateId,
+      InpManualDemoAuthorizationToken,
+      InpManualProfitCloseSubmissionTriggerToken,
+      InpManualDemoAuthorizationBasketId,
+      (long)202606001);
+
+   if(InpEnableExecutionDiagnostics)
+      Print("BRE broker_state_after | positions=",PositionsTotal(),
+            " | orders=",OrdersTotal(),
+            " | deals_history=",HistoryDealsTotal());
+
+   if(profitCloseResult.IsSuccess())
+      Print("Manual profit close submission accepted | status=",
+            TradeExecutionStatusLabel(profitCloseResult.ResultingStatus()),
+            " | order_send_async=",profitCloseResult.OrderSendAsyncAccepted()?"true":"false");
+   else
+      Print("Manual profit close submission rejected | reason=",
+            LiveSubmissionSafetyRejectionReasonLabel(profitCloseResult.RejectionReason()),
+            " | detail=",profitCloseResult.Detail());
+  }
 
 void ProcessManualRecoverySubmissionChartValidation(void)
   {
@@ -131,7 +174,8 @@ int OnInit()
                                                  InpMaxAuthorizedRequestsPerSession,
                                                  InpAuthorizationTokenExpirySeconds,
                                                  InpMaxManualDemoOpenVolume,
-                                                 InpManualRecoveryCandidateExpirySeconds);
+                                                 InpManualRecoveryCandidateExpirySeconds,
+                                                 InpManualProfitCloseCandidateExpirySeconds);
    if(g_applicationContext==NULL)
      {
       Print("BasketRecoveryEA initialization failed");
@@ -166,6 +210,7 @@ int OnInit()
      }
 
    ProcessManualRecoverySubmissionChartValidation();
+   ProcessManualProfitCloseSubmissionChartValidation();
 
    return INIT_SUCCEEDED;
   }
@@ -206,6 +251,23 @@ void OnTimer()
    int eventsProcessed=0;
    int evaluationsScheduled=0;
    g_applicationContext.OnApplicationTimer(commandsProcessed,eventsProcessed,evaluationsScheduled);
+
+   if(InpManualProfitCloseCandidateId!="" && InpManualDemoValidationAutoShutdown)
+     {
+      g_manualSubmissionTimerTicks++;
+      if(g_manualSubmissionTimerTicks>=12)
+        {
+         ExpertRemove();
+         TerminalClose(0);
+        }
+      return;
+     }
+
+   if(InpManualProfitCloseCandidateId!="" && !g_manualProfitCloseSubmitAttempted)
+      ProcessManualProfitCloseSubmissionChartValidation();
+
+   if(InpManualProfitCloseCandidateId!="")
+      return;
 
    if(InpManualRecoveryCandidateId!="" && InpManualDemoValidationAutoShutdown)
      {
