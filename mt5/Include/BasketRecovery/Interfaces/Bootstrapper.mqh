@@ -186,7 +186,7 @@ public:
       CInMemorySnapshotStore *snapshotStore=new CInMemorySnapshotStore(clock);
       CMt5MarketDataProvider *marketDataProvider=new CMt5MarketDataProvider(clock);
       CMarketContextProviderAdapter *marketContextProvider=
-         new CMarketContextProviderAdapter(marketDataProvider,configuration.MarketSafetyConfig(),true);
+         new CMarketContextProviderAdapter(marketDataProvider,configuration.MarketSafetyConfig(),snapshotStore,true);
 
       CServiceContainer *container=new CServiceContainer();
       container.RegisterLogger(logger,true);
@@ -357,6 +357,7 @@ public:
                                           pendingExecutionRegistry,
                                           pendingExecutionStore,
                                           clock);
+      submissionPreparer.ConfigureRiskReadModel(snapshotStore,marketDataProvider);
       string restartWarnings[];
       CPendingExecutionRestartService::RestorePreparedEntries(pendingExecutionStore,
                                                               pendingExecutionRegistry,
@@ -419,7 +420,8 @@ public:
       demoManualSubmissionValidationService.Configure(configuration.DemoAuthorizationConfig(),
                                                       demoManualSubmissionService,
                                                       persistenceManager.BasketRepository(),
-                                                      marketDataProvider);
+                                                      marketDataProvider,
+                                                      snapshotStore);
       context.RegisterDemoManualSubmissionRuntime(demoManualSubmissionValidationService,
                                                 demoManualSubmissionService,
                                                 demoSubmissionTriggerRegistry,

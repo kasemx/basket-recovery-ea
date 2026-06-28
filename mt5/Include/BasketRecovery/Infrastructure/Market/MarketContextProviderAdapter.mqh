@@ -3,6 +3,8 @@
 
 #include <BasketRecovery/Application/Ports/IMarketContextProvider.mqh>
 #include <BasketRecovery/Application/Ports/IMarketDataProvider.mqh>
+#include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
+#include <BasketRecovery/Application/Risk/BasketRiskReadModelService.mqh>
 #include <BasketRecovery/Infrastructure/Market/MarketSafetyGuard.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 
@@ -10,6 +12,7 @@ class CMarketContextProviderAdapter : public IMarketContextProvider
   {
 private:
    IMarketDataProvider      *m_marketData;
+   IPositionSnapshotStore   *m_snapshotStore;
    CMarketSafetyGuard        m_safetyGuard;
    bool                       m_ownsMarketData;
 
@@ -27,9 +30,11 @@ private:
 public:
                      CMarketContextProviderAdapter(IMarketDataProvider *marketData,
                                                    const CMarketSafetyConfig &safetyConfig,
+                                                   IPositionSnapshotStore *snapshotStore=NULL,
                                                    const bool takeMarketDataOwnership=false)
      {
       m_marketData=marketData;
+      m_snapshotStore=snapshotStore;
       m_safetyGuard=CMarketSafetyGuard(safetyConfig);
       m_ownsMarketData=takeMarketDataOwnership;
      }
@@ -81,17 +86,11 @@ public:
 
       outMarket=CMarketContext::Create(quote.Symbol(),quote.Bid(),quote.Ask(),ResolvePipSize(quote));
 
-      CStrategyProfile profile;
-      if(!basket.StrategyProfile(profile))
-         return false;
-
-      CRiskPlan riskPlan=profile.RiskPlan();
-      outRiskContext=CRiskRuntimeContext::Create(account.Equity(),
-                                                 riskPlan.TargetRiskPct(),
-                                                 riskPlan.MaxRiskPct(),
-                                                 basket.Metadata().RealizedProfit().Amount(),
-                                                 !basket.RecoveryPermanentlyDisabled(),
-                                                 false);
+      outRiskContext=CBasketRiskReadModelService::TryBuildRiskRuntimeContext(basket,
+                                                                           quote,
+                                                                           account,
+                                                                           m_snapshotStore,
+                                                                           CRiskCalculationSettings::CreateDefault());
       return true;
      }
   };

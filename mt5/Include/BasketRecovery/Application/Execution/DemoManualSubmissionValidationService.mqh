@@ -6,7 +6,12 @@
 #include <BasketRecovery/Application/Execution/ExecutionAuthorizationPolicy.mqh>
 #include <BasketRecovery/Application/Ports/IBasketRepository.mqh>
 #include <BasketRecovery/Application/Ports/IMarketDataProvider.mqh>
+#include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
+#include <BasketRecovery/Application/Risk/BasketRiskReadModelService.mqh>
 #include <BasketRecovery/Domain/Execution/DemoManualSubmissionResult.mqh>
+#include <BasketRecovery/Domain/Execution/TradeExecutionRequest.mqh>
+#include <BasketRecovery/Domain/Risk/ValueObjects/RiskCalculationSettings.mqh>
+#include <BasketRecovery/Domain/Risk/ValueObjects/RiskValidationResult.mqh>
 
 class CDemoManualSubmissionValidationService
   {
@@ -15,7 +20,9 @@ private:
    CDemoManualSubmissionService     *m_service;
    IBasketRepository                *m_basketRepository;
    IMarketDataProvider              *m_marketDataProvider;
+   IPositionSnapshotStore           *m_snapshotStore;
    string                            m_lastProcessedTriggerToken;
+   CRiskValidationResult             m_lastReadOnlyRiskValidation;
 
    bool              IsManualRouteEnabled(void) const
      {
@@ -28,19 +35,24 @@ public:
       m_service=NULL;
       m_basketRepository=NULL;
       m_marketDataProvider=NULL;
+      m_snapshotStore=NULL;
       m_lastProcessedTriggerToken="";
      }
 
    void              Configure(const CDemoExecutionAuthorizationConfig &config,
                                CDemoManualSubmissionService *service,
                                IBasketRepository *basketRepository,
-                               IMarketDataProvider *marketDataProvider)
+                               IMarketDataProvider *marketDataProvider,
+                               IPositionSnapshotStore *snapshotStore=NULL)
      {
       m_config=config;
       m_service=service;
       m_basketRepository=basketRepository;
       m_marketDataProvider=marketDataProvider;
+      m_snapshotStore=snapshotStore;
      }
+
+   CRiskValidationResult LastReadOnlyRiskValidation(void) const { return m_lastReadOnlyRiskValidation; }
 
    CDemoManualSubmissionResult TryProcessManualSubmission(const string executionRequestId,
                                                           const string authorizationToken,
@@ -78,6 +90,32 @@ public:
 
       CMarketQuote quote;
       quoteResult.TryGetValue(quote);
+
+      CResult<CAccountContextSnapshot> accountResult=m_marketDataProvider.TryGetAccountSnapshot();
+      if(accountResult.IsOk())
+        {
+         CAccountContextSnapshot account;
+         accountResult.TryGetValue(account);
+         CTradeExecutionRequest probeRequest=CTradeExecutionRequest::Create(executionRequestId,
+                                                                            "risk-readonly",
+                                                                            "risk-readonly",
+                                                                            basket.Id(),
+                                                                            basket.Version(),
+                                                                            "",
+                                                                            basket.Symbol(),
+                                                                            BRE_EXEC_INTENT_OPEN_POSITION,
+                                                                            basket.Direction(),
+                                                                            0,
+                                                                            quote.Constraints().VolumeMin(),
+                                                                            quote.Ask(),
+                                                                            basket.SignalDetails().StopLoss().Value(),
+                                                                            0.0,
+                                                                            0,
+                                                                            CCommandId(),
+                                                                            "risk-readonly-probe");
+         m_lastReadOnlyRiskValidation=CBasketRiskReadModelService::TryValidateProposedPositionReadOnly(
+            basket,probeRequest,quote,account,m_snapshotStore,CRiskCalculationSettings::CreateDefault());
+        }
 
       CDemoManualSubmissionResult result=m_service.TrySubmit(executionRequestId,
                                                              authorizationToken,

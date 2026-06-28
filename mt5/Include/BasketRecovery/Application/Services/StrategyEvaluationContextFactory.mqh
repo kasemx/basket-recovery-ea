@@ -9,7 +9,10 @@
 #include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
 #include <BasketRecovery/Domain/Snapshots/PositionSnapshotEntry.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
-#include <BasketRecovery/Shared/Types/Result.mqh>
+#include <BasketRecovery/Application/Risk/BasketRiskReadModelService.mqh>
+#include <BasketRecovery/Domain/Risk/ValueObjects/BasketRiskSnapshot.mqh>
+#include <BasketRecovery/Domain/Market/MarketQuote.mqh>
+#include <BasketRecovery/Domain/Market/AccountContextSnapshot.mqh>
 
 class CStrategyEvaluationContextFactory
   {
@@ -140,6 +143,18 @@ public:
       return CResult<CStrategyEvaluationContext>::Ok(
          CStrategyEvaluationContext::Create(profile,market,basketState,riskContext,profitStates,profitStateCount,
                                           positions,positionCount,adverseMovePips,floatingProfitUsd));
+     }
+
+   static CBasketRiskSnapshot TryCalculateBasketRisk(const CBasketAggregate &basket,
+                                                     const CMarketQuote &quote,
+                                                     const CAccountContextSnapshot &account,
+                                                     IPositionSnapshotStore *snapshotStore)
+     {
+      return CBasketRiskReadModelService::TryCalculateBasketRisk(basket,
+                                                                 quote,
+                                                                 account,
+                                                                 snapshotStore,
+                                                                 CRiskCalculationSettings::CreateDefault());
      }
 
    static CStrategyEvaluationContext FromBasket(const CBasketAggregate &basket,

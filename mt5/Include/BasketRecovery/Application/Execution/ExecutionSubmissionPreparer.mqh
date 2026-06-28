@@ -7,6 +7,10 @@
 #include <BasketRecovery/Application/Execution/PendingExecutionCommentCollisionDetector.mqh>
 #include <BasketRecovery/Application/Execution/Ports/IPendingExecutionStore.mqh>
 #include <BasketRecovery/Application/Ports/IClock.mqh>
+#include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
+#include <BasketRecovery/Application/Ports/IMarketDataProvider.mqh>
+#include <BasketRecovery/Application/Risk/BasketRiskReadModelService.mqh>
+#include <BasketRecovery/Domain/Risk/ValueObjects/RiskValidationResult.mqh>
 #include <BasketRecovery/Domain/Execution/BrokerCommentStamp.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionRequestFingerprint.mqh>
 #include <BasketRecovery/Domain/Execution/BrokerSubmissionTransitionGate.mqh>
@@ -22,6 +26,9 @@ private:
    CPendingExecutionRegistry     *m_registry;
    IPendingExecutionStore        *m_store;
    IClock                        *m_clock;
+   IPositionSnapshotStore        *m_snapshotStore;
+   IMarketDataProvider           *m_marketDataForRisk;
+   CRiskValidationResult         m_lastReadOnlyRiskValidation;
 
    bool              IsEnvelopeReusable(const CBrokerSubmissionEnvelope &envelope,
                                         const CTradeExecutionRequest &request,
@@ -108,6 +115,23 @@ private:
       entry.SetBrokerCorrelation(broker);
      }
 
+   void              EvaluateRiskReadOnly(const CTradeExecutionRequest &request,
+                                          const CBasketAggregate &basket,
+                                          const CMarketQuote &quote)
+     {
+      if(m_snapshotStore==NULL || m_marketDataForRisk==NULL)
+         return;
+
+      CResult<CAccountContextSnapshot> accountResult=m_marketDataForRisk.TryGetAccountSnapshot();
+      if(accountResult.IsFail())
+         return;
+
+      CAccountContextSnapshot account;
+      accountResult.TryGetValue(account);
+      m_lastReadOnlyRiskValidation=CBasketRiskReadModelService::TryValidateProposedPositionReadOnly(
+         basket,request,quote,account,m_snapshotStore,CRiskCalculationSettings::CreateDefault());
+     }
+
 public:
                      CExecutionSubmissionPreparer(const CSubmissionPreparationPolicy &policy,
                                                   CSubmissionPreparationValidator &validator,
@@ -120,7 +144,18 @@ public:
       m_registry=registry;
       m_store=store;
       m_clock=clock;
+      m_snapshotStore=NULL;
+      m_marketDataForRisk=NULL;
      }
+
+   void              ConfigureRiskReadModel(IPositionSnapshotStore *snapshotStore,
+                                            IMarketDataProvider *marketDataProvider)
+     {
+      m_snapshotStore=snapshotStore;
+      m_marketDataForRisk=marketDataProvider;
+     }
+
+   CRiskValidationResult LastReadOnlyRiskValidation(void) const { return m_lastReadOnlyRiskValidation; }
 
    CSubmissionPreparationResult Prepare(const CTradeExecutionRequest &request,
                                         const CBasketAggregate &basket,
@@ -209,6 +244,7 @@ public:
       entry.IncrementPreparationAttemptCount();
       entry.SetLastPreparationFailureReason(BRE_PREP_FAIL_NONE);
       ApplyPreparationMetadata(entry,envelope,quote);
+      EvaluateRiskReadOnly(request,basket,quote);
 
       UpsertEntry(entry);
       if(m_store!=NULL)
@@ -292,6 +328,7 @@ public:
       entry.IncrementPreparationAttemptCount();
       entry.SetLastPreparationFailureReason(BRE_PREP_FAIL_NONE);
       ApplyPreparationMetadata(entry,envelope,quote);
+      EvaluateRiskReadOnly(request,basket,quote);
 
       UpsertEntry(entry);
       if(m_store!=NULL)
