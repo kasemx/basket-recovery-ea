@@ -2,6 +2,7 @@
 #define BASKET_RECOVERY_APPLICATION_EA_CONFIGURATION_MQH
 
 #include <BasketRecovery/Application/Configuration/MarketSafetyConfig.mqh>
+#include <BasketRecovery/Application/Configuration/DemoExecutionAuthorizationConfig.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionRuntimeMode.mqh>
 
 class CEAConfiguration
@@ -30,6 +31,7 @@ private:
    int    m_fastPathDiagnosticIntervalMs;
    bool   m_enableFastPathNoBasketHeartbeat;
    CMarketSafetyConfig m_marketSafetyConfig;
+   CDemoExecutionAuthorizationConfig m_demoAuthorizationConfig;
    ENUM_BRE_EXECUTION_RUNTIME_MODE m_executionRuntimeMode;
    bool   m_enableExecutionDryRun;
    bool   m_enableExecutionDiagnostics;
@@ -90,6 +92,7 @@ public:
    int               FastPathDiagnosticIntervalMs(void) const { return m_fastPathDiagnosticIntervalMs; }
    bool              EnableFastPathNoBasketHeartbeat(void) const { return m_enableFastPathNoBasketHeartbeat; }
    CMarketSafetyConfig MarketSafetyConfig(void) const { return m_marketSafetyConfig; }
+   CDemoExecutionAuthorizationConfig DemoAuthorizationConfig(void) const { return m_demoAuthorizationConfig; }
    ENUM_BRE_EXECUTION_RUNTIME_MODE ExecutionRuntimeMode(void) const { return m_executionRuntimeMode; }
    bool              EnableExecutionDryRun(void) const { return m_enableExecutionDryRun; }
    bool              EnableExecutionDiagnostics(void) const { return m_enableExecutionDiagnostics; }
@@ -118,6 +121,7 @@ public:
    void              SetFastPathDiagnosticIntervalMs(const int value) { m_fastPathDiagnosticIntervalMs=value; }
    void              SetEnableFastPathNoBasketHeartbeat(const bool value) { m_enableFastPathNoBasketHeartbeat=value; }
    void              SetMarketSafetyConfig(const CMarketSafetyConfig &value) { m_marketSafetyConfig=value; }
+   void              SetDemoAuthorizationConfig(const CDemoExecutionAuthorizationConfig &value) { m_demoAuthorizationConfig=value; }
    void              SetExecutionRuntimeMode(const ENUM_BRE_EXECUTION_RUNTIME_MODE value) { m_executionRuntimeMode=value; }
    void              SetEnableExecutionDryRun(const bool value) { m_enableExecutionDryRun=value; }
    void              SetEnableExecutionDiagnostics(const bool value) { m_enableExecutionDiagnostics=value; }

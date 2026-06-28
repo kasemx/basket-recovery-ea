@@ -31,7 +31,14 @@ public:
                                                  const bool enableFastPathNoBasketHeartbeat,
                                                  const int executionRuntimeMode,
                                                  const bool enableExecutionDryRun,
-                                                 const bool enableExecutionDiagnostics)
+                                                 const bool enableExecutionDiagnostics,
+                                                 const bool enableLiveDemoExecution,
+                                                 const bool requireManualDemoAuthorization,
+                                                 const bool globalExecutionKillSwitch,
+                                                 const bool basketExecutionKillSwitch,
+                                                 const string basketExecutionKillSwitchBasketId,
+                                                 const int maxAuthorizedRequestsPerSession,
+                                                 const int authorizationTokenExpirySeconds)
      {
       CEAConfiguration configuration;
       configuration.SetProfileName(profileName);
@@ -59,6 +66,17 @@ public:
                                                                       maxSpreadPoints,
                                                                       30000));
 
+      CDemoExecutionAuthorizationConfig demoConfig;
+      demoConfig.SetExecutionRuntimeMode((ENUM_BRE_EXECUTION_RUNTIME_MODE)executionRuntimeMode);
+      demoConfig.SetEnableLiveDemoExecution(enableLiveDemoExecution);
+      demoConfig.SetRequireManualDemoAuthorization(requireManualDemoAuthorization);
+      demoConfig.SetGlobalExecutionKillSwitch(globalExecutionKillSwitch);
+      demoConfig.SetBasketExecutionKillSwitch(basketExecutionKillSwitch);
+      demoConfig.SetBasketExecutionKillSwitchBasketId(basketExecutionKillSwitchBasketId);
+      demoConfig.SetMaxAuthorizedRequestsPerSession(maxAuthorizedRequestsPerSession);
+      demoConfig.SetAuthorizationTokenExpirySeconds(authorizationTokenExpirySeconds);
+      configuration.SetDemoAuthorizationConfig(demoConfig);
+
       if(profileName=="")
          return CResult<CEAConfiguration>::Fail(BRE_ERR_CONFIG_INVALID,"Profile name input is empty");
 
@@ -68,7 +86,7 @@ public:
       if(logLevel<0 || logLevel>5)
          return CResult<CEAConfiguration>::Fail(BRE_ERR_CONFIG_INVALID,"Log level must be between 0 and 5");
 
-      if(executionRuntimeMode<BRE_EXEC_RUNTIME_DISABLED || executionRuntimeMode>BRE_EXEC_RUNTIME_SIMULATED)
+      if(executionRuntimeMode<BRE_EXEC_RUNTIME_DISABLED || executionRuntimeMode>BRE_EXEC_RUNTIME_DEMO_AUTHORIZATION)
          return CResult<CEAConfiguration>::Fail(BRE_ERR_CONFIG_INVALID,"Execution runtime mode is invalid");
 
       configuration.SetIsValid(true);

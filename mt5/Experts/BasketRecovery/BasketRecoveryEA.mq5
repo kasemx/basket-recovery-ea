@@ -4,6 +4,9 @@
 
 #include <BasketRecovery/Interfaces/Bootstrapper.mqh>
 #include <BasketRecovery/Infrastructure/MT5/Mt5TradeTransactionNormalizer.mqh>
+#include <BasketRecovery/Domain/Execution/ExecutionAuthorizationStatus.mqh>
+#include <BasketRecovery/Domain/Execution/LiveSubmissionSafetyRejectionReason.mqh>
+#include <BasketRecovery/Domain/Execution/ExecutionAuthorizationResult.mqh>
 
 input string InpProfileName               = "default";
 input string InpLogFilePath               = "BasketRecovery/logs/basket_recovery.log";
@@ -27,6 +30,16 @@ input bool   InpEnableFastPathNoBasketHeartbeat = false;
 input int    InpExecutionMode = 0;
 input bool   InpEnableExecutionDryRun = false;
 input bool   InpEnableExecutionDiagnostics = false;
+input bool   InpEnableLiveDemoExecution = false;
+input bool   InpRequireManualDemoAuthorization = true;
+input bool   InpGlobalExecutionKillSwitch = false;
+input bool   InpBasketExecutionKillSwitch = false;
+input string InpBasketExecutionKillSwitchBasketId = "";
+input int    InpMaxAuthorizedRequestsPerSession = 1;
+input int    InpAuthorizationTokenExpirySeconds = 300;
+input string InpManualDemoAuthorizationToken = "";
+input string InpManualDemoAuthorizationRequestId = "";
+input string InpManualDemoAuthorizationBasketId = "";
 input string InpManualExecutionDryRunBasketId = "";
 input string InpManualExecutionDryRunTriggerToken = "";
 input double InpManualExecutionDryRunLotSize = 0.01;
@@ -60,7 +73,14 @@ int OnInit()
                                                  InpEnableFastPathNoBasketHeartbeat,
                                                  InpExecutionMode,
                                                  InpEnableExecutionDryRun,
-                                                 InpEnableExecutionDiagnostics);
+                                                 InpEnableExecutionDiagnostics,
+                                                 InpEnableLiveDemoExecution,
+                                                 InpRequireManualDemoAuthorization,
+                                                 InpGlobalExecutionKillSwitch,
+                                                 InpBasketExecutionKillSwitch,
+                                                 InpBasketExecutionKillSwitchBasketId,
+                                                 InpMaxAuthorizedRequestsPerSession,
+                                                 InpAuthorizationTokenExpirySeconds);
    if(g_applicationContext==NULL)
      {
       Print("BasketRecoveryEA initialization failed");
@@ -133,6 +153,24 @@ void OnTimer()
    int eventsProcessed=0;
    int evaluationsScheduled=0;
    g_applicationContext.OnApplicationTimer(commandsProcessed,eventsProcessed,evaluationsScheduled);
+
+   if(InpManualDemoAuthorizationRequestId!="")
+     {
+      if(InpEnableExecutionDiagnostics || InpManualDemoAuthorizationToken!="")
+        {
+         CExecutionAuthorizationResult authResult=g_applicationContext.TryProcessManualDemoAuthorizationValidation(
+            InpManualDemoAuthorizationRequestId,
+            InpManualDemoAuthorizationToken,
+            InpManualDemoAuthorizationBasketId);
+         if(authResult.IsSuccess())
+            Print("Manual demo authorization accepted | status=",
+                  ExecutionAuthorizationStatusLabel(authResult.Status()));
+         else
+            Print("Manual demo authorization rejected | reason=",
+                  LiveSubmissionSafetyRejectionReasonLabel(authResult.RejectionReason()),
+                  " | detail=",authResult.Detail());
+        }
+     }
 
    if(InpManualExecutionDryRunBasketId!="")
      {

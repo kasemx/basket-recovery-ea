@@ -41,6 +41,11 @@
 #include <BasketRecovery/Application/Execution/SubmissionPreparationPolicy.mqh>
 #include <BasketRecovery/Application/Execution/SubmissionPreparationValidator.mqh>
 #include <BasketRecovery/Infrastructure/Execution/FilePendingExecutionStore.mqh>
+#include <BasketRecovery/Infrastructure/Execution/InMemoryExecutionAuthorizationStore.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5AccountExecutionEligibilityProvider.mqh>
+#include <BasketRecovery/Application/Execution/ExecutionAuthorizationRegistry.mqh>
+#include <BasketRecovery/Application/Execution/ManualDemoAuthorizationUseCase.mqh>
+#include <BasketRecovery/Application/Execution/ManualDemoAuthorizationValidationService.mqh>
 #include <BasketRecovery/Shared/Constants/FeatureFlags.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
@@ -68,7 +73,14 @@ public:
                                          const bool enableFastPathNoBasketHeartbeat,
                                          const int executionRuntimeMode,
                                          const bool enableExecutionDryRun,
-                                         const bool enableExecutionDiagnostics)
+                                         const bool enableExecutionDiagnostics,
+                                         const bool enableLiveDemoExecution,
+                                         const bool requireManualDemoAuthorization,
+                                         const bool globalExecutionKillSwitch,
+                                         const bool basketExecutionKillSwitch,
+                                         const string basketExecutionKillSwitchBasketId,
+                                         const int maxAuthorizedRequestsPerSession,
+                                         const int authorizationTokenExpirySeconds)
      {
       CResult<CEAConfiguration> configurationResult=
          CMt5ConfigurationLoader::LoadFromInputs(profileName,logFilePath,logLevel,accountLabel,apiBaseUrl,apiKey,
@@ -79,7 +91,11 @@ public:
                                                  materialQuoteChangePoints,tickSilenceFallbackMs,
                                                  enableFastPathDiagnostics,fastPathDiagnosticIntervalMs,
                                                  enableFastPathNoBasketHeartbeat,
-                                                 executionRuntimeMode,enableExecutionDryRun,enableExecutionDiagnostics);
+                                                 executionRuntimeMode,enableExecutionDryRun,enableExecutionDiagnostics,
+                                                 enableLiveDemoExecution,requireManualDemoAuthorization,
+                                                 globalExecutionKillSwitch,basketExecutionKillSwitch,
+                                                 basketExecutionKillSwitchBasketId,
+                                                 maxAuthorizedRequestsPerSession,authorizationTokenExpirySeconds);
 
       if(configurationResult.IsFail())
         {
@@ -339,6 +355,31 @@ public:
       context.RegisterSubmissionPreparationRuntime(submissionPreparer,pendingExecutionStore);
       // Sprint 6E: CSimulatedSubmissionGateway / CSubmitPreparedExecutionUseCase remain test-only.
       // CSubmissionGatewayCompositionGuard blocks bootstrap auto-wire of simulated gateways.
+
+      CInMemoryExecutionAuthorizationStore *authorizationStore=new CInMemoryExecutionAuthorizationStore();
+      CExecutionAuthorizationRegistry *authorizationRegistry=new CExecutionAuthorizationRegistry(authorizationStore);
+      authorizationRegistry.RestoreFromStore();
+      CMt5AccountExecutionEligibilityProvider *accountEligibilityProvider=new CMt5AccountExecutionEligibilityProvider();
+      CManualDemoAuthorizationUseCase *demoAuthorizationUseCase=
+         new CManualDemoAuthorizationUseCase(configuration.DemoAuthorizationConfig(),
+                                             authorizationRegistry,
+                                             pendingExecutionRegistry,
+                                             pendingExecutionStore,
+                                             accountEligibilityProvider,
+                                             clock,
+                                             configuration.MarketSafetyConfig());
+      CManualDemoAuthorizationValidationService *demoAuthorizationValidationService=
+         new CManualDemoAuthorizationValidationService();
+      demoAuthorizationValidationService.Configure(configuration.DemoAuthorizationConfig(),
+                                                   demoAuthorizationUseCase,
+                                                   persistenceManager.BasketRepository(),
+                                                   marketDataProvider);
+      context.RegisterDemoAuthorizationRuntime(demoAuthorizationValidationService,
+                                               demoAuthorizationUseCase,
+                                               authorizationRegistry,
+                                               authorizationStore,
+                                               accountEligibilityProvider);
+      // Sprint 6F: authorization evaluates safety gates only; no submission gateway is wired.
 
       CFastPathDiagnosticReporter *diagnosticReporter=kernel.DiagnosticReporter();
       if(diagnosticReporter!=NULL)

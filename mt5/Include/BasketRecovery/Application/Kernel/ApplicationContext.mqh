@@ -27,6 +27,13 @@
 #include <BasketRecovery/Application/Execution/Ports/IPendingExecutionStore.mqh>
 #include <BasketRecovery/Infrastructure/Execution/InMemoryPendingExecutionStore.mqh>
 #include <BasketRecovery/Domain/Execution/SubmissionPreparationResult.mqh>
+#include <BasketRecovery/Domain/Execution/ExecutionAuthorizationResult.mqh>
+#include <BasketRecovery/Domain/Execution/LiveSubmissionSafetyRejectionReason.mqh>
+#include <BasketRecovery/Application/Execution/ManualDemoAuthorizationValidationService.mqh>
+#include <BasketRecovery/Application/Execution/ManualDemoAuthorizationUseCase.mqh>
+#include <BasketRecovery/Application/Execution/ExecutionAuthorizationRegistry.mqh>
+#include <BasketRecovery/Infrastructure/Execution/InMemoryExecutionAuthorizationStore.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5AccountExecutionEligibilityProvider.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerPositionReader.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
@@ -53,6 +60,11 @@ private:
    CMt5BrokerPositionReader *m_executionReconciliationReader;
    CExecutionSubmissionPreparer *m_submissionPreparer;
    IPendingExecutionStore *m_pendingExecutionStore;
+   CManualDemoAuthorizationValidationService *m_demoAuthorizationValidationService;
+   CManualDemoAuthorizationUseCase *m_demoAuthorizationUseCase;
+   CExecutionAuthorizationRegistry *m_authorizationRegistry;
+   CInMemoryExecutionAuthorizationStore *m_authorizationStore;
+   CMt5AccountExecutionEligibilityProvider *m_accountEligibilityProvider;
    bool                m_initialized;
 
 public:
@@ -77,6 +89,11 @@ public:
       m_executionReconciliationReader=NULL;
       m_submissionPreparer=NULL;
       m_pendingExecutionStore=NULL;
+      m_demoAuthorizationValidationService=NULL;
+      m_demoAuthorizationUseCase=NULL;
+      m_authorizationRegistry=NULL;
+      m_authorizationStore=NULL;
+      m_accountEligibilityProvider=NULL;
       m_initialized=false;
      }
 
@@ -138,6 +155,31 @@ public:
       m_pendingExecutionStore=store;
      }
 
+   void              RegisterDemoAuthorizationRuntime(CManualDemoAuthorizationValidationService *validationService,
+                                                      CManualDemoAuthorizationUseCase *useCase,
+                                                      CExecutionAuthorizationRegistry *registry,
+                                                      CInMemoryExecutionAuthorizationStore *store,
+                                                      CMt5AccountExecutionEligibilityProvider *eligibilityProvider)
+     {
+      m_demoAuthorizationValidationService=validationService;
+      m_demoAuthorizationUseCase=useCase;
+      m_authorizationRegistry=registry;
+      m_authorizationStore=store;
+      m_accountEligibilityProvider=eligibilityProvider;
+     }
+
+   CExecutionAuthorizationResult TryProcessManualDemoAuthorizationValidation(const string executionRequestId,
+                                                                               const string authorizationToken,
+                                                                               const string basketIdValue)
+     {
+      if(m_demoAuthorizationValidationService==NULL)
+         return CExecutionAuthorizationResult::Rejected(BRE_LIVE_SAFETY_LIVE_DISABLED,
+                                                        "Demo authorization validation route is not configured");
+      return m_demoAuthorizationValidationService.TryProcessManualAuthorizationForBasket(executionRequestId,
+                                                                                           authorizationToken,
+                                                                                           basketIdValue);
+     }
+
    CSubmissionPreparationResult TryPrepareSubmission(const CTradeExecutionRequest &request,
                                                      const CBasketAggregate &basket,
                                                      const long magicNumber)
@@ -159,6 +201,11 @@ public:
    bool              IsMt5ExecutorWiredToTimerPipeline(void) const { return false; }
    bool              IsSubmissionGatewayWiredToProduction(void) const { return false; }
    bool              IsSubmitPreparedExecutionWiredToTimer(void) const { return false; }
+   bool              IsDemoAuthorizationWiredToStrategy(void) const { return false; }
+   bool              IsDemoAuthorizationWiredToAutomaticTimer(void) const { return false; }
+   bool              IsDemoAuthorizationWiredToRestIntake(void) const { return false; }
+   bool              IsDemoAuthorizationWiredToOnTick(void) const { return false; }
+   bool              IsLiveSubmissionApiWiredToProductionRuntime(void) const { return false; }
 
    void              Shutdown(void)
      {
@@ -246,6 +293,31 @@ public:
         {
          delete m_pendingExecutionStore;
          m_pendingExecutionStore=NULL;
+        }
+      if(m_demoAuthorizationValidationService!=NULL)
+        {
+         delete m_demoAuthorizationValidationService;
+         m_demoAuthorizationValidationService=NULL;
+        }
+      if(m_demoAuthorizationUseCase!=NULL)
+        {
+         delete m_demoAuthorizationUseCase;
+         m_demoAuthorizationUseCase=NULL;
+        }
+      if(m_authorizationRegistry!=NULL)
+        {
+         delete m_authorizationRegistry;
+         m_authorizationRegistry=NULL;
+        }
+      if(m_authorizationStore!=NULL)
+        {
+         delete m_authorizationStore;
+         m_authorizationStore=NULL;
+        }
+      if(m_accountEligibilityProvider!=NULL)
+        {
+         delete m_accountEligibilityProvider;
+         m_accountEligibilityProvider=NULL;
         }
       if(m_kernel!=NULL)
         {
