@@ -2,6 +2,8 @@
 # Usage: powershell -ExecutionPolicy Bypass -File scripts/run-pending-reconciliation-proof.ps1
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "ProofStatusParser.ps1")
+
 $repo = Split-Path -Parent $PSScriptRoot
 $terminalRoot = Join-Path $env:APPDATA "MetaQuotes\Terminal"
 $proofRelativePath = "BasketRecovery\validation\pending-reconciliation-proof.txt"
@@ -9,24 +11,6 @@ $proofCommonPath = Join-Path $env:APPDATA "MetaQuotes\Terminal\Common\Files\$pro
 $validationDir = Join-Path $repo "build\validation"
 $timeoutSeconds = 120
 $pollIntervalSeconds = 2
-
-function Get-ProofStatus {
-    param([string]$Path)
-    if (-not (Test-Path $Path)) { return $null }
-    $lines = Get-Content $Path -ErrorAction SilentlyContinue
-    foreach ($line in $lines) {
-        if ($line -match '^status=(.+)$') { return $Matches[1].Trim() }
-    }
-    return $null
-}
-
-function Get-ProofError {
-    param([string]$Path)
-    if (-not (Test-Path $Path)) { return $null }
-    $line = Get-Content $Path -ErrorAction SilentlyContinue | Where-Object { $_ -like 'error=*' } | Select-Object -Last 1
-    if ($null -eq $line) { return $null }
-    return ($line -split '=', 2)[1]
-}
 
 function Find-MatchingProofFiles {
     $matches = @()
@@ -107,6 +91,25 @@ function Find-EligibleDemoTerminals {
     return $eligible
 }
 
+function Write-ProofPollDiagnostics {
+    param(
+        [string]$ExpectedPath,
+        [hashtable]$ProofState,
+        [double]$ElapsedSeconds,
+        [string]$FinalReadResult
+    )
+    $lastWrite = if ($null -ne $ProofState.LastWriteTime) {
+        $ProofState.LastWriteTime.ToString("o")
+    } else {
+        "n/a"
+    }
+    Write-Host "expected_output_path=$ExpectedPath"
+    Write-Host "observed_status=$($ProofState.Status)"
+    Write-Host "elapsed_seconds=$([math]::Round($ElapsedSeconds, 1))"
+    Write-Host "file_last_write_time_utc=$lastWrite"
+    Write-Host "final_read_result=$FinalReadResult"
+}
+
 function Write-ProofFailureDiagnostics {
     param(
         [string]$Reason,
@@ -115,14 +118,16 @@ function Write-ProofFailureDiagnostics {
         [array]$EligibleTerminals,
         [string]$SelectedTerminalData,
         [double]$ElapsedSeconds,
+        [hashtable]$ProofState,
+        [string]$FinalReadResult,
         [string[]]$LogLines
     )
     Write-Host ""
     Write-Host "=== Reconciliation Proof Failure ==="
     Write-Host "reason=$Reason"
-    Write-Host "expected_output_path=$ExpectedPath"
+    Write-ProofPollDiagnostics -ExpectedPath $ExpectedPath -ProofState $ProofState `
+        -ElapsedSeconds $ElapsedSeconds -FinalReadResult $FinalReadResult
     Write-Host "terminal_launch_command=$LaunchCommand"
-    Write-Host "elapsed_seconds=$([math]::Round($ElapsedSeconds, 1))"
     Write-Host "discovered_demo_terminals=$($EligibleTerminals.Count)"
     foreach ($term in $EligibleTerminals) {
         Write-Host "  terminal_data=$($term.TerminalData) | server=$($term.Server) | pending=$($term.PendingPath)"
@@ -144,6 +149,10 @@ function Write-ProofFailureDiagnostics {
 New-Item -ItemType Directory -Force -Path $validationDir | Out-Null
 New-Item -ItemType Directory -Force -Path (Split-Path $proofCommonPath -Parent) | Out-Null
 
+if (-not (Test-ProofStatusParser)) {
+    throw "ProofStatusParser self-test failed"
+}
+
 $running = @(Get-Process terminal64 -ErrorAction SilentlyContinue)
 if ($running.Count -gt 0) {
     throw "MT5 already running ($($running.Count) instance(s)). Close all terminal64 processes and retry."
@@ -157,7 +166,8 @@ if ($eligibleTerminals.Count -gt 1) {
     Write-ProofFailureDiagnostics -Reason "ambiguous_demo_terminal_selection" `
         -ExpectedPath $proofCommonPath -LaunchCommand "" `
         -EligibleTerminals $eligibleTerminals -SelectedTerminalData "" `
-        -ElapsedSeconds 0 -LogLines @()
+        -ElapsedSeconds 0 -ProofState @{ Status = $null; LastWriteTime = $null } `
+        -FinalReadResult "not_run" -LogLines @()
     throw "Multiple eligible DEMO terminals found ($($eligibleTerminals.Count)). Resolve ambiguity before running proof."
 }
 
@@ -185,25 +195,37 @@ $pendingSizeBefore = (Get-Item $pendingPath).Length
 Write-Host "pending_sha256_before=$pendingHashBefore"
 Write-Host "pending_bytes_before=$pendingSizeBefore"
 
-if (Test-Path $proofCommonPath) {
-    Remove-Item $proofCommonPath -Force
-}
+$existingProof = Read-ProofFileState -Path $proofCommonPath
+$skipTerminalLaunch = ($existingProof.TerminalStatus -eq "COMPLETED")
+$launchCommand = ""
 
-& (Join-Path $repo "scripts\sync-to-mt5.ps1") | Out-Null
+if ($skipTerminalLaunch) {
+    Write-Host "proof_output_already_completed=true"
+    Write-Host "terminal_launch_skipped=true"
+    $completed = $true
+    $finalProofState = $existingProof
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $sw.Stop()
+} else {
+    if (Test-Path $proofCommonPath) {
+        Remove-Item $proofCommonPath -Force
+    }
 
-$source = Join-Path $mql5 "Scripts\BasketRecovery\Validation\InspectPendingExecutionReconciliation.mq5"
-if (-not (Test-Path $source)) {
-    $source = Join-Path $repo "mt5\Scripts\BasketRecovery\Validation\InspectPendingExecutionReconciliation.mq5"
-}
-$compileLog = Join-Path $validationDir "InspectPendingExecutionReconciliation.compile.log"
-& $metaeditor /compile:"$source" /log:"$compileLog" | Out-Null
-Start-Sleep -Seconds 2
-if (-not (Test-Path $compileLog) -or ((Get-Content $compileLog -Raw) -notmatch 'Result: 0 errors')) {
-    throw "Reconciliation proof compile failed: $compileLog"
-}
+    & (Join-Path $repo "scripts\sync-to-mt5.ps1") | Out-Null
 
-$ini = Join-Path $configDir "inspect-pending-reconciliation.ini"
-@"
+    $source = Join-Path $mql5 "Scripts\BasketRecovery\Validation\InspectPendingExecutionReconciliation.mq5"
+    if (-not (Test-Path $source)) {
+        $source = Join-Path $repo "mt5\Scripts\BasketRecovery\Validation\InspectPendingExecutionReconciliation.mq5"
+    }
+    $compileLog = Join-Path $validationDir "InspectPendingExecutionReconciliation.compile.log"
+    & $metaeditor /compile:"$source" /log:"$compileLog" | Out-Null
+    Start-Sleep -Seconds 2
+    if (-not (Test-Path $compileLog) -or ((Get-Content $compileLog -Raw) -notmatch 'Result: 0 errors')) {
+        throw "Reconciliation proof compile failed: $compileLog"
+    }
+
+    $ini = Join-Path $configDir "inspect-pending-reconciliation.ini"
+    @"
 [StartUp]
 Script=BasketRecovery\Validation\InspectPendingExecutionReconciliation
 Symbol=BTCUSD
@@ -217,44 +239,58 @@ AllowDllImport=0
 AllowAlgoTrading=1
 "@ | Set-Content -Path $ini -Encoding ASCII
 
-$launchCommand = "`"$terminalExe`" /config:`"$ini`""
-Write-Host "terminal_launch_command=$launchCommand"
+    $launchCommand = "`"$terminalExe`" /config:`"$ini`""
+    Write-Host "terminal_launch_command=$launchCommand"
 
-$sw = [System.Diagnostics.Stopwatch]::StartNew()
-$proc = Start-Process -FilePath $terminalExe -ArgumentList @("/config:$ini") -PassThru
-$completed = $false
-$finalStatus = $null
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $proc = Start-Process -FilePath $terminalExe -ArgumentList @("/config:$ini") -PassThru
+    $completed = $false
+    $finalProofState = $null
 
-while ($sw.Elapsed.TotalSeconds -lt $timeoutSeconds) {
-    Start-Sleep -Seconds $pollIntervalSeconds
-    $finalStatus = Get-ProofStatus -Path $proofCommonPath
-    if ($finalStatus -eq "COMPLETED") {
-        $completed = $true
-        break
+    while ($sw.Elapsed.TotalSeconds -lt $timeoutSeconds) {
+        Start-Sleep -Seconds $pollIntervalSeconds
+        $finalProofState = Read-ProofFileState -Path $proofCommonPath
+        if ($finalProofState.TerminalStatus -eq "COMPLETED") {
+            $completed = $true
+            break
+        }
+        if ($finalProofState.TerminalStatus -eq "FAILED") {
+            break
+        }
+        if ($proc.HasExited -and $null -eq $finalProofState.TerminalStatus) {
+            Start-Sleep -Seconds 2
+            $finalProofState = Read-ProofFileState -Path $proofCommonPath
+            if ($finalProofState.TerminalStatus -eq "COMPLETED") {
+                $completed = $true
+            }
+            break
+        }
     }
-    if ($finalStatus -eq "FAILED") {
-        break
+
+    if (-not $completed -and $finalProofState.TerminalStatus -ne "FAILED") {
+        $finalProofState = Read-ProofFileState -Path $proofCommonPath
+        if ($finalProofState.TerminalStatus -eq "COMPLETED") {
+            $completed = $true
+        }
     }
-    if ($proc.HasExited -and $null -eq $finalStatus) {
-        Start-Sleep -Seconds 2
-        $finalStatus = Get-ProofStatus -Path $proofCommonPath
-        if ($finalStatus -eq "COMPLETED") { $completed = $true }
-        break
+
+    if (-not $proc.HasExited) {
+        if (-not $completed) {
+            try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
+        } else {
+            $proc.WaitForExit(15000) | Out-Null
+        }
+    }
+
+    $sw.Stop()
+    Get-Process terminal64 -ErrorAction SilentlyContinue | ForEach-Object {
+        try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } catch {}
     }
 }
 
-if (-not $proc.HasExited) {
-    if (-not $completed) {
-        try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch {}
-    } else {
-        $proc.WaitForExit(15000) | Out-Null
-    }
-}
-
-$sw.Stop()
-Get-Process terminal64 -ErrorAction SilentlyContinue | ForEach-Object {
-    try { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue } catch {}
-}
+$finalReadResult = if ($completed) { "COMPLETED" } elseif ($finalProofState.TerminalStatus -eq "FAILED") { "FAILED" } else { "TIMEOUT_OR_INCOMPLETE" }
+Write-ProofPollDiagnostics -ExpectedPath $proofCommonPath -ProofState $finalProofState `
+    -ElapsedSeconds $sw.Elapsed.TotalSeconds -FinalReadResult $finalReadResult
 
 $pendingHashAfter = (Get-FileHash $pendingPath -Algorithm SHA256).Hash
 $pendingSizeAfter = (Get-Item $pendingPath).Length
@@ -263,14 +299,15 @@ Write-Host "pending_bytes_after=$pendingSizeAfter"
 Write-Host "pending_file_unchanged=$($pendingHashBefore -eq $pendingHashAfter)"
 
 if (-not $completed) {
-    $reason = if ($finalStatus -eq "FAILED") { "proof_status_failed" } else { "proof_status_not_completed" }
-    $logLines = Get-LatestTerminalLogLines -TerminalData $terminalData
+    $reason = if ($finalProofState.TerminalStatus -eq "FAILED") { "proof_status_failed" } else { "proof_polling_timeout" }
+    $logLines = if ($skipTerminalLaunch) { @() } else { Get-LatestTerminalLogLines -TerminalData $terminalData }
     Write-ProofFailureDiagnostics -Reason $reason `
         -ExpectedPath $proofCommonPath -LaunchCommand $launchCommand `
         -EligibleTerminals $eligibleTerminals -SelectedTerminalData $terminalData `
-        -ElapsedSeconds $sw.Elapsed.TotalSeconds -LogLines $logLines
-    if ($finalStatus -eq "FAILED") {
-        throw "Reconciliation proof failed: $(Get-ProofError -Path $proofCommonPath)"
+        -ElapsedSeconds $sw.Elapsed.TotalSeconds -ProofState $finalProofState `
+        -FinalReadResult $finalReadResult -LogLines $logLines
+    if ($finalProofState.TerminalStatus -eq "FAILED") {
+        throw "Reconciliation proof failed: $($finalProofState.Error)"
     }
     throw "Reconciliation proof result missing or incomplete at $proofCommonPath"
 }

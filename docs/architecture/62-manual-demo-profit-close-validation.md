@@ -115,3 +115,75 @@ No TP1/TP2/TP3 event names.
 ## Tests
 
 `TestManualProfitCloseCandidateValidation.mq5` covers registration, revalidation, sealed binding, trigger policy, fill completion idempotency, pending lifecycle, wiring guards, and gateway call path.
+
+## Validation tooling isolation (Sprint 8C)
+
+Sprint 8C broker-validation assets are **tooling-only** and live outside production execution paths:
+
+| Location | Contents |
+|---|---|
+| `mt5/Scripts/BasketRecovery/Validation/Sprint8C/` | Chart/seed/register/preflight MQL5 scripts |
+| `mt5/Include/BasketRecovery/Validation/Sprint8C/` | `ManualProfitCloseCandidateValidationArtifact.mqh` (validation I/O only) |
+| `scripts/validation/` | `run-sprint8c-preflight.ps1`, `run-sprint8c-ea-chart-validation.ps1` |
+
+These paths are **not** referenced from `Bootstrapper.mqh`, normal EA startup, `CManualProfitCloseCandidateRegistrationService`, or `CManualProfitCloseSubmissionService`. Generated proof files, tokens, terminal hashes, and account IDs must not be committed.
+
+## Real demo validation (Sprint 8C chart run)
+
+Controlled chart validation uses `scripts/validation/run-sprint8c-preflight.ps1` and `scripts/validation/run-sprint8c-ea-chart-validation.ps1` against a configured **DEMO** terminal only. The runners do not change login, commit artifacts, or enable automatic partial-close execution.
+
+### Preconditions checked at preflight / seed
+
+| Check | Required | Observed (latest run) |
+|---|---|---|
+| Account mode | DEMO | DEMO |
+| Position model | RETAIL_HEDGING | RETAIL_NETTING |
+| Algo Trading | enabled | enabled |
+| Chart trading | enabled | enabled |
+| Unresolved pending executions | zero after read-only reconciliation | blocked (non-zero before hedging gate) |
+| Symbol positions (primary seed) | none unrelated | none before seed |
+| Partial-close volume feasible | yes | yes (0.02 seed → 0.01 close) |
+
+### Outcome
+
+Broker validation was **intentionally not attempted** on the latest run. The seed/preflight phase stopped before any basket seed, candidate registration, or manual profit-close submission because the configured demo terminal reported `RETAIL_NETTING`.
+
+Sprint 8C manual profit-close route requires explicit ticket binding on **RETAIL_HEDGING** only; netting rejection is **expected safety behavior**, not a defect to bypass.
+
+- **`OrderSendAsync` call count:** zero
+- **Profit level completion via broker fill:** none
+- **Automatic partial-close execution:** remains disabled
+
+Successful broker validation remains **pending** a separate **DEMO + RETAIL_HEDGING** account.
+
+### Evidence chain status (blocked run)
+
+| Step | Status |
+|---|---|
+| `ProfitLevelCloseCandidateAvailable` | Not reached (register/submit not run) |
+| DUE + single instruction | Not reached |
+| Manual selection + revalidation | Not reached |
+| Sealed `CLOSE_POSITION` request | Not reached |
+| `OrderSendAsync` (exactly once) | **Not invoked** |
+| Pending terminalization + fill | Not reached |
+| `ProfitLevelCloseConfirmed` / `ProfitLevelMarkedCompleted` | Not reached |
+
+### Negative tests (blocked run)
+
+| Test | Expected | Result |
+|---|---|---|
+| Duplicate trigger | reject, no second async | Not executed |
+| Expired candidate | reject pre-broker | Not executed |
+| Stale/invalid volume | reject pre-broker | Not executed |
+| Terminal pending + read-only evaluate | planning continues | Not executed |
+
+### To complete real demo validation
+
+1. Prepare a **DEMO + RETAIL_HEDGING** account on the validation terminal.
+2. Run preflight and confirm `hedging_demo_ready=true` and `unresolved_after_reconcile=0`.
+3. Resolve any `blocking_execution_ids` via normal EA startup reconciliation or supported broker lifecycle completion — do not delete pending records manually.
+4. Ensure no unrelated open positions on the validation symbol.
+5. Run: `powershell -ExecutionPolicy Bypass -File scripts/validation/run-sprint8c-ea-chart-validation.ps1 -Reseed`
+6. Confirm `sprint-8c-ea-chart-result.txt` reports `chart_validation_passed=true` and `ordersend_async_call_count=1`.
+
+Unit/integration coverage for the manual route remains in `TestManualProfitCloseCandidateValidation.mq5` (compile gate).
