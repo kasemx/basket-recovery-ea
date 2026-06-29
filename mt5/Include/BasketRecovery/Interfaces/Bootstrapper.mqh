@@ -75,6 +75,8 @@
 #include <BasketRecovery/Infrastructure/Execution/Mt5/IMt5AsyncOrderSendTransport.mqh>
 #include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5AsyncSubmissionGateway.mqh>
 #include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5AsyncSubmissionDiagnostics.mqh>
+#include <BasketRecovery/Application/Strategy/BreakEvenModificationEventBuffer.mqh>
+#include <BasketRecovery/Application/Strategy/BreakEvenModificationDryRunService.mqh>
 #include <BasketRecovery/Shared/Constants/FeatureFlags.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
@@ -420,6 +422,18 @@ public:
                                                 configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
       kernel.ConfigureBreakEvenCandidatePlanning(breakEvenCandidatePlanningService);
       context.RegisterBreakEvenCandidateRuntime(breakEvenCandidateEventBuffer,breakEvenCandidatePlanningService);
+
+      CBreakEvenModificationEventBuffer *breakEvenModificationEventBuffer=new CBreakEvenModificationEventBuffer();
+      const bool enableBreakEvenModificationDryRun=false;
+      CBreakEvenModificationDryRunService *breakEvenModificationDryRunService=
+         new CBreakEvenModificationDryRunService(snapshotStore,
+                                                 pendingExecutionRegistry,
+                                                 breakEvenModificationEventBuffer,
+                                                 configuration.MarketSafetyConfig().QuoteStaleThresholdMs(),
+                                                 enableBreakEvenModificationDryRun);
+      kernel.ConfigureBreakEvenModificationDryRun(breakEvenModificationDryRunService);
+      context.RegisterBreakEvenModificationDryRunRuntime(breakEvenModificationEventBuffer,
+                                                         breakEvenModificationDryRunService);
 
       CManualRecoveryCandidateRegistry *manualRecoveryCandidateRegistry=new CManualRecoveryCandidateRegistry();
       CManualRecoveryCandidateEventBuffer *manualRecoveryCandidateEventBuffer=new CManualRecoveryCandidateEventBuffer();

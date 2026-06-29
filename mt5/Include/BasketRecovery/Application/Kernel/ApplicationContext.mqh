@@ -59,6 +59,8 @@
 #include <BasketRecovery/Application/Strategy/ProfitLevelCloseCandidatePlanningService.mqh>
 #include <BasketRecovery/Application/Strategy/BreakEvenCandidateEventBuffer.mqh>
 #include <BasketRecovery/Application/Strategy/BreakEvenCandidatePlanningService.mqh>
+#include <BasketRecovery/Application/Strategy/BreakEvenModificationEventBuffer.mqh>
+#include <BasketRecovery/Application/Strategy/BreakEvenModificationDryRunService.mqh>
 #include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerPositionReader.mqh>
@@ -107,6 +109,8 @@ private:
    CProfitLevelCloseCandidatePlanningService *m_profitLevelCloseCandidatePlanningService;
    CBreakEvenCandidateEventBuffer *m_breakEvenCandidateEventBuffer;
    CBreakEvenCandidatePlanningService *m_breakEvenCandidatePlanningService;
+   CBreakEvenModificationEventBuffer *m_breakEvenModificationEventBuffer;
+   CBreakEvenModificationDryRunService *m_breakEvenModificationDryRunService;
    CManualRecoveryCandidateRegistry *m_manualRecoveryCandidateRegistry;
    CManualRecoveryCandidateRegistrationService *m_manualRecoveryRegistrationService;
    CManualRecoveryCandidateSubmissionValidationService *m_manualRecoverySubmissionValidationService;
@@ -162,6 +166,8 @@ public:
       m_profitLevelCloseCandidatePlanningService=NULL;
       m_breakEvenCandidateEventBuffer=NULL;
       m_breakEvenCandidatePlanningService=NULL;
+      m_breakEvenModificationEventBuffer=NULL;
+      m_breakEvenModificationDryRunService=NULL;
       m_manualRecoveryCandidateRegistry=NULL;
       m_manualRecoveryRegistrationService=NULL;
       m_manualRecoverySubmissionValidationService=NULL;
@@ -254,6 +260,13 @@ public:
      {
       m_breakEvenCandidateEventBuffer=eventBuffer;
       m_breakEvenCandidatePlanningService=planningService;
+     }
+
+   void              RegisterBreakEvenModificationDryRunRuntime(CBreakEvenModificationEventBuffer *eventBuffer,
+                                                                CBreakEvenModificationDryRunService *dryRunService)
+     {
+      m_breakEvenModificationEventBuffer=eventBuffer;
+      m_breakEvenModificationDryRunService=dryRunService;
      }
 
    void              RegisterManualRecoveryCandidateRuntime(CManualRecoveryCandidateRegistry *registry,

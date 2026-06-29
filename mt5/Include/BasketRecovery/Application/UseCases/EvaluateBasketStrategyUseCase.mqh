@@ -13,6 +13,7 @@
 #include <BasketRecovery/Application/Strategy/RecoveryCandidatePlanningService.mqh>
 #include <BasketRecovery/Application/Strategy/ProfitLevelCloseCandidatePlanningService.mqh>
 #include <BasketRecovery/Application/Strategy/BreakEvenCandidatePlanningService.mqh>
+#include <BasketRecovery/Application/Strategy/BreakEvenModificationDryRunService.mqh>
 #include <BasketRecovery/Application/Execution/ManualRecoveryCandidateRegistrationService.mqh>
 #include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateRegistrationService.mqh>
 #include <BasketRecovery/Application/Ports/IAccountPositionModelProvider.mqh>
@@ -38,6 +39,7 @@ private:
    CRecoveryCandidatePlanningService *m_candidatePlanningService;
    CProfitLevelCloseCandidatePlanningService *m_profitLevelClosePlanningService;
    CBreakEvenCandidatePlanningService *m_breakEvenPlanningService;
+   CBreakEvenModificationDryRunService *m_breakEvenModificationDryRunService;
    CManualRecoveryCandidateRegistrationService *m_manualRecoveryRegistrationService;
    CManualProfitCloseCandidateRegistrationService *m_manualProfitCloseRegistrationService;
 
@@ -75,6 +77,16 @@ public:
    CBreakEvenCandidatePlanningService* BreakEvenPlanningService(void) const
      {
       return m_breakEvenPlanningService;
+     }
+
+   void              ConfigureBreakEvenModificationDryRun(CBreakEvenModificationDryRunService *dryRunService)
+     {
+      m_breakEvenModificationDryRunService=dryRunService;
+     }
+
+   CBreakEvenModificationDryRunService* BreakEvenModificationDryRunService(void) const
+     {
+      return m_breakEvenModificationDryRunService;
      }
 
    void              ConfigureManualRecoveryCandidateRegistration(CManualRecoveryCandidateRegistrationService *registrationService)
@@ -115,6 +127,7 @@ public:
       m_candidatePlanningService=NULL;
       m_profitLevelClosePlanningService=NULL;
       m_breakEvenPlanningService=NULL;
+      m_breakEvenModificationDryRunService=NULL;
       m_manualRecoveryRegistrationService=NULL;
       m_manualProfitCloseRegistrationService=NULL;
      }
@@ -161,6 +174,18 @@ public:
         }
 
       return m_breakEvenPlanningService.EvaluateAndEmit(basket,context,gateInput);
+     }
+
+   CBreakEvenStopLossModificationRequest ApplyBreakEvenModificationDryRun(const CBasketAggregate &basket,
+                                                                          const CBreakEvenCandidate &candidate,
+                                                                          const CRecoveryRiskGateInput &gateInput) const
+     {
+      if(m_breakEvenModificationDryRunService==NULL)
+        {
+         CBreakEvenStopLossModificationRequest empty;
+         return empty;
+        }
+      return m_breakEvenModificationDryRunService.EvaluateDryRun(basket,candidate,gateInput);
      }
 
    void              RegisterManualProfitCloseCandidates(const CBasketAggregate &basket,
@@ -238,7 +263,8 @@ public:
       CStrategyDecisionSet decisions=m_strategyEngine.EvaluateAll(context);
       decisions=ApplyRecoveryCandidatePlanning(basket,decisions,context,gateInput);
       CProfitLevelCloseCandidate profitCloseCandidate=ApplyProfitLevelCloseCandidatePlanning(basket,context,gateInput);
-      ApplyBreakEvenCandidatePlanning(basket,context,gateInput);
+      CBreakEvenCandidate breakEvenCandidate=ApplyBreakEvenCandidatePlanning(basket,context,gateInput);
+      ApplyBreakEvenModificationDryRun(basket,breakEvenCandidate,gateInput);
       decisions=ApplyRecoveryRiskGate(basket,decisions,gateInput,context);
       RegisterManualRecoveryCandidates(basket,decisions,context,gateInput);
       RegisterManualProfitCloseCandidates(basket,profitCloseCandidate,gateInput);
@@ -311,7 +337,8 @@ public:
       CStrategyDecisionSet decisions=m_strategyEngine.EvaluateAll(context);
       decisions=ApplyRecoveryCandidatePlanning(basket,decisions,context,gateInput);
       CProfitLevelCloseCandidate profitCloseCandidate=ApplyProfitLevelCloseCandidatePlanning(basket,context,gateInput);
-      ApplyBreakEvenCandidatePlanning(basket,context,gateInput);
+      CBreakEvenCandidate breakEvenCandidate=ApplyBreakEvenCandidatePlanning(basket,context,gateInput);
+      ApplyBreakEvenModificationDryRun(basket,breakEvenCandidate,gateInput);
       decisions=ApplyRecoveryRiskGate(basket,decisions,gateInput,context);
       RegisterManualRecoveryCandidates(basket,decisions,context,gateInput);
       RegisterManualProfitCloseCandidates(basket,profitCloseCandidate,gateInput);

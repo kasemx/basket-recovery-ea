@@ -303,6 +303,12 @@ public:
          m_evaluateUseCase.ConfigureBreakEvenCandidatePlanning(planningService);
      }
 
+   void              ConfigureBreakEvenModificationDryRun(CBreakEvenModificationDryRunService *dryRunService)
+     {
+      if(m_evaluateUseCase!=NULL)
+         m_evaluateUseCase.ConfigureBreakEvenModificationDryRun(dryRunService);
+     }
+
    void              ConfigureManualRecoveryCandidateRegistration(CManualRecoveryCandidateRegistrationService *registrationService)
      {
       if(m_evaluateUseCase!=NULL)
