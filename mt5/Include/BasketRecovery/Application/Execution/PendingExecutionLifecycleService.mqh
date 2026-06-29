@@ -194,6 +194,21 @@ public:
       return CommitTerminalTransition(executionRequestId,BRE_TRADE_EXEC_STATUS_TIMED_OUT,0.0,false);
      }
 
+   bool              MarkCancelled(const string executionRequestId)
+     {
+      return CommitTerminalTransition(executionRequestId,BRE_TRADE_EXEC_STATUS_CANCELLED,0.0,false);
+     }
+
+   bool              MarkFailed(const string executionRequestId)
+     {
+      return CommitTerminalTransition(executionRequestId,BRE_TRADE_EXEC_STATUS_FAILED,0.0,false);
+     }
+
+   bool              MarkReconciled(const string executionRequestId)
+     {
+      return CommitTerminalTransition(executionRequestId,BRE_TRADE_EXEC_STATUS_RECONCILED,0.0,false);
+     }
+
    bool              MarkUnknownReconciling(const string executionRequestId)
      {
       CPendingExecutionEntry entry;

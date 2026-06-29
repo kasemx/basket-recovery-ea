@@ -9,7 +9,7 @@ class CPendingExecutionPersistenceCodec
 public:
    static string     EncodeEntry(const CPendingExecutionEntry &entry)
      {
-      return StringFormat("%s\t%s\t%s\t%d\t%s\t%d\t%s\t%.4f\t%.4f\t%d\t%d\t%s\t%s\t%s\t%.5f\t%.5f\t%d\t%d",
+      return StringFormat("%s\t%s\t%s\t%d\t%s\t%d\t%s\t%.4f\t%.4f\t%d\t%d\t%s\t%s\t%s\t%.5f\t%.5f\t%d\t%d\t%I64u\t%I64u\t%d",
                           entry.ExecutionRequestId(),
                           entry.IdempotencyKey(),
                           entry.BasketId().Value(),
@@ -27,7 +27,10 @@ public:
                           entry.PreparedBid(),
                           entry.PreparedAsk(),
                           (int)entry.PreparedAtUtc(),
-                          (int)entry.PreparedQuoteTimestampUtc());
+                          (int)entry.PreparedQuoteTimestampUtc(),
+                          entry.BrokerCorrelation().BrokerOrderId(),
+                          entry.BrokerCorrelation().BrokerDealId(),
+                          (int)entry.SubmittedAtUtc());
      }
 
    static bool       TryDecodeEntry(const string line,CPendingExecutionEntry &entry)
@@ -57,6 +60,16 @@ public:
       entry.SetPreparedAsk(StringToDouble(parts[15]));
       entry.SetPreparedAtUtc((datetime)StringToInteger(parts[16]));
       entry.SetPreparedQuoteTimestampUtc((datetime)StringToInteger(parts[17]));
+      if(ArraySize(parts)>=21)
+        {
+         CBrokerRequestCorrelation broker=entry.BrokerCorrelation();
+         broker.SetBrokerOrderId((ulong)StringToInteger(parts[18]));
+         broker.SetBrokerDealId((ulong)StringToInteger(parts[19]));
+         entry.SetBrokerCorrelation(broker);
+         datetime submittedAt=(datetime)StringToInteger(parts[20]);
+         if(submittedAt>0)
+            entry.SetSubmittedAtUtc(submittedAt);
+        }
       return entry.ExecutionRequestId()!="";
      }
 

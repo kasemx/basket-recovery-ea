@@ -7,6 +7,7 @@
 #include <BasketRecovery/Application/Execution/PendingExecutionLifecycleService.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionReconciliationResolver.mqh>
 #include <BasketRecovery/Application/Ports/IBrokerPositionReader.mqh>
+#include <BasketRecovery/Application/Ports/IBrokerExecutionHistoryReader.mqh>
 #include <BasketRecovery/Application/Ports/IClock.mqh>
 #include <BasketRecovery/Domain/Execution/PendingExecutionQuery.mqh>
 
@@ -16,6 +17,7 @@ private:
    CPendingExecutionRegistry           *m_registry;
    CExecutionReconciliationScheduler   *m_reconciliationScheduler;
    IBrokerPositionReader               *m_positionReader;
+   IBrokerExecutionHistoryReader       *m_historyReader;
    CPendingExecutionDiagnostics        *m_diagnostics;
    IClock                              *m_clock;
    CPendingExecutionLifecycleService   *m_lifecycle;
@@ -42,11 +44,13 @@ public:
                                               IBrokerPositionReader *positionReader,
                                               CPendingExecutionDiagnostics *diagnostics,
                                               IClock *clock,
-                                              CPendingExecutionLifecycleService *lifecycle=NULL)
+                                              CPendingExecutionLifecycleService *lifecycle=NULL,
+                                              IBrokerExecutionHistoryReader *historyReader=NULL)
      {
       m_registry=registry;
       m_reconciliationScheduler=reconciliationScheduler;
       m_positionReader=positionReader;
+      m_historyReader=historyReader;
       m_diagnostics=diagnostics;
       m_clock=clock;
       m_lifecycle=lifecycle;
@@ -76,7 +80,7 @@ public:
 
          double matchedVolume=0.0;
          ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
-            CExecutionReconciliationResolver::Resolve(entry,m_positionReader,matchedVolume);
+            CExecutionReconciliationResolver::Resolve(entry,m_positionReader,matchedVolume,m_historyReader,nowUtc);
 
          if(resolved==BRE_TRADE_EXEC_STATUS_FILLED)
            {
@@ -98,7 +102,35 @@ public:
 
          if(resolved==BRE_TRADE_EXEC_STATUS_REJECTED)
            {
+            if(m_lifecycle.MarkRejected(entry.ExecutionRequestId()))
+               handled++;
+            continue;
+           }
+
+         if(resolved==BRE_TRADE_EXEC_STATUS_TIMED_OUT)
+           {
             if(m_lifecycle.MarkTimedOut(entry.ExecutionRequestId()))
+               handled++;
+            continue;
+           }
+
+         if(resolved==BRE_TRADE_EXEC_STATUS_CANCELLED)
+           {
+            if(m_lifecycle.MarkCancelled(entry.ExecutionRequestId()))
+               handled++;
+            continue;
+           }
+
+         if(resolved==BRE_TRADE_EXEC_STATUS_FAILED)
+           {
+            if(m_lifecycle.MarkFailed(entry.ExecutionRequestId()))
+               handled++;
+            continue;
+           }
+
+         if(resolved==BRE_TRADE_EXEC_STATUS_RECONCILED)
+           {
+            if(m_lifecycle.MarkReconciled(entry.ExecutionRequestId()))
                handled++;
             continue;
            }

@@ -13,6 +13,12 @@
 #include <BasketRecovery/Application/Risk/RecoveryPendingExecutionChecker.mqh>
 #include <BasketRecovery/Infrastructure/Execution/InMemoryPendingExecutionStore.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/InMemoryBrokerPositionReader.mqh>
+#include <BasketRecovery/Infrastructure/Snapshot/InMemoryBrokerExecutionHistoryReader.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionReconciliationHydrator.mqh>
+#include <BasketRecovery/Domain/Execution/PendingExecutionPersistedFillEvidence.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerHistoricalOrderEvidencePolicy.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerExecutionVolumePolicy.mqh>
+#include <BasketRecovery/Domain/Execution/PendingExecutionReconciliationTransitionGate.mqh>
 #include <BasketRecovery/Domain/Snapshots/PositionSnapshotEntry.mqh>
 #include <BasketRecovery/Domain/Execution/PendingExecutionQuery.mqh>
 
@@ -65,6 +71,7 @@ public:
    CPendingExecutionTestInjectionService   *injection;
    CRecoveryStepExecutionTracker           *stepTracker;
    CInMemoryBrokerPositionReader           *brokerReader;
+   CInMemoryBrokerExecutionHistoryReader   *historyReader;
    CFailingBrokerPositionReader            *failingReader;
    CExecutionReconciliationScheduler       *reconciliationScheduler;
    CExecutionTimeoutMonitor                *timeoutMonitor;
@@ -80,9 +87,10 @@ public:
       injection=new CPendingExecutionTestInjectionService(registry,router);
       stepTracker=new CRecoveryStepExecutionTracker();
       brokerReader=new CInMemoryBrokerPositionReader();
+      historyReader=new CInMemoryBrokerExecutionHistoryReader();
       failingReader=new CFailingBrokerPositionReader();
-      reconciliationScheduler=new CExecutionReconciliationScheduler(registry,brokerReader,NULL,8,lifecycle);
-      timeoutMonitor=new CExecutionTimeoutMonitor(registry,reconciliationScheduler,brokerReader,NULL,clock,lifecycle);
+      reconciliationScheduler=new CExecutionReconciliationScheduler(registry,brokerReader,NULL,8,lifecycle,historyReader);
+      timeoutMonitor=new CExecutionTimeoutMonitor(registry,reconciliationScheduler,brokerReader,NULL,clock,lifecycle,historyReader);
      }
 
                     ~CTerminalizationHarness(void)
@@ -91,6 +99,7 @@ public:
       if(reconciliationScheduler!=NULL) delete reconciliationScheduler;
       if(failingReader!=NULL) delete failingReader;
       if(brokerReader!=NULL) delete brokerReader;
+      if(historyReader!=NULL) delete historyReader;
       if(stepTracker!=NULL) delete stepTracker;
       if(injection!=NULL) delete injection;
       if(router!=NULL) delete router;
@@ -108,6 +117,7 @@ public:
       events.Clear();
       CPositionSnapshotEntry empty[];
       brokerReader.SetEntries(empty,0);
+      historyReader.Clear();
      }
   };
 
@@ -265,7 +275,8 @@ void TestPersistedFilledNotUnresolvedAfterRestart(CTerminalizationHarness &h)
                                                                                            &restartedRegistry,
                                                                                            &restartedLifecycle,
                                                                                            h.brokerReader,
-                                                                                           &notifier);
+                                                                                           &notifier,
+                                                                                           h.historyReader);
    CTestAssert::EqualInt(0,reconciled,"terminal FILLED should not reconcile");
    CTestAssert::False(CRecoveryPendingExecutionChecker::HasUnresolvedForBasket(restartedRegistry,basketId),
                       "persisted FILLED must not be unresolved");
@@ -301,7 +312,8 @@ void TestPersistedSubmittedReconciledOnRestart(CTerminalizationHarness &h)
                                                                                            &restartedRegistry,
                                                                                            &restartedLifecycle,
                                                                                            h.brokerReader,
-                                                                                           &notifier);
+                                                                                           &notifier,
+                                                                                           h.historyReader);
    CTestAssert::EqualInt(1,reconciled,"submitted must reconcile to terminal");
    CPendingExecutionEntry updated;
    CTestAssert::True(restartedRegistry.TryGetByExecutionRequestId("req-restart-submitted",updated),"entry restored");
@@ -327,7 +339,8 @@ void TestTerminalHistoryDoesNotAutoSubmit(CTerminalizationHarness &h)
                                                                             &restartedRegistry,
                                                                             &restartedLifecycle,
                                                                             h.brokerReader,
-                                                                            NULL);
+                                                                            NULL,
+                                                                            h.historyReader);
    CTestAssert::EqualInt(1,restartedRegistry.Count(),"restart loads terminal history without auto submit");
    CTestAssert::False(CRecoveryPendingExecutionChecker::HasUnresolvedForBasket(restartedRegistry,basketId),
                       "terminal rejected must not block");
@@ -390,7 +403,8 @@ void TestRestartLoadsTimedOutAsTerminalAudit(CTerminalizationHarness &h)
                                                                                            &restartedRegistry,
                                                                                            &restartedLifecycle,
                                                                                            h.brokerReader,
-                                                                                           NULL);
+                                                                                           NULL,
+                                                                                           h.historyReader);
    CTestAssert::EqualInt(0,reconciled,"TIMED_OUT restart is audit only");
    CTestAssert::False(CRecoveryPendingExecutionChecker::HasUnresolvedForBasket(restartedRegistry,basketId),
                       "persisted TIMED_OUT must not be unresolved");
@@ -417,7 +431,8 @@ void TestRestartLoadsUnknownReconcilingAsUnresolved(CTerminalizationHarness &h)
                                                                                            &restartedRegistry,
                                                                                            &restartedLifecycle,
                                                                                            h.brokerReader,
-                                                                                           NULL);
+                                                                                           NULL,
+                                                                                           h.historyReader);
    CTestAssert::EqualInt(1,reconciled,"unknown reconciling must reconcile on restart");
    CPendingExecutionEntry updated;
    CTestAssert::True(restartedRegistry.TryGetByExecutionRequestId("req-restart-unknown",updated),"entry restored");
@@ -436,7 +451,8 @@ void TestTimeoutWithIndeterminateOutcomeEntersUnknownReconciling(CTerminalizatio
    h.store.SavePreparedState(entry,BuildEnvelope(entry));
    h.registry.Upsert(entry);
 
-   CExecutionTimeoutMonitor indeterminateMonitor(h.registry,h.reconciliationScheduler,h.failingReader,NULL,h.clock,h.lifecycle);
+   CExecutionTimeoutMonitor indeterminateMonitor(h.registry,h.reconciliationScheduler,h.failingReader,NULL,h.clock,h.lifecycle,h.historyReader);
+   h.historyReader.SetQueryAvailable(false);
    CTestAssert::EqualInt(1,indeterminateMonitor.ScanDueTimeouts(),"indeterminate timeout must be handled");
    CPendingExecutionEntry updated;
    h.registry.TryGetByExecutionRequestId("req-indeterminate",updated);
@@ -473,8 +489,439 @@ void TestStartupReconciliationIsReadOnly(CTerminalizationHarness &h)
                                                                             &restartedRegistry,
                                                                             &restartedLifecycle,
                                                                             h.brokerReader,
-                                                                            NULL);
+                                                                            NULL,
+                                                                            h.historyReader);
    CTestAssert::EqualInt(1,restartedRegistry.Count(),"restart loads persisted entry without broker submit");
+  }
+
+void TestMissingOpenPositionDoesNotReject(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-no-open",CBasketId("basket-no-open"));
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_RECONCILING,(int)resolved,
+                         "missing open position alone must not produce REJECTED");
+  }
+
+void TestHistoricalDealMatchResolvesFilled(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-hist-fill",CBasketId("basket-hist-fill"));
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetHasFillEvidence(true);
+   correlation.SetFillVolume(0.10);
+   correlation.SetSummary("historical_deal_fill");
+   h.historyReader.SetCorrelation("req-hist-fill",correlation);
+
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_FILLED,(int)resolved,"historical deal match must resolve FILLED");
+   CTestAssert::True(MathAbs(matchedVolume-0.10)<0.0000001,"matched volume must come from history");
+  }
+
+void TestFilledThenManuallyClosedRemainsFilled(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CBasketId basketId("basket-manual-close");
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-manual-close",basketId);
+   CBrokerRequestCorrelation broker=entry.BrokerCorrelation();
+   broker.SetBrokerDealId(88001);
+   entry.SetBrokerCorrelation(broker);
+   h.store.SavePreparedState(entry,BuildEnvelope(entry));
+
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetHasFillEvidence(true);
+   correlation.SetFillVolume(0.10);
+   correlation.SetSummary("historical_deal_fill");
+   h.historyReader.SetCorrelation("req-manual-close",correlation);
+
+   CPendingExecutionRegistry restartedRegistry;
+   CPendingExecutionLifecycleService restartedLifecycle(&restartedRegistry,h.store,h.events,h.clock);
+   CTestFillNotifier notifier(h.stepTracker);
+   h.stepTracker.MarkSubmitted(basketId.Value(),4,"req-manual-close");
+   int reconciled=CPendingExecutionStartupReconciliationService::ReconcilePersistedEntries(h.store,
+                                                                                           &restartedRegistry,
+                                                                                           &restartedLifecycle,
+                                                                                           h.brokerReader,
+                                                                                           &notifier,
+                                                                                           h.historyReader);
+   CTestAssert::EqualInt(1,reconciled,"manual-close history must reconcile once");
+   CPendingExecutionEntry updated;
+   CTestAssert::True(restartedRegistry.TryGetByExecutionRequestId("req-manual-close",updated),"entry restored");
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_FILLED,(int)updated.Status(),
+                         "filled then manually closed must remain FILLED");
+   CTestAssert::False(CRecoveryPendingExecutionChecker::HasUnresolvedForBasket(restartedRegistry,basketId),
+                      "terminal FILLED must not block recovery");
+  }
+
+void TestExplicitBrokerRejectResolvesRejected(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-explicit-reject",CBasketId("basket-explicit-reject"));
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetHasRejectEvidence(true);
+   correlation.SetSummary("historical_order_reject");
+   h.historyReader.SetCorrelation("req-explicit-reject",correlation);
+
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_REJECTED,(int)resolved,"explicit broker reject must resolve REJECTED");
+  }
+
+void TestIndeterminateNoHistoryResolvesUnknownReconciling(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   h.historyReader.SetQueryAvailable(false);
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-indeterminate-history",CBasketId("basket-indeterminate-history"));
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_RECONCILING,(int)resolved,
+                         "indeterminate no-history state must resolve UNKNOWN_RECONCILING");
+  }
+
+void TestRealManualCloseRecordFixtureResolvesFilled(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CBasketId basketId("sprint7d-demo-btc-001");
+   CPendingExecutionEntry entry;
+   entry.SetExecutionRequestId("recovery-manual:375360093-3A70-2EF6");
+   entry.SetIdempotencyKey("recovery-candidate:sprint7d-demo-btc-001:step:1:q:0");
+   entry.SetBasketId(basketId);
+   entry.SetExpectedBasketVersion(25);
+   entry.SetStrategyProfileHash("B2667CFA");
+   entry.SetIntentType(BRE_EXEC_INTENT_OPEN_POSITION);
+   entry.SetSymbol("BTCUSD");
+   entry.SetRequestedVolume(0.01);
+   entry.SetFilledVolume(0.0);
+   entry.SetStatus(BRE_TRADE_EXEC_STATUS_SUBMITTED);
+   entry.SetDeadlineUtc(1782682703);
+   entry.SetCorrelationToken("89848F7C");
+   entry.SetBrokerComment("BRE|89848F7C|-btc-001|O|14D2");
+   entry.SetPreparedAtUtc(1782682643);
+   entry.SetPreparedQuoteTimestampUtc(1782682643);
+
+   CBrokerSubmissionEnvelope envelope;
+   envelope.SetExecutionRequestId(entry.ExecutionRequestId());
+   envelope.SetIdempotencyKey(entry.IdempotencyKey());
+   envelope.SetBasketId(basketId);
+   envelope.SetSymbol("BTCUSD");
+   envelope.SetMagicNumber(202606001);
+   envelope.SetBrokerComment(entry.BrokerComment());
+   envelope.SetCorrelationToken(entry.CorrelationToken());
+   envelope.SetRequestedVolume(0.01);
+   envelope.SetPreparedAtUtc(1782682643);
+   h.store.SavePreparedState(entry,envelope);
+
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetHasFillEvidence(true);
+   correlation.SetFillVolume(0.01);
+   correlation.SetSummary("historical_deal_fill");
+   h.historyReader.SetCorrelation("recovery-manual:375360093-3A70-2EF6",correlation);
+
+   CPendingExecutionEntry hydrated=entry;
+   CTestAssert::True(CPendingExecutionReconciliationHydrator::TryHydrate(hydrated,GetPointer(h.store)),
+                     "hydrator must merge envelope metadata");
+   CTestAssert::EqualInt(202606001,(int)hydrated.BrokerCorrelation().MagicNumber(),"hydrator must restore magic");
+   CTestAssert::True(hydrated.SubmittedAtUtc()>0,"hydrator must restore submitted anchor from prepared time");
+
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(hydrated,h.brokerReader,matchedVolume,h.historyReader,1782682800);
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_FILLED,(int)resolved,
+                         "real manual-close fixture must resolve FILLED");
+  }
+
+void TestFilledTerminalStateIsMonotonic(CTerminalizationHarness &h)
+  {
+   CTestAssert::False(CPendingExecutionReconciliationTransitionGate::CanResolveFromBrokerRead(
+                         BRE_TRADE_EXEC_STATUS_FILLED,BRE_TRADE_EXEC_STATUS_TIMED_OUT),
+                      "FILLED must never transition to TIMED_OUT");
+   CTestAssert::False(CPendingExecutionReconciliationTransitionGate::CanResolveFromBrokerRead(
+                         BRE_TRADE_EXEC_STATUS_FILLED,BRE_TRADE_EXEC_STATUS_REJECTED),
+                      "FILLED must never transition to REJECTED");
+   CTestAssert::True(CPendingExecutionPersistedFillEvidence::IsTerminalFillMonotonic(
+                        BRE_TRADE_EXEC_STATUS_FILLED,BRE_TRADE_EXEC_STATUS_FILLED),
+                     "FILLED remains FILLED");
+  }
+
+void TestNoPrematureTimedOutWithoutHistoryEvidence(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   h.historyReader.SetQueryAvailable(false);
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-no-premature-timeout",CBasketId("basket-no-premature"));
+   entry.SetDeadlineUtc(h.clock.Now()+3600);
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_RECONCILING,(int)resolved,
+                         "no history evidence before deadline must stay UNKNOWN_RECONCILING");
+  }
+
+void TestDeadlineBeforeEvidenceWindow(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-deadline-not-evidence-window",CBasketId("basket-deadline-window"));
+   entry.SetPreparedAtUtc(1000);
+   entry.SetSubmittedAtUtc(1000);
+   entry.SetDeadlineUtc(1060);
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,1120);
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_RECONCILING,(int)resolved,
+                         "submission deadline alone must not produce TIMED_OUT before evidence window");
+  }
+
+void TestStaleSubmittedWithPersistedFillVolumeRepairsFilled(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-stale-filled-volume",CBasketId("basket-stale-filled"));
+   entry.SetStatus(BRE_TRADE_EXEC_STATUS_SUBMITTED);
+   entry.SetFilledVolume(0.10);
+   entry.SetDeadlineUtc(h.clock.Now()+3600);
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_FILLED,(int)resolved,
+                         "persisted fill volume must repair stale SUBMITTED to FILLED");
+  }
+
+void TestAmbiguousFingerprintPolicyCountsTwo(CTerminalizationHarness &h)
+  {
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-ambiguous-fingerprint",CBasketId("basket-ambiguous-fingerprint"));
+   entry.SetCorrelationToken("89848F7C");
+   entry.SetBrokerComment("BRE|89848F7C|-btc-001|O|14D2");
+   entry.SetPreparedAtUtc(1000);
+   entry.SetSubmittedAtUtc(1000);
+   entry.SetRequestedVolume(0.01);
+   CBrokerRequestCorrelation broker=entry.BrokerCorrelation();
+   broker.SetMagicNumber(202606001);
+   entry.SetBrokerCorrelation(broker);
+
+   SFingerprintDealCandidate candidates[2];
+   candidates[0].time=1010;
+   candidates[0].symbol="BTCUSD";
+   candidates[0].magic=202606001;
+   candidates[0].volume=0.01;
+   candidates[0].entryType=DEAL_ENTRY_IN;
+   candidates[0].dealType=DEAL_TYPE_BUY;
+   candidates[1].time=1020;
+   candidates[1].symbol="BTCUSD";
+   candidates[1].magic=202606001;
+   candidates[1].volume=0.01;
+   candidates[1].entryType=DEAL_ENTRY_IN;
+   candidates[1].dealType=DEAL_TYPE_BUY;
+
+   int count=CBrokerExecutionFingerprintCandidatePolicy::CountMatchingCandidates(entry,candidates,600);
+   CTestAssert::EqualInt(2,count,"two fingerprint candidates must be counted without selecting one");
+  }
+
+void TestAmbiguousFingerprintStaysReconciling(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-ambiguous-fingerprint-resolve",CBasketId("basket-ambiguous-resolve"));
+   entry.SetPreparedAtUtc(1000);
+   entry.SetSubmittedAtUtc(1000);
+   entry.SetDeadlineUtc(1060);
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetFingerprintCandidateCount(2);
+   correlation.SetEvidenceMethod("fingerprint_ambiguous");
+   correlation.SetSummary("fingerprint_ambiguous");
+   h.historyReader.SetCorrelation("req-ambiguous-fingerprint-resolve",correlation);
+
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,1782680000);
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_RECONCILING,(int)resolved,
+                         "ambiguous fingerprint must remain UNKNOWN_RECONCILING");
+  }
+
+void TestReadOnlyResolveDoesNotPersist(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-readonly-no-persist",CBasketId("basket-readonly-no-persist"));
+   entry.SetStatus(BRE_TRADE_EXEC_STATUS_SUBMITTED);
+   h.store.SaveEntryState(entry);
+
+   double matchedVolume=0.0;
+   CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+
+   CPendingExecutionEntry entries[];
+   int count=h.store.RestoreEntries(entries);
+   CTestAssert::EqualInt(1,count,"entry must remain in store");
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_SUBMITTED,(int)entries[0].Status(),
+                         "read-only resolve must not persist lifecycle mutation");
+  }
+
+void TestHistoricalOrderFilledResolvesFilledWithoutDeal(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-order-fill-no-deal",CBasketId("basket-order-fill"));
+   entry.SetRequestedVolume(0.01);
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetHasFillEvidence(true);
+   correlation.SetFillVolume(0.01);
+   correlation.SetEvidenceMethod("historical_order_fingerprint_fill");
+   correlation.SetSummary("historical_order_fingerprint_fill");
+   correlation.SetOrderFilledCandidateCount(1);
+   h.historyReader.SetCorrelation("req-order-fill-no-deal",correlation);
+
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_FILLED,(int)resolved,
+                         "unique historical filled order must resolve FILLED without deal history");
+  }
+
+void TestCancelledOrderDoesNotResolveFilled(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-cancelled-order",CBasketId("basket-cancelled-order"));
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetHasRejectEvidence(true);
+   correlation.SetEvidenceMethod("historical_order_reject");
+   correlation.SetSummary("historical_order_reject");
+   h.historyReader.SetCorrelation("req-cancelled-order",correlation);
+
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_REJECTED,(int)resolved,
+                         "cancelled/rejected order must not resolve FILLED");
+  }
+
+void TestPartialHistoricalOrderResolvesPartiallyFilled(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-partial-order",CBasketId("basket-partial-order"));
+   entry.SetRequestedVolume(0.02);
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetHasFillEvidence(true);
+   correlation.SetFillVolume(0.01);
+   correlation.SetEvidenceMethod("persisted_broker_order_partial");
+   correlation.SetSummary("historical_order_partial");
+   correlation.SetOrderFilledCandidateCount(1);
+   h.historyReader.SetCorrelation("req-partial-order",correlation);
+
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_PARTIALLY_FILLED,(int)resolved,
+                         "provable partial historical order must resolve PARTIALLY_FILLED");
+  }
+
+void TestAmbiguousHistoricalOrderFillStaysReconciling(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-ambiguous-order-fill",CBasketId("basket-ambiguous-order"));
+   entry.SetPreparedAtUtc(1000);
+   entry.SetSubmittedAtUtc(1000);
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetOrderFilledCandidateCount(2);
+   correlation.SetEvidenceMethod("order_fill_ambiguous");
+   correlation.SetSummary("order_fill_ambiguous");
+   h.historyReader.SetCorrelation("req-ambiguous-order-fill",correlation);
+
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_RECONCILING,(int)resolved,
+                         "two matching filled order candidates must remain UNKNOWN_RECONCILING");
+  }
+
+void TestCloseDealDoesNotBlockHistoricalOrderFill(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-close-deal-order-fill",CBasketId("basket-close-deal-order"));
+   entry.SetRequestedVolume(0.01);
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetHasFillEvidence(true);
+   correlation.SetFillVolume(0.01);
+   correlation.SetFingerprintCandidateCount(0);
+   correlation.SetEvidenceMethod("historical_order_fingerprint_fill");
+   correlation.SetSummary("historical_order_fingerprint_fill");
+   correlation.SetOrderFilledCandidateCount(1);
+   h.historyReader.SetCorrelation("req-close-deal-order-fill",correlation);
+
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_FILLED,(int)resolved,
+                         "later close deal mismatch must not block unique historical order fill");
+  }
+
+void TestUnrelatedDealVolumeMismatchDoesNotBlockOrderFill(CTerminalizationHarness &h)
+  {
+   h.Reset();
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-unrelated-deal-mismatch",CBasketId("basket-unrelated-deal"));
+   entry.SetRequestedVolume(0.01);
+   CBrokerExecutionHistoryCorrelation correlation;
+   correlation.SetQueryAvailable(true);
+   correlation.SetHasFillEvidence(true);
+   correlation.SetFillVolume(0.01);
+   correlation.SetFingerprintCandidateCount(0);
+   correlation.SetEvidenceMethod("historical_order_fingerprint_fill");
+   correlation.SetSummary("historical_order_fingerprint_fill");
+   correlation.SetOrderFilledCandidateCount(1);
+   h.historyReader.SetCorrelation("req-unrelated-deal-mismatch",correlation);
+
+   double matchedVolume=0.0;
+   ENUM_BRE_TRADE_EXECUTION_STATUS resolved=
+      CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_FILLED,(int)resolved,
+                         "unrelated deal volume mismatch must not block exact matching filled order");
+  }
+
+void TestOrderEvidencePolicyFilledStateAndExecutedVolume(CTerminalizationHarness &h)
+  {
+   CTestAssert::True(CBrokerHistoricalOrderEvidencePolicy::OrderStateProvesFill(ORDER_STATE_FILLED),
+                     "ORDER_STATE_FILLED must prove fill");
+   CTestAssert::False(CBrokerHistoricalOrderEvidencePolicy::OrderStateProvesFill(ORDER_STATE_CANCELED),
+                      "cancelled order must not prove fill");
+   double executed=CBrokerHistoricalOrderEvidencePolicy::ComputeExecutedVolume(ORDER_STATE_FILLED,0.01,0.0);
+   CTestAssert::True(CBrokerExecutionVolumePolicy::VolumesEquivalent(executed,0.01),
+                     "filled order executed volume must equal initial volume");
+
+   SFingerprintOrderCandidate candidates[2];
+   candidates[0].time=1010;
+   candidates[0].symbol="BTCUSD";
+   candidates[0].magic=202606001;
+   candidates[0].orderType=ORDER_TYPE_BUY;
+   candidates[0].orderState=ORDER_STATE_FILLED;
+   candidates[0].executedVolume=0.01;
+   candidates[1].time=1020;
+   candidates[1].symbol="BTCUSD";
+   candidates[1].magic=202606001;
+   candidates[1].orderType=ORDER_TYPE_BUY;
+   candidates[1].orderState=ORDER_STATE_FILLED;
+   candidates[1].executedVolume=0.01;
+
+   CPendingExecutionEntry entry=BuildSubmittedEntry("req-order-policy-count",CBasketId("basket-order-policy"));
+   entry.SetRequestedVolume(0.01);
+   entry.SetPreparedAtUtc(1000);
+   entry.SetSubmittedAtUtc(1000);
+   CBrokerRequestCorrelation broker=entry.BrokerCorrelation();
+   broker.SetMagicNumber(202606001);
+   entry.SetBrokerCorrelation(broker);
+
+   string comments[2]={"",""};
+   int count=CBrokerHistoricalOrderEvidencePolicy::CountMatchingOrderCandidates(
+      entry,candidates,600,false,comments);
+   CTestAssert::EqualInt(2,count,"two filled order fingerprint candidates must be counted");
   }
 
 void OnStart(void)
@@ -494,5 +941,25 @@ void OnStart(void)
    TestTimeoutWithIndeterminateOutcomeEntersUnknownReconciling(harness);
    TestDuplicateTerminalEventEmittedOnce(harness);
    TestStartupReconciliationIsReadOnly(harness);
+   TestMissingOpenPositionDoesNotReject(harness);
+   TestHistoricalDealMatchResolvesFilled(harness);
+   TestFilledThenManuallyClosedRemainsFilled(harness);
+   TestExplicitBrokerRejectResolvesRejected(harness);
+   TestIndeterminateNoHistoryResolvesUnknownReconciling(harness);
+   TestRealManualCloseRecordFixtureResolvesFilled(harness);
+   TestFilledTerminalStateIsMonotonic(harness);
+   TestNoPrematureTimedOutWithoutHistoryEvidence(harness);
+   TestDeadlineBeforeEvidenceWindow(harness);
+   TestStaleSubmittedWithPersistedFillVolumeRepairsFilled(harness);
+   TestAmbiguousFingerprintPolicyCountsTwo(harness);
+   TestAmbiguousFingerprintStaysReconciling(harness);
+   TestReadOnlyResolveDoesNotPersist(harness);
+   TestHistoricalOrderFilledResolvesFilledWithoutDeal(harness);
+   TestCancelledOrderDoesNotResolveFilled(harness);
+   TestPartialHistoricalOrderResolvesPartiallyFilled(harness);
+   TestAmbiguousHistoricalOrderFillStaysReconciling(harness);
+   TestCloseDealDoesNotBlockHistoricalOrderFill(harness);
+   TestUnrelatedDealVolumeMismatchDoesNotBlockOrderFill(harness);
+   TestOrderEvidencePolicyFilledStateAndExecutedVolume(harness);
    Print("TestPendingExecutionTerminalization: all tests passed");
   }

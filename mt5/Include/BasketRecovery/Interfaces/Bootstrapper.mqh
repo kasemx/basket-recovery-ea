@@ -15,6 +15,7 @@
 #include <BasketRecovery/Infrastructure/Snapshot/InMemorySnapshotStore.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/BrokerReconciliationService.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerPositionReader.mqh>
+#include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerExecutionHistoryReader.mqh>
 #include <BasketRecovery/Infrastructure/Market/Mt5MarketDataProvider.mqh>
 #include <BasketRecovery/Infrastructure/Market/MarketContextProviderAdapter.mqh>
 #include <BasketRecovery/Application/Services/BasketPositionReconciler.mqh>
@@ -354,9 +355,11 @@ public:
                                                pendingExecutionEventBuffer,
                                                clock);
       CMt5BrokerPositionReader *executionReconciliationReader=new CMt5BrokerPositionReader();
+      CMt5BrokerExecutionHistoryReader *executionHistoryReader=new CMt5BrokerExecutionHistoryReader();
       CExecutionReconciliationScheduler *executionReconciliationScheduler=
          new CExecutionReconciliationScheduler(pendingExecutionRegistry,executionReconciliationReader,
-                                               pendingExecutionDiagnostics,8,pendingExecutionLifecycle);
+                                               pendingExecutionDiagnostics,8,pendingExecutionLifecycle,
+                                               executionHistoryReader);
       CTradeTransactionRouter *tradeTransactionRouter=
          new CTradeTransactionRouter(pendingExecutionRegistry,
                                      pendingExecutionDiagnostics,
@@ -370,7 +373,8 @@ public:
                                       executionReconciliationReader,
                                       pendingExecutionDiagnostics,
                                       clock,
-                                      pendingExecutionLifecycle);
+                                      pendingExecutionLifecycle,
+                                      executionHistoryReader);
       CPendingExecutionTestInjectionService *pendingExecutionTestInjection=
          new CPendingExecutionTestInjectionService(pendingExecutionRegistry,tradeTransactionRouter);
       context.RegisterPendingExecutionRuntime(pendingExecutionRegistry,
@@ -592,7 +596,9 @@ public:
                                                                                pendingExecutionRegistry,
                                                                                pendingExecutionLifecycle,
                                                                                executionReconciliationReader,
-                                                                               startupFillNotifier);
+                                                                               startupFillNotifier,
+                                                                               executionHistoryReader,
+                                                                               clock.Now());
       CManualRecoveryCandidateValidationArtifact::TryRestoreToRegistry(*manualRecoveryCandidateRegistry);
       // Sprint 7D: manual recovery route only; automatic recovery execution remains disabled.
       // Sprint 8C: manual profit close route only; automatic partial-close execution remains disabled.

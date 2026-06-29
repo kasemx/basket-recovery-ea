@@ -64,19 +64,74 @@ Do **not** use generic registry existence checks for pending status.
 
 On deadline (`CExecutionTimeoutMonitor::ScanDueTimeouts`):
 
-1. Read-only broker position query via `CExecutionReconciliationResolver`
-2. **FILLED** → `MarkFilled` (terminal, idempotent)
-3. **REJECTED** (no matching position) → `MarkTimedOut` (terminal audit, does not block recovery)
-4. **UNKNOWN** (indeterminate read) → `MarkUnknownReconciling` + enqueue read-only reconciliation + diagnostics
+1. Read-only broker position query and bounded history correlation via `CExecutionReconciliationResolver`
+2. **FILLED** (open position or historical deal evidence) → `MarkFilled` (terminal, idempotent)
+3. **REJECTED** (explicit broker reject evidence only) → `MarkRejected`
+4. **TIMED_OUT** (history available, no execution after reconciliation evidence window elapsed) → `MarkTimedOut` (terminal audit, does not block recovery)
+5. **UNKNOWN_RECONCILING** (indeterminate read or history unavailable) → `MarkUnknownReconciling` + enqueue read-only reconciliation + diagnostics
+
+Missing open positions or orders alone **never** produce `REJECTED`. Current-state absence is not rejection evidence.
 
 No automatic order retry or resubmission occurs on timeout.
+
+## History-Aware Reconciliation
+
+`CExecutionReconciliationResolver` uses a two-stage read-only decision hierarchy:
+
+| Stage | Source | Scope | Survives manual close | Proves fill | Proves reject |
+|---|---|---|---|---|---|
+| Current open state | `IBrokerPositionReader` | Open BRE-tagged positions only | no | partial (in-flight volume) | no |
+| Open pending orders | `IBrokerExecutionHistoryReader` | Current `OrdersTotal()` by broker order id | n/a | no (in-flight) | no |
+| Broker history | `IBrokerExecutionHistoryReader` | Bounded window around submitted/created time; deal id, order id, comment/token | yes | yes (deal volume) | yes (explicit canceled/reject order with zero fill) |
+| Transaction cache | `TradeTransactionRouter` / persisted entry | Live `OnTradeTransaction` path | yes | yes | yes |
+| Persisted correlation | `CPendingExecutionEntry` | order id, deal id, ticket, token, comment | yes | indirect | indirect |
+
+### Authoritative outcomes
+
+| Evidence | Allowed outcome |
+|---|---|
+| Correlated broker deal/history confirms fill | `FILLED` |
+| Correlated broker rejection / definitive reject result | `REJECTED` |
+| Correlated cancellation evidence | `CANCELLED` |
+| Explicit terminal failure evidence | `FAILED` |
+| No open position/order and insufficient history | `UNKNOWN_RECONCILING` |
+| History available, no execution after reconciliation evidence window elapsed | `TIMED_OUT` |
+| Current pending order/position exists | retain in-flight (`UNKNOWN`) |
+
+### Manual-close-after-fill scenario
+
+```text
+submission → FILLED → position later manually closed → restart/reconcile
+```
+
+Expected:
+
+- reconciliation resolves or remains `FILLED` when historical deal evidence matches;
+- recovery/profit-level progression is not reversed;
+- record is terminal historical audit;
+- it does not block future evaluation;
+- it is never reclassified as `REJECTED` from missing open state alone.
+
+### Stale persisted SUBMITTED repair
+
+Real demo records may persist `SUBMITTED` with `filledVolume=0` even after a broker-confirmed fill because broker order/deal ids are not yet written to disk. Startup reconciliation therefore:
+
+1. Hydrates envelope metadata (magic, submitted anchor from `PreparedAtUtc`) before read-only resolve.
+2. Anchors history lookup to `SubmittedAtUtc` / `PreparedAtUtc` / `DeadlineUtc`, not only `TimeCurrent()`.
+3. Matches historical deals by persisted stamp (`BRE|token|...`), parent order comment when deal comment is empty, symbol, and magic within the bounded window.
+4. Falls back to a unique bounded fingerprint (`correlation token + symbol + magic + normalized volume + intent entry type + tight time window`) only when stamp paths fail and exactly one candidate exists.
+5. Never downgrades known fill evidence to `TIMED_OUT` or `REJECTED`.
+6. Repairs stale `SUBMITTED` → `FILLED` when historical fill or persisted fill volume evidence exists.
+7. Classifies `TIMED_OUT` only after the configured reconciliation evidence window elapses, not merely the submission deadline.
+
+`FILLED` is monotonic: it must never transition to `TIMED_OUT`, `REJECTED`, `CANCELLED`, `FAILED`, `UNKNOWN_RECONCILING`, or `RECONCILED`.
 
 ## UNKNOWN_RECONCILING Behavior
 
 - Only state that blocks recovery when broker outcome is genuinely unresolved
 - Persisted as `RECONCILING` with label `UNKNOWN_RECONCILING`
 - Startup: `CPendingExecutionStartupReconciliationService` reloads and read-only reconciles
-- Periodic: `CExecutionReconciliationScheduler` processes queued entries (read-only position resolver)
+- Periodic: `CExecutionReconciliationScheduler` processes queued entries (read-only position + history resolver)
 - Resolves to terminal `FILLED`, `REJECTED`, `CANCELLED`, or `RECONCILED` without broker mutation
 - `BlocksBlindResend` applies only to `UNKNOWN_RECONCILING`
 
@@ -108,5 +163,6 @@ Automatic recovery execution is **not enabled**. Startup and periodic reconcilia
 | Layer | File |
 |-------|------|
 | Domain | `PendingExecutionQuery.mqh`, `PendingExecutionTransitionRules.mqh` |
-| Application | `PendingExecutionLifecycleService.mqh`, `ExecutionTimeoutMonitor.mqh`, `PendingExecutionStartupReconciliationService.mqh` |
+| Application | `PendingExecutionLifecycleService.mqh`, `ExecutionTimeoutMonitor.mqh`, `PendingExecutionStartupReconciliationService.mqh`, `ExecutionReconciliationResolver.mqh` |
+| Infrastructure | `Mt5BrokerExecutionHistoryReader.mqh`, `InMemoryBrokerExecutionHistoryReader.mqh` |
 | Tests | `TestPendingExecutionTerminalization.mq5` |
