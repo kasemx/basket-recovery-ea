@@ -128,6 +128,39 @@ Sprint 8C broker-validation assets are **tooling-only** and live outside product
 
 These paths are **not** referenced from `Bootstrapper.mqh`, normal EA startup, `CManualProfitCloseCandidateRegistrationService`, or `CManualProfitCloseSubmissionService`. Generated proof files, tokens, terminal hashes, and account IDs must not be committed.
 
+### Terminal selection (preflight runner)
+
+`scripts/validation/run-sprint8c-preflight.ps1` must target exactly one intended DEMO terminal. It no longer defaults to a hardcoded FTMO data folder.
+
+**Explicit selection (recommended):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/validation/run-sprint8c-preflight.ps1 `
+  -TerminalDataId <32-char-terminal-data-id>
+```
+
+The runner validates that the terminal data folder and `config` / `origin.txt` exist, prints the selected ID and path, then runs `PreflightSprint8cDemoProfitClose.mq5` only against that install.
+
+**Auto-selection (optional):**
+
+When `-TerminalDataId` is omitted:
+
+1. Discover running `terminal64.exe` instances.
+2. Map the running instance to a terminal data path from recent terminal logs (`Terminal <data-path>` line).
+3. Proceed only when exactly one unambiguous candidate is found.
+4. Require discoverable **DEMO** server classification from the latest log (`*Demo*` in server name).
+5. Abort on zero candidates, multiple running terminals, multiple data-path matches, or non-DEMO classification.
+
+The runner never silently falls back to an unrelated historical terminal (for example the old FTMO data folder).
+
+Before MQL preflight launch, the runner prints:
+
+- selected `TerminalDataId` and data path;
+- whether `terminal64.exe` is currently running;
+- discoverable server/login/classification hints from the latest log.
+
+Preflight safety gates are unchanged: `RETAIL_HEDGING` mandatory, `RETAIL_NETTING` blocked, unresolved pending records blocked, no broker mutation.
+
 ## Real demo validation (Sprint 8C chart run)
 
 Controlled chart validation uses `scripts/validation/run-sprint8c-preflight.ps1` and `scripts/validation/run-sprint8c-ea-chart-validation.ps1` against a configured **DEMO** terminal only. The runners do not change login, commit artifacts, or enable automatic partial-close execution.
@@ -180,7 +213,13 @@ Successful broker validation remains **pending** a separate **DEMO + RETAIL_HEDG
 ### To complete real demo validation
 
 1. Prepare a **DEMO + RETAIL_HEDGING** account on the validation terminal.
-2. Run preflight and confirm `hedging_demo_ready=true` and `unresolved_after_reconcile=0`.
+2. Run preflight with explicit terminal selection and confirm `hedging_demo_ready=true` and `unresolved_after_reconcile=0`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/validation/run-sprint8c-preflight.ps1 `
+  -TerminalDataId <your-demo-terminal-data-id>
+```
+
 3. Resolve any `blocking_execution_ids` via normal EA startup reconciliation or supported broker lifecycle completion — do not delete pending records manually.
 4. Ensure no unrelated open positions on the validation symbol.
 5. Run: `powershell -ExecutionPolicy Bypass -File scripts/validation/run-sprint8c-ea-chart-validation.ps1 -Reseed`
