@@ -154,6 +154,34 @@ public:
 
    static string     BuildMarker(void) { return BRE_PROFIT_LEVEL_CLOSE_PLANNING_BUILD_MARKER; }
 
+   static bool       SelectFirstEligibleLevel(const string &levelIds[],
+                                             const bool &enabled[],
+                                             const bool &reached[],
+                                             const bool &closeCompleted[],
+                                             string &selectedLevelId)
+     {
+      selectedLevelId="";
+      int count=ArraySize(levelIds);
+      for(int i=0;i<count;i++)
+        {
+         if(i>=ArraySize(enabled) || i>=ArraySize(reached) || i>=ArraySize(closeCompleted))
+            return false;
+         if(enabled[i] && reached[i] && !closeCompleted[i])
+           {
+            selectedLevelId=levelIds[i];
+            return true;
+           }
+        }
+      return false;
+     }
+
+   static string     BuildLevelScopedCandidateId(const string basketId,
+                                                const string levelId,
+                                                const ulong quoteSequence)
+     {
+      return "profit-level-close:"+basketId+":level:"+levelId+":q:"+(string)quoteSequence;
+     }
+
    CProfitLevelCloseCandidate EvaluateAndEmit(const CBasketAggregate &basket,
                                               const CStrategyEvaluationContext &evalContext,
                                               const CRecoveryRiskGateInput &gateInput) const
@@ -161,27 +189,33 @@ public:
       CProfitLevelEvaluationContext planContext=BuildEvaluationContext(basket,evalContext,gateInput);
       string levelId="";
       CProfitDistributionPlan plan=planContext.Profile().ProfitDistributionPlan();
-      if(plan.LevelCount()>0)
-         levelId=plan.LevelAt(0).LevelId();
-
-      for(int i=0;i<plan.LevelCount();i++)
+      string levelIds[];
+      bool enabled[];
+      bool reached[];
+      bool closeCompleted[];
+      int levelCount=plan.LevelCount();
+      ArrayResize(levelIds,levelCount);
+      ArrayResize(enabled,levelCount);
+      ArrayResize(reached,levelCount);
+      ArrayResize(closeCompleted,levelCount);
+      for(int i=0;i<levelCount;i++)
         {
          CProfitLevel level=plan.LevelAt(i);
-         if(level.Enabled())
+         levelIds[i]=level.LevelId();
+         enabled[i]=level.Enabled();
+         CBasketProfitLevelProgress progress;
+         if(planContext.FindLevelProgress(level.LevelId(),progress))
            {
-            CBasketProfitLevelProgress progress;
-            if(planContext.FindLevelProgress(level.LevelId(),progress) && !progress.CloseCompleted())
-              {
-               levelId=level.LevelId();
-               break;
-              }
-            if(!planContext.FindLevelProgress(level.LevelId(),progress))
-              {
-               levelId=level.LevelId();
-               break;
-              }
+            reached[i]=progress.Reached();
+            closeCompleted[i]=progress.CloseCompleted();
+           }
+         else
+           {
+            reached[i]=false;
+            closeCompleted[i]=false;
            }
         }
+      SelectFirstEligibleLevel(levelIds,enabled,reached,closeCompleted,levelId);
 
       bool duplicate=m_eventBuffer!=NULL &&
                      levelId!="" &&
