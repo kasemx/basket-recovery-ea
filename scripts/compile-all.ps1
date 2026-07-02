@@ -1,5 +1,9 @@
 # Compile BasketRecovery EA and all test scripts after syncing to the active MT5 terminal.
-# Usage: powershell -ExecutionPolicy Bypass -File scripts/compile-all.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File scripts/compile-all.ps1 [-TerminalId <hash>]
+
+param(
+    [string]$TerminalId = "D0E8209F77C8CF37AD8BF550E51FF075"
+)
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
@@ -12,8 +16,9 @@ if (-not (Test-Path $metaeditor)) {
     Write-Error "metaeditor64.exe not found at: $metaeditor"
 }
 
-$sync = & (Join-Path $repo "scripts\sync-to-mt5.ps1")
+$sync = & (Join-Path $repo "scripts\sync-to-mt5.ps1") -TerminalId $TerminalId
 $mql5 = $sync.Mql5Path
+$terminalId = Split-Path (Split-Path $mql5 -Parent) -Leaf
 
 New-Item -ItemType Directory -Force -Path $logDir, $testLogDir | Out-Null
 
@@ -45,6 +50,21 @@ $results += [PSCustomObject]@{
     Errors = $ea.Errors
     Warnings = $ea.Warnings
     Log = $eaLog
+}
+
+$validationScripts = @(
+    "Scripts\BasketRecovery\Validation\Sprint8C\IssueSprint8cProfitCloseAuthToken.mq5"
+)
+foreach ($rel in $validationScripts) {
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($rel)
+    $logPath = Join-Path $logDir "$baseName.compile.log"
+    $r = Invoke-Mq5Compile $rel $logPath
+    $results += [PSCustomObject]@{
+        File = [System.IO.Path]::GetFileName($rel)
+        Errors = $r.Errors
+        Warnings = $r.Warnings
+        Log = $logPath
+    }
 }
 
 Get-ChildItem (Join-Path $repo "mt5\Scripts\BasketRecovery\Tests\Test*.mq5") | Sort-Object Name | ForEach-Object {
@@ -106,4 +126,39 @@ if ($failed.Count -gt 0) {
     exit 1
 }
 Write-Host "COMPILE GATE PASSED" -ForegroundColor Green
+
+$deploymentProof = @()
+$deployTargets = @(
+    @{ Relative = "Experts\BasketRecovery\BasketRecoveryEA.ex5"; RuntimeMarker = "S8C_PROFIT_CLOSE_SUBMIT_V2" },
+    @{ Relative = "Scripts\BasketRecovery\Validation\Sprint8C\IssueSprint8cProfitCloseAuthToken.ex5"; RuntimeMarker = "S8C_AUTH_ISSUE_SCRIPT_V2" }
+)
+foreach ($target in $deployTargets) {
+    $ex5Path = Join-Path $mql5 $target.Relative
+    if (Test-Path $ex5Path) {
+        $item = Get-Item $ex5Path
+        $deploymentProof += [PSCustomObject]@{
+            terminalId = $terminalId
+            relativePath = $target.Relative
+            fullPath = $ex5Path
+            lastWriteTime = $item.LastWriteTime.ToString("o")
+            sizeBytes = $item.Length
+            runtimeMarker = $target.RuntimeMarker
+        }
+    } else {
+        $deploymentProof += [PSCustomObject]@{
+            terminalId = $terminalId
+            relativePath = $target.Relative
+            fullPath = $ex5Path
+            lastWriteTime = "MISSING"
+            sizeBytes = 0
+            runtimeMarker = $target.RuntimeMarker
+        }
+    }
+}
+
+$proofPath = Join-Path $repo "build\deployment-proof-sprint8c.json"
+$deploymentProof | ConvertTo-Json -Depth 4 | Set-Content -Path $proofPath -Encoding UTF8
+Write-Host "Deployment proof: $proofPath"
+$deploymentProof | Format-Table -AutoSize
+
 exit 0

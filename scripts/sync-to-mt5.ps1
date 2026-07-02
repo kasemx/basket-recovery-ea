@@ -1,5 +1,9 @@
 # Sync repository mt5/ sources into every MetaTrader 5 terminal MQL5 folder.
-# Usage: powershell -ExecutionPolicy Bypass -File scripts/sync-to-mt5.ps1
+# Usage: powershell -ExecutionPolicy Bypass -File scripts/sync-to-mt5.ps1 [-TerminalId <hash>]
+
+param(
+    [string]$TerminalId = "D0E8209F77C8CF37AD8BF550E51FF075"
+)
 
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $PSScriptRoot
@@ -69,22 +73,24 @@ function Sync-ToTerminal {
     }
 }
 
-$mql5Paths = Get-TerminalMql5Paths
-if ($mql5Paths.Count -eq 0) {
-    throw "No terminal data folders with MQL5 found under $terminalRoot"
+$terminalDataPath = Join-Path $terminalRoot $TerminalId
+if (-not (Test-Path $terminalDataPath)) {
+    throw "Terminal data folder not found for TerminalId=$TerminalId under $terminalRoot"
 }
 
-$preferredId = "D0E8209F77C8CF37AD8BF550E51FF075"
-$activeMql5 = $mql5Paths | Where-Object { $_ -like "*\$preferredId\MQL5" } | Select-Object -First 1
-if (-not $activeMql5) {
-    $activeMql5 = $mql5Paths | Sort-Object { (Get-Item (Split-Path $_ -Parent)).LastWriteTime } -Descending | Select-Object -First 1
+$activeMql5 = Join-Path $terminalDataPath "MQL5"
+if (-not (Test-Path $activeMql5)) {
+    throw "Terminal MQL5 folder not found for TerminalId=$TerminalId under $terminalRoot"
 }
 
+$mql5Paths = @($activeMql5)
 $syncReport = New-Object System.Collections.Generic.List[string]
-foreach ($path in $mql5Paths) {
-    Write-Host "Syncing to: $path"
-    Sync-ToTerminal -Mql5Path $path -Report $syncReport
-}
+Write-Host "sync_target_terminal_id=$TerminalId"
+Write-Host "sync_target_mql5_path=$activeMql5"
+Write-Host "sync_destination_count=1"
+Write-Host "sync_multi_terminal_mode=false"
+Write-Host "Syncing to: $activeMql5"
+Sync-ToTerminal -Mql5Path $activeMql5 -Report $syncReport
 
 $uniqueReport = $syncReport | Sort-Object -Unique
 $reportPath = Join-Path $repo "build\sync-report.txt"
