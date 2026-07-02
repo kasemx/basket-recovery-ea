@@ -8,25 +8,10 @@
 #include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerPositionReader.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionReconciliationHydrator.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/Mt5BrokerExecutionHistoryReader.mqh>
+#include <BasketRecovery/Validation/Sprint8C/Sprint8cValidationSymbol.mqh>
 
-input string InpPreferredSymbol = "BTCUSD";
-
-string ResolveTradingSymbol(const string preferred)
-  {
-   string candidates[];
-   ArrayResize(candidates,4);
-   candidates[0]=preferred;
-   candidates[1]=preferred+"m";
-   candidates[2]=preferred+".";
-   candidates[3]=_Symbol;
-   for(int i=0;i<ArraySize(candidates);i++)
-     {
-      if(candidates[i]=="") continue;
-      if(SymbolSelect(candidates[i],true) && SymbolInfoDouble(candidates[i],SYMBOL_BID)>0.0)
-         return candidates[i];
-     }
-   return preferred;
-  }
+input string InpPreferredSymbol = "XAUUSD";
+input bool   InpAllowChartSymbolFallback = false;
 
 string MarginModeLabel(const long marginMode)
   {
@@ -175,7 +160,9 @@ void OnStart(void)
    if(reportHandle==INVALID_HANDLE)
       return;
 
-   string symbol=ResolveTradingSymbol(InpPreferredSymbol);
+   string requestedSymbol=InpPreferredSymbol;
+   string symbol=Sprint8cResolveValidationTradingSymbol(requestedSymbol,InpAllowChartSymbolFallback);
+   bool symbolAvailable=Sprint8cValidationSymbolIsQuotable(symbol);
    ENUM_ACCOUNT_TRADE_MODE tradeMode=(ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE);
    long marginMode=AccountInfoInteger(ACCOUNT_MARGIN_MODE);
    string accountModeLabel=(tradeMode==ACCOUNT_TRADE_MODE_DEMO ? "DEMO" : "REAL");
@@ -186,6 +173,10 @@ void OnStart(void)
    double volumeStep=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
    if(minVolume<=0.0) minVolume=0.01;
    if(volumeStep<=0.0) volumeStep=minVolume;
+   long symbolTradeMode=SymbolInfoInteger(symbol,SYMBOL_TRADE_MODE);
+   double validationSeedVolume=0.0;
+   double validationPartialCloseVolume=0.0;
+   bool partialCloseVolumeFeasible=Sprint8cAssessPartialCloseVolumePlan(symbol,validationSeedVolume,validationPartialCloseVolume);
    int symbolPositions=CountSymbolPositions(symbol);
    bool terminalTradeAllowed=(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)!=0);
    bool chartTradeAllowed=(MQLInfoInteger(MQL_TRADE_ALLOWED)!=0);
@@ -199,13 +190,19 @@ void OnStart(void)
    delete historyReader;
    delete positionReader;
 
+   WriteLine(reportHandle,"validation_symbol_requested="+requestedSymbol);
    WriteLine(reportHandle,"account_trade_mode="+accountModeLabel);
    WriteLine(reportHandle,"account_margin_mode="+marginModeLabel);
    WriteLine(reportHandle,"account_position_model="+marginModeLabel);
    WriteLine(reportHandle,"terminal_classification="+terminalClass);
    WriteLine(reportHandle,"symbol="+symbol);
+   WriteLine(reportHandle,"symbol_available="+(symbolAvailable?"true":"false"));
+   WriteLine(reportHandle,"symbol_trade_mode="+Sprint8cValidationSymbolTradeModeLabel(symbolTradeMode));
    WriteLine(reportHandle,"symbol_min_volume="+DoubleToString(minVolume,8));
    WriteLine(reportHandle,"symbol_volume_step="+DoubleToString(volumeStep,8));
+   WriteLine(reportHandle,"validation_seed_volume="+DoubleToString(validationSeedVolume,8));
+   WriteLine(reportHandle,"validation_partial_close_volume="+DoubleToString(validationPartialCloseVolume,8));
+   WriteLine(reportHandle,"partial_close_volume_feasible="+(partialCloseVolumeFeasible?"true":"false"));
    WriteLine(reportHandle,"terminal_trade_allowed="+(terminalTradeAllowed?"true":"false"));
    WriteLine(reportHandle,"chart_trade_allowed="+(chartTradeAllowed?"true":"false"));
    WriteLine(reportHandle,"symbol_positions_count="+IntegerToString(symbolPositions));
@@ -219,6 +216,8 @@ void OnStart(void)
                           terminalClass=="DEMO" &&
                           terminalTradeAllowed &&
                           chartTradeAllowed &&
+                          symbolAvailable &&
+                          partialCloseVolumeFeasible &&
                           unresolvedAfter==0);
    WriteLine(reportHandle,"hedging_demo_ready="+(hedgingDemoReady?"true":"false"));
 
@@ -227,6 +226,8 @@ void OnStart(void)
                          terminalClass!="DEMO" ||
                          !terminalTradeAllowed ||
                          !chartTradeAllowed ||
+                         !symbolAvailable ||
+                         !partialCloseVolumeFeasible ||
                          unresolvedAfter>0);
    WriteLine(reportHandle,"abort_before_seed="+(abortBeforeSeed?"true":"false"));
 
@@ -238,6 +239,10 @@ void OnStart(void)
       WriteLine(reportHandle,"abort_reason=Terminal classification is not DEMO");
    else if(!terminalTradeAllowed || !chartTradeAllowed)
       WriteLine(reportHandle,"abort_reason=Algo/chart trading disabled");
+   else if(!symbolAvailable)
+      WriteLine(reportHandle,"abort_reason=Validation symbol is not available or not quotable");
+   else if(!partialCloseVolumeFeasible)
+      WriteLine(reportHandle,"abort_reason=Partial-close volume plan 0.02->0.01 is not feasible for validation symbol");
    else if(unresolvedAfter>0)
       WriteLine(reportHandle,"abort_reason=Unresolved pending executions remain after read-only reconciliation");
    else

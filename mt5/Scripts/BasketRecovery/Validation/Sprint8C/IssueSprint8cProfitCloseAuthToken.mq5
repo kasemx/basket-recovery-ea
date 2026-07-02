@@ -2,10 +2,14 @@
 #property description "Sprint 8C: issue manual profit-close authorization token from live candidate artifact."
 
 #include <BasketRecovery/Domain/Execution/ExecutionAuthorizationToken.mqh>
-#include <BasketRecovery/Domain/Execution/TradeExecutionIntentType.mqh>
+#include <BasketRecovery/Domain/Execution/ProfitCloseAuthorizationBinding.mqh>
 #include <BasketRecovery/Validation/Sprint8C/ManualProfitCloseCandidateValidationArtifact.mqh>
+#include <BasketRecovery/Validation/Sprint8C/Sprint8cValidationProfile.mqh>
 
-input int InpAuthorizationTokenExpirySeconds = 3600;
+#define BRE_AUTH_ISSUE_SCRIPT_BUILD_MARKER "S8C_AUTH_ISSUE_SCRIPT_V2"
+
+input string InpBasketId = "sprint8c-demo-xauusd-002";
+input int    InpAuthorizationTokenExpirySeconds = 300;
 
 void WriteLine(const int handle,const string line)
   {
@@ -14,24 +18,35 @@ void WriteLine(const int handle,const string line)
    Print(line);
   }
 
-string ReadArtifactValue(const string key)
+void WriteArtifactDiagnostics(const int reportHandle,const SSprint8cCandidateArtifactDiagnostics &diagnostics)
   {
-   int handle=FileOpen(CManualProfitCloseCandidateValidationArtifact::DefaultRelativePath(),
-                       FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(handle==INVALID_HANDLE)
-      return "";
-   string prefix=key+"=";
-   while(!FileIsEnding(handle))
-     {
-      string line=FileReadString(handle);
-      if(StringFind(line,prefix)==0)
-        {
-         FileClose(handle);
-         return StringSubstr(line,StringLen(prefix));
-        }
-     }
-   FileClose(handle);
-   return "";
+   WriteLine(reportHandle,"candidate_artifact_store_path="+diagnostics.store_path);
+   WriteLine(reportHandle,"candidate_artifact_key="+diagnostics.artifact_key);
+   WriteLine(reportHandle,"candidate_artifact_found="+(diagnostics.found?"true":"false"));
+   WriteLine(reportHandle,"candidate_artifact_created_at="+IntegerToString((long)diagnostics.created_at));
+   WriteLine(reportHandle,"candidate_artifact_expires_at="+IntegerToString((long)diagnostics.expires_at));
+   WriteLine(reportHandle,"candidate_artifact_execution_request_id="+diagnostics.execution_request_id);
+   WriteLine(reportHandle,"candidate_artifact_ticket="+IntegerToString((long)diagnostics.ticket));
+   WriteLine(reportHandle,"candidate_artifact_volume="+DoubleToString(diagnostics.volume,8));
+   WriteLine(reportHandle,"candidate_artifact_validation="+diagnostics.validation);
+   WriteLine(reportHandle,"candidate_artifact_failure_reason="+diagnostics.failure_reason);
+   WriteLine(reportHandle,"candidate_artifact_expiry_remaining_seconds="+IntegerToString(diagnostics.expiry_remaining_seconds));
+   WriteLine(reportHandle,"candidate_artifact_ttl_seconds="+IntegerToString(CManualProfitCloseCandidateValidationArtifact::DefaultArtifactTtlSeconds()));
+   WriteLine(reportHandle,"auth_token_ttl_seconds="+IntegerToString(InpAuthorizationTokenExpirySeconds));
+   WriteLine(reportHandle,"required_minimum_artifact_remaining_seconds="+IntegerToString(
+      CManualProfitCloseCandidateValidationArtifact::ComputeRequiredMinimumArtifactRemainingSeconds(InpAuthorizationTokenExpirySeconds)));
+   CManualProfitCloseCandidateValidationArtifact::LogDiagnostics(diagnostics);
+   CManualProfitCloseCandidateValidationArtifact::PrintReuseEligibilityDiagnostics(diagnostics);
+  }
+
+void WriteValidationProfileMarkers(const int reportHandle)
+  {
+   CSprint8cValidationProfile::LogProfileMarkers();
+   WriteLine(reportHandle,"validation_profile_version="+CSprint8cValidationProfile::ProfileVersionLabel());
+   WriteLine(reportHandle,"validation_profile_id="+CSprint8cValidationProfile::ProfileId());
+   WriteLine(reportHandle,"validation_profit_trigger_type="+CSprint8cValidationProfile::FloatingProfitTriggerTypeLabel());
+   WriteLine(reportHandle,"validation_profit_trigger_value_usd="+DoubleToString(CSprint8cValidationProfile::FloatingProfitTriggerUsd(),2));
+   WriteLine(reportHandle,"validation_require_floating_profit_positive=true");
   }
 
 void OnStart(void)
@@ -41,35 +56,49 @@ void OnStart(void)
    if(reportHandle==INVALID_HANDLE)
       return;
 
-   string candidateId=ReadArtifactValue("candidate_id");
-   string executionRequestId=ReadArtifactValue("execution_request_id");
-   string basketId=ReadArtifactValue("basket_id");
-   string symbol=ReadArtifactValue("symbol");
-   string strategyHash=ReadArtifactValue("strategy_profile_hash");
-   string basketVersion=ReadArtifactValue("basket_version");
-   string volume=ReadArtifactValue("proposed_close_volume");
+   WriteValidationProfileMarkers(reportHandle);
+   WriteLine(reportHandle,"auth_token_ttl_seconds="+IntegerToString(InpAuthorizationTokenExpirySeconds));
+   WriteLine(reportHandle,"candidate_artifact_ttl_seconds="+IntegerToString(CManualProfitCloseCandidateValidationArtifact::DefaultArtifactTtlSeconds()));
 
-   if(candidateId=="" || executionRequestId=="" || basketId=="")
+   datetime nowUtc=TimeCurrent();
+   SSprint8cCandidateArtifactRecord artifact;
+   SSprint8cCandidateArtifactDiagnostics diagnostics;
+   if(!CManualProfitCloseCandidateValidationArtifact::TryLoadAndValidate(InpBasketId,0,nowUtc,artifact,diagnostics,CManualProfitCloseCandidateValidationArtifact::DefaultRelativePath(),InpAuthorizationTokenExpirySeconds))
      {
+      WriteArtifactDiagnostics(reportHandle,diagnostics);
       WriteLine(reportHandle,"auth_verification=FAIL");
-      WriteLine(reportHandle,"failure_reason=Live candidate artifact missing");
+      if(diagnostics.failure_reason=="")
+         WriteLine(reportHandle,"failure_reason=Live candidate artifact missing");
+      else
+         WriteLine(reportHandle,"failure_reason="+diagnostics.failure_reason);
       FileClose(reportHandle);
       return;
      }
 
-   datetime expiry=TimeCurrent()+InpAuthorizationTokenExpirySeconds;
-   string fingerprint=CExecutionAuthorizationToken::ComputeBindingFingerprint(executionRequestId,
-                                                                              CBasketId(basketId),
-                                                                              symbol,
-                                                                              BRE_EXEC_INTENT_CLOSE_POSITION,
-                                                                              StringToDouble(volume),
-                                                                              (int)StringToInteger(basketVersion),
-                                                                              strategyHash);
+   WriteArtifactDiagnostics(reportHandle,diagnostics);
+
+   datetime expiry=nowUtc+InpAuthorizationTokenExpirySeconds;
+   string fingerprint=CProfitCloseAuthorizationBinding::ComputeBindingHash(artifact.basket_id,
+                                                                           artifact.candidate_id,
+                                                                           artifact.execution_request_id,
+                                                                           artifact.position_ticket,
+                                                                           artifact.requested_close_volume);
+   CProfitCloseAuthorizationBinding::PrintIssueBindingDiagnostics(BRE_AUTH_ISSUE_SCRIPT_BUILD_MARKER,
+                                                             artifact.basket_id,
+                                                             artifact.candidate_id,
+                                                             artifact.execution_request_id,
+                                                             artifact.position_ticket,
+                                                             artifact.requested_close_volume);
    string authToken=CExecutionAuthorizationToken::IssuePlaintextToken(fingerprint,expiry);
 
-   WriteLine(reportHandle,"candidate_id="+candidateId);
-   WriteLine(reportHandle,"execution_request_id="+executionRequestId);
-   WriteLine(reportHandle,"basket_id="+basketId);
+   WriteLine(reportHandle,"auth_issue_runtime_build_marker="+BRE_AUTH_ISSUE_SCRIPT_BUILD_MARKER);
+   WriteLine(reportHandle,"auth_binding_build_marker="+CProfitCloseAuthorizationBinding::BuildMarker());
+
+   WriteLine(reportHandle,"candidate_id="+artifact.candidate_id);
+   WriteLine(reportHandle,"execution_request_id="+artifact.execution_request_id);
+   WriteLine(reportHandle,"basket_id="+artifact.basket_id);
+   WriteLine(reportHandle,"position_ticket="+IntegerToString((long)artifact.position_ticket));
+   WriteLine(reportHandle,"requested_close_volume="+DoubleToString(artifact.requested_close_volume,8));
    WriteLine(reportHandle,"authorization_token="+authToken);
    WriteLine(reportHandle,"authorization_token_expiry="+IntegerToString((long)expiry));
    WriteLine(reportHandle,"auth_verification=OK");

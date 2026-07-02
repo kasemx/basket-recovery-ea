@@ -2,6 +2,8 @@
 
 Expert Advisor and MQL5 library for Basket Recovery Trading Engine.
 
+> **Sprint 8C broker validation:** follow [docs/operations/MT5_DEPLOYMENT_AND_VALIDATION_RUNBOOK.md](../docs/operations/MT5_DEPLOYMENT_AND_VALIDATION_RUNBOOK.md) — verify the Vantage demo terminal (`D0E8209F77C8CF37AD8BF550E51FF075`) and `BasketRecoveryEA.ex5` timestamp before attach.
+
 > **Demo-only execution caution:** When `InpEnableLiveDemoExecution` is enabled, the EA can submit **real demo orders** via `OrderSendAsync`. Use a dedicated demo account. **Not for live-money terminals.** Automatic recovery execution is **disabled**.
 
 ## Sync and Compile (recommended)

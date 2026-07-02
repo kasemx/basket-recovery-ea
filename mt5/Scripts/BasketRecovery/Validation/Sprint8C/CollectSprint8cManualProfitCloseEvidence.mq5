@@ -1,7 +1,9 @@
 #property script_show_inputs
 #property description "Sprint 8C: collect manual profit-close chart validation evidence."
 
-input string InpBasketId = "sprint8c-demo-btc-001";
+#include <BasketRecovery/Validation/Sprint8C/Sprint8cValidationProfile.mqh>
+
+input string InpBasketId = "sprint8c-demo-xauusd-002";
 input string InpPrimaryTriggerToken = "";
 input string InpDuplicateTriggerToken = "";
 input string InpLogFilePath = "BasketRecovery/logs/basket_recovery.log";
@@ -129,12 +131,24 @@ void ScanContent(const string content,
      }
   }
 
+void WriteValidationProfileMarkers(const int reportHandle)
+  {
+   CSprint8cValidationProfile::LogProfileMarkers();
+   WriteLine(reportHandle,"validation_profile_version="+CSprint8cValidationProfile::ProfileVersionLabel());
+   WriteLine(reportHandle,"validation_profile_id="+CSprint8cValidationProfile::ProfileId());
+   WriteLine(reportHandle,"validation_profit_trigger_type="+CSprint8cValidationProfile::FloatingProfitTriggerTypeLabel());
+   WriteLine(reportHandle,"validation_profit_trigger_value_usd="+DoubleToString(CSprint8cValidationProfile::FloatingProfitTriggerUsd(),2));
+   WriteLine(reportHandle,"validation_require_floating_profit_positive=true");
+  }
+
 void OnStart(void)
   {
    string reportRel="BasketRecovery/validation/sprint-8c-ea-chart-result.txt";
    int reportHandle=FileOpen(reportRel,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
    if(reportHandle==INVALID_HANDLE)
       return;
+
+   WriteValidationProfileMarkers(reportHandle);
 
    string journalContent=ReadAllText(InpExpertsJournalAbsolutePath);
    string logContent=ReadAllText(InpLogFilePath);

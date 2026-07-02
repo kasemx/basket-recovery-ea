@@ -4,34 +4,99 @@
 #include <BasketRecovery/Tests/StrategyProfileTestFixture.mqh>
 #include <BasketRecovery/Application/Services/ExecutionDryRunTestBasketSeedService.mqh>
 #include <BasketRecovery/Infrastructure/Persistence/FileBasketRepository.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionReconciliationHydrator.mqh>
+#include <BasketRecovery/Validation/Sprint8C/Sprint8cPendingExecutionPersistenceDiagnostics.mqh>
 #include <BasketRecovery/Infrastructure/Execution/FilePendingExecutionStore.mqh>
 #include <BasketRecovery/Infrastructure/MT5/Mt5Clock.mqh>
 #include <BasketRecovery/Infrastructure/MT5/Mt5UniqueIdGenerator.mqh>
 #include <BasketRecovery/Shared/Constants/PersistenceSchema.mqh>
 #include <BasketRecovery/Shared/Types/Price.mqh>
+#include <BasketRecovery/Validation/Sprint8C/Sprint8cValidationSymbol.mqh>
+#include <BasketRecovery/Validation/Sprint8C/Sprint8cValidationProfile.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5/BrokerMarketDealFillingModeResolver.mqh>
+#include <BasketRecovery/Domain/Enums/TradeDirection.mqh>
 
-input string InpPreferredSymbol = "BTCUSD";
-input string InpBasketId         = "sprint8c-demo-btc-001";
+input string InpPreferredSymbol = "XAUUSD";
+input string InpBasketId         = "sprint8c-demo-xauusd-002";
+input string InpSeedDirection    = "BUY";
 input int    InpManualProfitCloseCandidateExpirySeconds = 60;
 input bool   InpAllowExistingSymbolPositions = false;
+input bool   InpAllowChartSymbolFallback = false;
 
 const long SEED_MAGIC=202606001;
+const int  SEED_POSITION_LOOKUP_TIMEOUT_MS=1000;
+const string SEED_SCRIPT_BUILD_MARKER="S8C_FILLING_IOC_V1";
 
-string ResolveTradingSymbol(const string preferred)
+struct SSeedLinkedPositionOpenTrace
   {
-   string candidates[];
-   ArrayResize(candidates,4);
-   candidates[0]=preferred;
-   candidates[1]=preferred+"m";
-   candidates[2]=preferred+".";
-   candidates[3]=_Symbol;
-   for(int i=0;i<ArraySize(candidates);i++)
-     {
-      if(candidates[i]=="") continue;
-      if(SymbolSelect(candidates[i],true) && SymbolInfoDouble(candidates[i],SYMBOL_BID)>0.0)
-         return candidates[i];
-     }
-   return preferred;
+   MqlTradeRequest request;
+   MqlTradeResult  trade_result;
+   int             last_error_after_order_send;
+   bool            order_send_returned_true;
+   bool            find_linked_position_ok;
+   ulong           deal_position_id_fallback;
+   int             position_lookup_attempt_count;
+   int             position_lookup_timeout_ms;
+   string          position_lookup_result;
+   string          open_failure_branch;
+   string          filling_mode_resolution;
+   string          filling_mode_failure_reason;
+   ENUM_ORDER_TYPE_FILLING resolved_type_filling;
+  };
+
+string Sprint8cMarketSessionStatusLabel(const string symbol)
+  {
+   MqlDateTime dt;
+   TimeToStruct(TimeCurrent(),dt);
+   datetime from=0;
+   datetime to=0;
+   if(!SymbolInfoSessionTrade(symbol,(ENUM_DAY_OF_WEEK)dt.day_of_week,0,from,to))
+      return "SESSION_TRADE_LOOKUP_FAILED";
+   datetime now=TimeCurrent();
+   if(now<from || now>to)
+      return "OUTSIDE_SESSION_HOURS";
+   return "INSIDE_SESSION_HOURS";
+  }
+
+string Sprint8cSymbolFillingModeLabel(const string symbol)
+  {
+   return CBrokerMarketDealFillingModeResolver::FormatSymbolFillingModeMask(
+      SymbolInfoInteger(symbol,SYMBOL_FILLING_MODE));
+  }
+
+void WriteSeedOpenFailureDiagnostics(const int reportHandle,
+                                     const string requestedSymbol,
+                                     const string resolvedSymbol,
+                                     const double requestedVolume,
+                                     const double normalizedVolume,
+                                     const SSeedLinkedPositionOpenTrace &trace)
+  {
+   WriteLine(reportHandle,"requested_symbol="+requestedSymbol);
+   WriteLine(reportHandle,"resolved_symbol="+resolvedSymbol);
+   WriteLine(reportHandle,"requested_volume="+DoubleToString(requestedVolume,8));
+   WriteLine(reportHandle,"normalized_volume="+DoubleToString(normalizedVolume,8));
+   WriteLine(reportHandle,"terminal_trade_allowed="+(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)?"true":"false"));
+   WriteLine(reportHandle,"mql_trade_allowed="+(MQLInfoInteger(MQL_TRADE_ALLOWED)?"true":"false"));
+   WriteLine(reportHandle,"script_trade_allowed_if_available="+(MQLInfoInteger(MQL_TRADE_ALLOWED)?"true":"false"));
+   WriteLine(reportHandle,"symbol_trade_mode="+Sprint8cValidationSymbolTradeModeLabel(SymbolInfoInteger(resolvedSymbol,SYMBOL_TRADE_MODE)));
+   WriteLine(reportHandle,"market_session_status="+Sprint8cMarketSessionStatusLabel(resolvedSymbol));
+   WriteLine(reportHandle,"symbol_filling_mode="+Sprint8cSymbolFillingModeLabel(resolvedSymbol));
+   WriteLine(reportHandle,"filling_mode_resolution="+trace.filling_mode_resolution);
+   WriteLine(reportHandle,"resolved_type_filling="+CBrokerMarketDealFillingModeResolver::FormatOrderTypeFilling(
+      trace.resolved_type_filling));
+   WriteLine(reportHandle,"request_type_filling="+IntegerToString((int)trace.request.type_filling));
+   WriteLine(reportHandle,"broker_retcode="+IntegerToString((int)trace.trade_result.retcode));
+   WriteLine(reportHandle,"broker_result_text="+trace.trade_result.comment);
+   WriteLine(reportHandle,"GetLastError="+IntegerToString(trace.last_error_after_order_send));
+   WriteLine(reportHandle,"submitted_order_ticket="+IntegerToString((long)trace.trade_result.order));
+   WriteLine(reportHandle,"submitted_deal_ticket="+IntegerToString((long)trace.trade_result.deal));
+   WriteLine(reportHandle,"position_lookup_attempt_count="+IntegerToString(trace.position_lookup_attempt_count));
+   WriteLine(reportHandle,"position_lookup_timeout_ms="+IntegerToString(trace.position_lookup_timeout_ms));
+   WriteLine(reportHandle,"position_lookup_result="+trace.position_lookup_result);
+   WriteLine(reportHandle,"open_failure_branch="+trace.open_failure_branch);
+   WriteLine(reportHandle,"deal_position_id_fallback="+IntegerToString((long)trace.deal_position_id_fallback));
+   WriteLine(reportHandle,"order_send_returned_true="+(trace.order_send_returned_true?"true":"false"));
+   WriteLine(reportHandle,"find_linked_position_ok="+(trace.find_linked_position_ok?"true":"false"));
   }
 
 void WriteLine(const int handle,const string line)
@@ -67,28 +132,17 @@ string MarginModeLabel(const long marginMode)
 
 string LoadProfitCloseValidationStrategyJson(void)
   {
-   return "{"
-          "\"schema_version\":2,"
-          "\"strategy_id\":\"sprint8c-profit-close\","
-          "\"metadata\":{\"strategy_name\":\"Sprint 8C Profit Close Validation\"},"
-          "\"execution_zone\":{\"source\":\"SIGNAL_RANGE\",\"expansion_mode\":\"SYMMETRIC\",\"above_entry_pips\":3,\"below_entry_pips\":3,\"expansion_disabled\":false},"
-          "\"recovery_plan\":{\"algorithm\":\"CONSTANT\",\"constant_distance_pips\":0.2,\"constant_lot\":0.01,\"max_steps\":50,\"allow_during_profit_taking\":true,\"disable_after_break_even\":true,\"initial_position_count\":3,\"initial_lot_size\":0.01},"
-          "\"risk_plan\":{\"target_risk_pct\":1.0,\"max_risk_pct\":1.2,\"risk_reduction_threshold_pct\":0.95,\"risk_reduction_mode\":\"WORST_ENTRY\",\"wait_details_timeout_minutes\":30,\"risk_eval_debounce_ms\":100},"
-          "\"profit_distribution_plan\":{\"require_floating_profit_positive\":true,\"default_close_mode\":\"WORST_ENTRY_FIRST\",\"levels\":[{\"level_id\":\"M1\",\"level_index\":1,\"source\":\"FLOATING_PROFIT_MONEY\",\"trigger_type\":\"FLOATING_PROFIT_MONEY\",\"trigger_value\":0.01,\"close_percent\":50,\"close_mode\":\"WORST_ENTRY_FIRST\",\"partial_close\":true,\"enabled\":true}]},"
-          "\"break_even_plan\":{\"rules\":[{\"rule_id\":\"BE1\",\"enabled\":true,\"priority\":1,\"run_once\":true,\"trigger\":{\"type\":\"REALIZED_PROFIT\",\"realized_profit_usd\":10},\"actions\":[{\"type\":\"MOVE_SL_TO_AVERAGE\",\"buffer_pips\":0.5}]}]},"
-          "\"execution_policy\":{\"slippage_points\":10,\"max_trade_retries\":3,\"magic_number_base\":202606000,\"command_batch_size\":10,\"trade_request_batch_size\":5,\"rest_poll_interval_ms\":3000}"
-          "}";
+   return CSprint8cValidationProfile::BuildStrategyJson();
   }
 
-double NormalizeVolume(const string symbol,const double volume)
+void WriteValidationProfileMarkers(const int reportHandle)
   {
-   double minVolume=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
-   double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
-   if(minVolume<=0.0) minVolume=0.01;
-   if(step<=0.0) step=minVolume;
-   double normalized=MathMax(volume,minVolume);
-   normalized=MathFloor(normalized/step+0.0000001)*step;
-   return normalized;
+   CSprint8cValidationProfile::LogProfileMarkers();
+   WriteLine(reportHandle,"validation_profile_version="+CSprint8cValidationProfile::ProfileVersionLabel());
+   WriteLine(reportHandle,"validation_profile_id="+CSprint8cValidationProfile::ProfileId());
+   WriteLine(reportHandle,"validation_profit_trigger_type="+CSprint8cValidationProfile::FloatingProfitTriggerTypeLabel());
+   WriteLine(reportHandle,"validation_profit_trigger_value_usd="+DoubleToString(CSprint8cValidationProfile::FloatingProfitTriggerUsd(),2));
+   WriteLine(reportHandle,"validation_require_floating_profit_positive=true");
   }
 
 bool FindLinkedPositionTicket(const string basketId,const string symbol,ulong &outTicket,double &outVolume)
@@ -111,47 +165,124 @@ bool FindLinkedPositionTicket(const string basketId,const string symbol,ulong &o
    return false;
   }
 
-bool OpenLinkedPosition(const string basketId,const string symbol,const double volume,ulong &outTicket)
+bool OpenLinkedPosition(const string basketId,const string symbol,const double volume,
+                        const ENUM_BRE_TRADE_DIRECTION seedDirection,
+                        ulong &outTicket,SSeedLinkedPositionOpenTrace &trace)
   {
+   trace.position_lookup_attempt_count=0;
+   trace.position_lookup_timeout_ms=SEED_POSITION_LOOKUP_TIMEOUT_MS;
+   trace.position_lookup_result="not_started";
+   trace.deal_position_id_fallback=0;
+   trace.find_linked_position_ok=false;
+   trace.order_send_returned_true=false;
+   trace.open_failure_branch="";
+   trace.filling_mode_resolution="";
+   trace.filling_mode_failure_reason="";
+   trace.resolved_type_filling=ORDER_FILLING_RETURN;
+
    string comment="BR:"+basketId+":INITIAL";
    MqlTradeRequest request={};
    MqlTradeResult result={};
    request.action=TRADE_ACTION_DEAL;
    request.symbol=symbol;
    request.volume=volume;
-   request.type=ORDER_TYPE_BUY;
+   if(seedDirection==BRE_DIRECTION_SELL)
+      request.type=ORDER_TYPE_SELL;
+   else
+      request.type=ORDER_TYPE_BUY;
    request.magic=SEED_MAGIC;
    request.deviation=50;
    request.comment=comment;
-   if(!OrderSend(request,result))
+
+   ENUM_ORDER_TYPE_FILLING resolvedTypeFilling=ORDER_FILLING_RETURN;
+   long symbolFillingMask=0;
+   string fillingError="";
+   if(!CBrokerMarketDealFillingModeResolver::TryResolveForSymbol(symbol,resolvedTypeFilling,symbolFillingMask,fillingError))
+     {
+      trace.filling_mode_resolution="FAILED";
+      trace.filling_mode_failure_reason=fillingError;
+      trace.resolved_type_filling=ORDER_FILLING_RETURN;
+      trace.request=request;
+      trace.open_failure_branch="filling_mode_resolution_failed";
+      trace.position_lookup_result="skipped_filling_mode_unresolved";
+      Print("filling_mode_resolution=FAILED failure_reason=",fillingError);
       return false;
-   Sleep(1000);
+     }
+
+   request.type_filling=resolvedTypeFilling;
+   trace.filling_mode_resolution="OK";
+   trace.resolved_type_filling=resolvedTypeFilling;
+   trace.request=request;
+   Print("filling_mode_resolution=OK");
+   Print("resolved_type_filling=",CBrokerMarketDealFillingModeResolver::FormatOrderTypeFilling(resolvedTypeFilling));
+   Print("request_type_filling=",IntegerToString((int)request.type_filling));
+   CBrokerMarketDealFillingModeResolver::LogMarketDealSubmissionDiagnostics(symbol,symbolFillingMask,
+                                                                            resolvedTypeFilling,request);
+
+   trace.order_send_returned_true=OrderSend(request,result);
+   trace.request=request;
+   trace.trade_result=result;
+   trace.last_error_after_order_send=GetLastError();
+   if(!trace.order_send_returned_true)
+     {
+      trace.open_failure_branch="order_send_returned_false";
+      trace.position_lookup_result="skipped_order_send_failed";
+      return false;
+     }
+
+   Sleep(SEED_POSITION_LOOKUP_TIMEOUT_MS);
+   trace.position_lookup_attempt_count=1;
    double foundVolume=0.0;
-   if(!FindLinkedPositionTicket(basketId,symbol,outTicket,foundVolume))
+   trace.find_linked_position_ok=FindLinkedPositionTicket(basketId,symbol,outTicket,foundVolume);
+   if(!trace.find_linked_position_ok)
      {
       if(result.deal>0 && HistoryDealSelect(result.deal))
-         outTicket=(ulong)HistoryDealGetInteger(result.deal,DEAL_POSITION_ID);
+         trace.deal_position_id_fallback=(ulong)HistoryDealGetInteger(result.deal,DEAL_POSITION_ID);
+      outTicket=trace.deal_position_id_fallback;
+      if(outTicket>0)
+         trace.open_failure_branch="deal_position_id_fallback_ok";
+      else if(result.deal>0)
+        {
+         trace.open_failure_branch="deal_position_id_fallback_missing";
+         trace.position_lookup_result="find_linked_failed_deal_position_id_zero";
+        }
+      else
+        {
+         trace.open_failure_branch="find_linked_failed_no_deal";
+         trace.position_lookup_result="find_linked_failed_no_deal";
+        }
       return outTicket>0;
      }
+
+   trace.open_failure_branch="find_linked_position_ok";
+   trace.position_lookup_result="find_linked_position_ok";
    return true;
   }
 
 void OnStart(void)
   {
+   Print("seed_script_build_marker=",SEED_SCRIPT_BUILD_MARKER);
+
    string reportRel="BasketRecovery/validation/sprint-8c-seed-result.txt";
    int reportHandle=FileOpen(reportRel,FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
    if(reportHandle==INVALID_HANDLE)
       return;
 
-   string symbol=ResolveTradingSymbol(InpPreferredSymbol);
+   WriteLine(reportHandle,"seed_script_build_marker="+SEED_SCRIPT_BUILD_MARKER);
+   WriteValidationProfileMarkers(reportHandle);
+
+   string requestedSymbol=InpPreferredSymbol;
+   string symbol=Sprint8cResolveValidationTradingSymbol(requestedSymbol,InpAllowChartSymbolFallback);
    double minVolume=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
    double volumeStep=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
    if(minVolume<=0.0) minVolume=0.01;
    if(volumeStep<=0.0) volumeStep=minVolume;
 
-   double seedVolume=NormalizeVolume(symbol,minVolume*2.0);
-   double partialCloseVolume=NormalizeVolume(symbol,seedVolume*0.5);
-   bool partialClosePossible=(partialCloseVolume>0.0 && partialCloseVolume<seedVolume);
+   double seedVolume=0.0;
+   double partialCloseVolume=0.0;
+   bool partialClosePossible=Sprint8cAssessPartialCloseVolumePlan(symbol,seedVolume,partialCloseVolume);
+   bool symbolAvailable=Sprint8cValidationSymbolIsQuotable(symbol);
+   double rawRequestedVolume=minVolume*2.0;
 
    ENUM_ACCOUNT_TRADE_MODE tradeMode=(ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE);
    long marginMode=AccountInfoInteger(ACCOUNT_MARGIN_MODE);
@@ -161,7 +292,9 @@ void OnStart(void)
    WriteLine(reportHandle,"account_position_model="+marginModeLabel);
    WriteLine(reportHandle,"terminal_trade_allowed="+(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)?"true":"false"));
    WriteLine(reportHandle,"chart_trade_allowed="+(MQLInfoInteger(MQL_TRADE_ALLOWED)?"true":"false"));
+   WriteLine(reportHandle,"validation_symbol_requested="+requestedSymbol);
    WriteLine(reportHandle,"symbol="+symbol);
+   WriteLine(reportHandle,"symbol_available="+(symbolAvailable?"true":"false"));
    WriteLine(reportHandle,"min_volume="+DoubleToString(minVolume,8));
    WriteLine(reportHandle,"volume_step="+DoubleToString(volumeStep,8));
    WriteLine(reportHandle,"seed_volume="+DoubleToString(seedVolume,8));
@@ -170,6 +303,16 @@ void OnStart(void)
    WriteLine(reportHandle,"positions_before="+IntegerToString(PositionsTotal()));
    WriteLine(reportHandle,"symbol_positions_before="+IntegerToString(CountSymbolPositions(symbol)));
    WriteLine(reportHandle,"basket_id="+InpBasketId);
+
+   ENUM_BRE_TRADE_DIRECTION seedDirection=BRE_DIRECTION_NONE;
+   if(!CSprint8cValidationProfile::TryParseSeedDirection(InpSeedDirection,seedDirection))
+     {
+      WriteLine(reportHandle,"seed_verification=FAIL");
+      WriteLine(reportHandle,"failure_reason=InpSeedDirection must be BUY or SELL");
+      FileClose(reportHandle);
+      return;
+     }
+   WriteLine(reportHandle,"seed_direction="+CSprint8cValidationProfile::SeedDirectionLabel(seedDirection));
 
    if(tradeMode!=ACCOUNT_TRADE_MODE_DEMO)
      {
@@ -199,6 +342,13 @@ void OnStart(void)
       FileClose(reportHandle);
       return;
      }
+   if(!symbolAvailable)
+     {
+      WriteLine(reportHandle,"seed_verification=FAIL");
+      WriteLine(reportHandle,"failure_reason=Validation symbol is not available or not quotable");
+      FileClose(reportHandle);
+      return;
+     }
    if(!partialClosePossible)
      {
       WriteLine(reportHandle,"seed_verification=FAIL");
@@ -222,7 +372,7 @@ void OnStart(void)
 
    string strategyJson=LoadProfitCloseValidationStrategyJson();
    CResult<CBasketAggregate> seedResult=seedService.SeedActiveBasket(CBasketId(InpBasketId),symbol,
-                                                                    BRE_DIRECTION_BUY,strategyJson);
+                                                                    seedDirection,strategyJson);
    if(seedResult.IsFail())
      {
       WriteLine(reportHandle,"seed_verification=FAIL");
@@ -248,20 +398,44 @@ void OnStart(void)
    basket.ApplySignalDetails(details,CCommandId("cmd-seed-signal"),CEventId("evt-seed-signal"),CUtcTime(clock.Now()));
    repository.Save(basket);
 
-   CFilePendingExecutionStore *pendingStore=new CFilePendingExecutionStore("BasketRecovery/pending_executions.dat");
-   pendingStore.Clear();
+   CFilePendingExecutionStore *pendingStore=new CFilePendingExecutionStore(CSprint8cPendingExecutionPersistenceDiagnostics::DefaultStoreRelativePath());
+   pendingStore.RestoreFromDisk();
+   int pendingBeforeClear=pendingStore.RestoreEntries(CPendingExecutionEntry entriesBefore[]);
+   int deletedCount=pendingBeforeClear;
+   CVoidResult clearResult=pendingStore.Clear();
+   CFilePendingExecutionStore *verifyStore=new CFilePendingExecutionStore(CSprint8cPendingExecutionPersistenceDiagnostics::DefaultStoreRelativePath());
+   verifyStore.RestoreFromDisk();
+   CPendingExecutionEntry verifyEntries[];
+   int verifyCount=verifyStore.RestoreEntries(verifyEntries);
+   int unresolvedAfterClear=CSprint8cPendingExecutionPersistenceDiagnostics::CountUnresolvedForBasketOnDisk(CBasketId(InpBasketId),*verifyStore);
+   WriteLine(reportHandle,"seed_pending_clear_target_path="+CSprint8cPendingExecutionPersistenceDiagnostics::DefaultStoreRelativePath());
+   WriteLine(reportHandle,"seed_pending_clear_deleted_count="+IntegerToString(deletedCount));
+   WriteLine(reportHandle,"seed_pending_clear_persisted_result="+(clearResult.IsOk()?"OK":"FAIL"));
+   WriteLine(reportHandle,"seed_pending_verify_reload_count="+IntegerToString(verifyCount));
+   WriteLine(reportHandle,"seed_pending_verify_unresolved_count="+IntegerToString(unresolvedAfterClear));
+   if(!clearResult.IsOk() || verifyCount!=0 || unresolvedAfterClear!=0)
+     {
+      WriteLine(reportHandle,"seed_verification=FAIL");
+      WriteLine(reportHandle,"failure_reason=Pending execution store was not cleared on disk");
+      FileClose(reportHandle);
+      delete verifyStore; delete pendingStore; delete seedService; delete repository; delete idGenerator; delete clock;
+      return;
+     }
    FileDelete("BasketRecovery/validation/sprint-8c-live-candidate.txt",FILE_COMMON);
 
    ulong positionTicket=0;
-   if(!OpenLinkedPosition(InpBasketId,symbol,seedVolume,positionTicket))
+   SSeedLinkedPositionOpenTrace openTrace;
+   if(!OpenLinkedPosition(InpBasketId,symbol,seedVolume,seedDirection,positionTicket,openTrace))
      {
       WriteLine(reportHandle,"seed_verification=FAIL");
       WriteLine(reportHandle,"failure_reason=Could not open linked broker position");
+      WriteSeedOpenFailureDiagnostics(reportHandle,requestedSymbol,symbol,rawRequestedVolume,seedVolume,openTrace);
       FileClose(reportHandle);
-      delete pendingStore; delete seedService; delete repository; delete idGenerator; delete clock;
+      delete verifyStore; delete pendingStore; delete seedService; delete repository; delete idGenerator; delete clock;
       return;
      }
 
+   delete verifyStore;
    double linkedVolume=0.0;
    FindLinkedPositionTicket(InpBasketId,symbol,positionTicket,linkedVolume);
 

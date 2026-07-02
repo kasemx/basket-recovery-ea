@@ -1,16 +1,21 @@
 # Sprint 8C — EA chart manual profit-close candidate validation runner.
 # Demo terminal only. Does NOT change MT5 login/account.
-# Usage: powershell -ExecutionPolicy Bypass -File scripts/validation/run-sprint8c-ea-chart-validation.ps1 [-Reseed]
+# Usage: powershell -ExecutionPolicy Bypass -File scripts/validation/run-sprint8c-ea-chart-validation.ps1 [-Reseed] [-Symbol XAUUSD]
 
 param(
     [switch]$Reseed,
-    [string]$TerminalDataId = "81A933A9AFC5DE3C23B15CAB19C63850"
+    [string]$TerminalDataId = "81A933A9AFC5DE3C23B15CAB19C63850",
+    [string]$Symbol = "XAUUSD"
 )
 
 $Script:AllowedDemoTerminalDataId = "81A933A9AFC5DE3C23B15CAB19C63850"
 $Script:BlockedLiveTerminalDataIds = @("D0E8209F77C8CF37AD8BF550E51FF075")
+$Script:Sprint8cCandidateArtifactTtlSeconds = 360
+$Script:Sprint8cAuthorizationTokenTtlSeconds = 300
+$Script:Sprint8cArtifactReuseMinimumRemainingSeconds = 330
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "Sprint8cValidationSymbol.ps1")
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $terminalRoot = Join-Path $env:APPDATA "MetaQuotes\Terminal"
 
@@ -158,7 +163,8 @@ function Write-EaPreset {
         "InpEnableExecutionDiagnostics=true",
         "InpGlobalExecutionKillSwitch=false",
         "InpBasketExecutionKillSwitch=false",
-        "InpManualProfitCloseCandidateExpirySeconds=60",
+        "InpManualProfitCloseCandidateExpirySeconds=$($Script:Sprint8cCandidateArtifactTtlSeconds)",
+        "InpAuthorizationTokenExpirySeconds=$($Script:Sprint8cAuthorizationTokenTtlSeconds)",
         "InpManualDemoValidationAutoShutdown=true",
         "InpManualDemoAuthorizationBasketId=$BasketId"
     )
@@ -195,7 +201,8 @@ function Invoke-RegisterPhase {
     $preset = "RegisterSprint8cLiveProfitCloseCandidate.$Label.set"
     @"
 InpBasketId=$BasketId
-InpManualProfitCloseCandidateExpirySeconds=60
+InpManualProfitCloseCandidateExpirySeconds=$($Script:Sprint8cCandidateArtifactTtlSeconds)
+InpAuthorizationTokenExpirySeconds=$($Script:Sprint8cAuthorizationTokenTtlSeconds)
 "@ | Set-Content -Path (Join-Path $script:presetDir $preset) -Encoding ASCII
     $ini = Join-Path $script:configDir "sprint-8c-register-$Label.ini"
     Write-StartupIni -Path $ini -Mode "Script" -ExpertOrScript "BasketRecovery\Validation\Sprint8C\RegisterSprint8cLiveProfitCloseCandidate" -Parameters $preset
@@ -216,27 +223,33 @@ function Invoke-EvaluatePhase {
 }
 
 Assert-DemoTerminalConfigured -DataId $TerminalDataId
+$script:symbol = Resolve-Sprint8cValidationSymbol -Symbol $Symbol
+$script:basketId = Get-Sprint8cValidationBasketId -Symbol $script:symbol
 $terminalPaths = Resolve-TerminalPaths -DataId $TerminalDataId
 $script:terminalExe = $terminalPaths.TerminalExe
 $script:metaeditor = $terminalPaths.MetaEditor
 $script:mql5 = $terminalPaths.Mql5Path
 $script:terminalData = $terminalPaths.TerminalData
 $script:validationDir = Join-Path $repo "build\validation"
-$script:basketId = "sprint8c-demo-btc-001"
-$script:symbol = "BTCUSD"
 $script:presetDir = Join-Path $script:mql5 "Presets"
 $script:configDir = Join-Path $script:terminalData "config"
 $primaryTrigger = "sprint8c-profit-close-" + [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
 $negExpiryTrigger = "sprint8c-exp-" + ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 2)
 $negStaleTrigger = "sprint8c-stale-" + ([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() + 3)
 
+Write-Host "=== Sprint 8C Manual Profit-Close Chart Validation ==="
+Write-Host "candidate_artifact_ttl_seconds=$($Script:Sprint8cCandidateArtifactTtlSeconds)"
+Write-Host "authorization_token_ttl_seconds=$($Script:Sprint8cAuthorizationTokenTtlSeconds)"
+Write-Host "Validation symbol (requested): $script:symbol"
+Write-Host "Validation basket id: $script:basketId"
+Write-Host "Target: $($script:terminalData)"
+
 New-Item -ItemType Directory -Force -Path $script:validationDir, $script:presetDir, $script:configDir | Out-Null
 & (Join-Path $repo "scripts\sync-to-mt5.ps1") | Out-Null
 
-Write-Host "=== Sprint 8C Manual Profit-Close Chart Validation ==="
-Write-Host "Target: $($script:terminalData)"
 Assert-Mt5NotRunning
 
+Compile-Mq5 "Scripts\BasketRecovery\Validation\Sprint8C\PreflightSprint8cDemoProfitClose.mq5" "PreflightSprint8c"
 Compile-Mq5 "Scripts\BasketRecovery\Validation\Sprint8C\SeedSprint8cManualProfitCloseCandidate.mq5" "SeedSprint8c"
 Compile-Mq5 "Scripts\BasketRecovery\Validation\Sprint8C\RegisterSprint8cLiveProfitCloseCandidate.mq5" "RegisterSprint8c"
 Compile-Mq5 "Scripts\BasketRecovery\Validation\Sprint8C\IssueSprint8cProfitCloseAuthToken.mq5" "IssueSprint8cAuth"
@@ -249,8 +262,9 @@ if ($Reseed -or -not (Find-ValidationFile "BasketRecovery\validation\sprint-8c-s
     $seedPreset = "SeedSprint8cManualProfitCloseCandidate.set"
     @"
 InpPreferredSymbol=$script:symbol
+InpAllowChartSymbolFallback=false
 InpBasketId=$script:basketId
-InpManualProfitCloseCandidateExpirySeconds=60
+InpManualProfitCloseCandidateExpirySeconds=$($Script:Sprint8cCandidateArtifactTtlSeconds)
 "@ | Set-Content -Path (Join-Path $script:presetDir $seedPreset) -Encoding ASCII
     $seedIni = Join-Path $script:configDir "sprint-8c-seed-startup.ini"
     Write-StartupIni -Path $seedIni -Mode "Script" -ExpertOrScript "BasketRecovery\Validation\Sprint8C\SeedSprint8cManualProfitCloseCandidate" -Parameters $seedPreset
@@ -293,9 +307,10 @@ $negExpiryBasket = "sprint8c-neg-expiry-001"
 $negSeedPreset = "SeedSprint8cNegExpiry.set"
 @"
 InpPreferredSymbol=$script:symbol
+InpAllowChartSymbolFallback=false
 InpBasketId=$negExpiryBasket
 InpAllowExistingSymbolPositions=true
-InpManualProfitCloseCandidateExpirySeconds=60
+InpManualProfitCloseCandidateExpirySeconds=$($Script:Sprint8cCandidateArtifactTtlSeconds)
 "@ | Set-Content -Path (Join-Path $script:presetDir $negSeedPreset) -Encoding ASCII
 Assert-Mt5NotRunning
 $negSeedIni = Join-Path $script:configDir "sprint-8c-neg-expiry-seed.ini"
@@ -319,9 +334,10 @@ $negStaleBasket = "sprint8c-neg-stale-001"
 $negStaleSeedPreset = "SeedSprint8cNegStale.set"
 @"
 InpPreferredSymbol=$script:symbol
+InpAllowChartSymbolFallback=false
 InpBasketId=$negStaleBasket
 InpAllowExistingSymbolPositions=true
-InpManualProfitCloseCandidateExpirySeconds=60
+InpManualProfitCloseCandidateExpirySeconds=$($Script:Sprint8cCandidateArtifactTtlSeconds)
 "@ | Set-Content -Path (Join-Path $script:presetDir $negStaleSeedPreset) -Encoding ASCII
 Assert-Mt5NotRunning
 $negStaleSeedIni = Join-Path $script:configDir "sprint-8c-neg-stale-seed.ini"

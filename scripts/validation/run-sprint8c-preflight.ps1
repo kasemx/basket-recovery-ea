@@ -2,12 +2,15 @@
 # Usage:
 #   powershell -ExecutionPolicy Bypass -File scripts/validation/run-sprint8c-preflight.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts/validation/run-sprint8c-preflight.ps1 -TerminalDataId <32-char-id>
+#   powershell -ExecutionPolicy Bypass -File scripts/validation/run-sprint8c-preflight.ps1 -TerminalDataId <id> -Symbol XAUUSD
 
 param(
-    [string]$TerminalDataId = ""
+    [string]$TerminalDataId = "",
+    [string]$Symbol = "XAUUSD"
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot "Sprint8cValidationSymbol.ps1")
 $repo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $terminalRoot = Join-Path $env:APPDATA "MetaQuotes\Terminal"
 
@@ -198,7 +201,8 @@ $script:mql5 = $paths.Mql5Path
 $script:terminalExe = $paths.TerminalExe
 $script:metaeditor = $paths.MetaEditor
 $script:terminalData = $paths.TerminalData
-$script:symbol = "BTCUSD"
+$script:symbol = Resolve-Sprint8cValidationSymbol -Symbol $Symbol
+$script:basketId = Get-Sprint8cValidationBasketId -Symbol $script:symbol
 $presetDir = Join-Path $script:mql5 "Presets"
 $configDir = Join-Path $script:terminalData "config"
 $validationDir = Join-Path $repo "build\validation"
@@ -206,6 +210,8 @@ $discoveryHints = Get-TerminalDiscoveryHints -TerminalData $script:terminalData
 $runningBefore = @(Get-Process terminal64 -ErrorAction SilentlyContinue)
 
 Write-Host "=== Sprint 8C Hedging Demo Preflight ==="
+Write-Host "Validation symbol (requested): $script:symbol"
+Write-Host "Validation basket id: $script:basketId"
 Write-Host "Selected TerminalDataId: $($paths.TerminalDataId)"
 Write-Host "Selected terminal data path: $($paths.TerminalData)"
 Write-Host "Install origin: $($paths.InstallRoot)"
@@ -231,7 +237,10 @@ if ((Get-Content $compileLog -Raw) -notmatch 'Result: 0 errors') {
 }
 
 $preset = "PreflightSprint8cDemoProfitClose.set"
-"InpPreferredSymbol=$script:symbol" | Set-Content -Path (Join-Path $presetDir $preset) -Encoding ASCII
+@"
+InpPreferredSymbol=$script:symbol
+InpAllowChartSymbolFallback=false
+"@ | Set-Content -Path (Join-Path $presetDir $preset) -Encoding ASCII
 $ini = Join-Path $configDir "sprint-8c-preflight-startup.ini"
 @"
 [StartUp]
