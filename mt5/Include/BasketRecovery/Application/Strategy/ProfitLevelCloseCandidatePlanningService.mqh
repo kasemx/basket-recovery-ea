@@ -192,6 +192,80 @@ public:
       return "profit-level-close:"+basketId+":level:"+levelId+":q:"+(string)quoteSequence;
      }
 
+   static void       BuildProfitLevelPlanningArrays(const CBasketAggregate &basket,
+                                                    const CStrategyProfile &profile,
+                                                    string &levelIds[],
+                                                    bool &enabled[],
+                                                    bool &reached[],
+                                                    bool &closeCompleted[])
+     {
+      CProfitDistributionPlan plan=profile.ProfitDistributionPlan();
+      int levelCount=plan.LevelCount();
+      ArrayResize(levelIds,levelCount);
+      ArrayResize(enabled,levelCount);
+      ArrayResize(reached,levelCount);
+      ArrayResize(closeCompleted,levelCount);
+      for(int i=0;i<levelCount;i++)
+        {
+         CProfitLevel level=plan.LevelAt(i);
+         levelIds[i]=level.LevelId();
+         enabled[i]=level.Enabled();
+         CBasketProfitLevelProgress progress;
+         if(basket.FindProfitLevelProgress(level.LevelId(),progress))
+           {
+            reached[i]=progress.Reached();
+            closeCompleted[i]=progress.CloseCompleted();
+           }
+         else
+           {
+            reached[i]=false;
+            closeCompleted[i]=false;
+           }
+        }
+     }
+
+   static bool       SelectFirstEligibleLevelFromBasket(const CBasketAggregate &basket,
+                                                        const CStrategyProfile &profile,
+                                                        string &selectedLevelId)
+     {
+      string levelIds[];
+      bool enabled[];
+      bool reached[];
+      bool closeCompleted[];
+      BuildProfitLevelPlanningArrays(basket,profile,levelIds,enabled,reached,closeCompleted);
+      return SelectFirstEligibleLevel(levelIds,enabled,reached,closeCompleted,selectedLevelId);
+     }
+
+   static bool       TryPlanNextLevelCandidate(const string basketId,
+                                               const CBasketAggregate &basket,
+                                               const CStrategyProfile &profile,
+                                               const ulong quoteSequence,
+                                               string &seenCandidateIds[],
+                                               int &seenCount,
+                                               string &plannedLevelOut,
+                                               string &candidateIdOut)
+     {
+      plannedLevelOut="";
+      candidateIdOut="";
+      string selectedLevel="";
+      if(!SelectFirstEligibleLevelFromBasket(basket,profile,selectedLevel))
+         return false;
+
+      string candidateId=BuildLevelScopedCandidateId(basketId,selectedLevel,quoteSequence);
+      for(int i=0;i<seenCount;i++)
+        {
+         if(seenCandidateIds[i]==candidateId)
+            return false;
+        }
+
+      ArrayResize(seenCandidateIds,seenCount+1);
+      seenCandidateIds[seenCount]=candidateId;
+      seenCount++;
+      plannedLevelOut=selectedLevel;
+      candidateIdOut=candidateId;
+      return true;
+     }
+
    static SNextProfitLevelVolumePlan PlanNextLevelCloseVolume(const string basketId,
                                                                const string &levelIds[],
                                                                const bool &enabled[],
