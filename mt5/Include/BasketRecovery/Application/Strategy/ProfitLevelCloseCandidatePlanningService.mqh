@@ -10,6 +10,7 @@
 #include <BasketRecovery/Domain/Strategy/Context/StrategyEvaluationContext.mqh>
 #include <BasketRecovery/Domain/Events/ProfitLevelCloseCandidateDomainEvent.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
+#include <BasketRecovery/Domain/Execution/ProfitCloseCandidateCloseVolumeCalculator.mqh>
 #include <BasketRecovery/Application/Risk/RecoveryDecisionRiskGateService.mqh>
 
 class CProfitLevelCloseCandidatePlanningService
@@ -141,6 +142,15 @@ private:
 public:
 #define BRE_PROFIT_LEVEL_CLOSE_PLANNING_BUILD_MARKER "S8C_TICKET_SCOPED_PLANNER_V2"
 
+   struct SNextProfitLevelVolumePlan
+     {
+      ENUM_BRE_PROFIT_CLOSE_VOLUME_RESULT result;
+      string            levelId;
+      double            closeVolume;
+      double            sourceRemainingVolume;
+      double            remainderVolume;
+     };
+
                      CProfitLevelCloseCandidatePlanningService(CPendingExecutionRegistry *pendingRegistry,
                                                                CProfitLevelCloseCandidateEventBuffer *eventBuffer,
                                                                const int quoteStaleThresholdMs=5000,
@@ -180,6 +190,42 @@ public:
                                                 const ulong quoteSequence)
      {
       return "profit-level-close:"+basketId+":level:"+levelId+":q:"+(string)quoteSequence;
+     }
+
+   static SNextProfitLevelVolumePlan PlanNextLevelCloseVolume(const string basketId,
+                                                               const string &levelIds[],
+                                                               const bool &enabled[],
+                                                               const bool &reached[],
+                                                               const bool &closeCompleted[],
+                                                               const double remainingVolume,
+                                                               const double closePercent,
+                                                               const CSymbolTradingConstraints &constraints,
+                                                               const ulong quoteSequence)
+     {
+      SNextProfitLevelVolumePlan out;
+      out.result=BRE_PROFIT_CLOSE_VOLUME_RESULT_NO_VALID_CLOSE_VOLUME;
+      out.levelId="";
+      out.closeVolume=0.0;
+      out.sourceRemainingVolume=remainingVolume;
+      out.remainderVolume=remainingVolume;
+
+      string selectedLevel="";
+      if(!SelectFirstEligibleLevel(levelIds,enabled,reached,closeCompleted,selectedLevel))
+         return out;
+
+      string candidateId=BuildLevelScopedCandidateId(basketId,selectedLevel,quoteSequence);
+      if(candidateId=="")
+         return out;
+
+      SProfitCloseVolumeCalculation calc=CProfitCloseCandidateCloseVolumeCalculator::CalculateNextCloseVolume(remainingVolume,
+                                                                                                               closePercent,
+                                                                                                               constraints);
+      out.result=calc.result;
+      out.levelId=selectedLevel;
+      out.closeVolume=calc.closeVolume;
+      out.sourceRemainingVolume=calc.sourceRemainingVolume;
+      out.remainderVolume=calc.remainderVolume;
+      return out;
      }
 
    CProfitLevelCloseCandidate EvaluateAndEmit(const CBasketAggregate &basket,
