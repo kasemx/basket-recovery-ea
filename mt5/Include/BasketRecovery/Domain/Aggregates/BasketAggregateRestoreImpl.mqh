@@ -128,6 +128,26 @@ void CBasketAggregate::SetPositionSnapshotsFromDto(const CBasketPersistenceDto &
      }
   }
 
+void CBasketAggregate::ReplaceOpenPositionMembership(const CPositionSnapshotEntry &entries[],const int count)
+  {
+   for(int i=0;i<m_positionSnapshotCount;i++)
+     {
+      if(m_positionSnapshots[i]!=NULL)
+        {
+         delete m_positionSnapshots[i];
+         m_positionSnapshots[i]=NULL;
+        }
+     }
+
+   m_positionSnapshotCount=1;
+   ArrayResize(m_positionSnapshots,1);
+   m_positionSnapshots[0]=new CPositionSnapshot();
+   m_positionSnapshots[0].SetBasketId(m_id);
+   m_positionSnapshots[0].ReplaceEntries(entries,count);
+   m_positionSnapshots[0].SetUpdatedAt(TimeCurrent());
+   m_positionSnapshots[0].IncrementVersion();
+  }
+
 void CBasketAggregate::SetAuditHistoryFromDto(const CBasketPersistenceDto &dto)
   {
    m_commandHistoryCount=ArraySize(dto.commandHistory);

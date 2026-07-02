@@ -4,6 +4,8 @@
 #include <BasketRecovery/Domain/Execution/PendingExecutionEntry.mqh>
 #include <BasketRecovery/Domain/Execution/TradeTransactionCorrelationContext.mqh>
 #include <BasketRecovery/Domain/Execution/PendingExecutionCorrelationState.mqh>
+#include <BasketRecovery/Domain/Execution/PendingExecutionQuery.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerExecutionCommentFactory.mqh>
 
 class CPendingExecutionCorrelationMatcher
   {
@@ -14,6 +16,26 @@ public:
      {
       strategyUsed=BRE_CORRELATION_MATCH_NONE;
       CBrokerRequestCorrelation broker=entry.BrokerCorrelation();
+
+      if(CBrokerExecutionCommentFactory::IsProfitCloseComment(context.Comment()))
+        {
+         if(!CPendingExecutionQuery::IsUnresolvedStatus(entry.Status()))
+            return false;
+         if(entry.BrokerComment()!=context.Comment())
+            return false;
+         if(CBrokerExecutionCommentFactory::TicketSuffixMatches(context.Comment(),context.PositionId()))
+           {
+            strategyUsed=BRE_CORRELATION_MATCH_PROFIT_CLOSE_COMMENT;
+            return true;
+           }
+         if(broker.HasPositionTicket() &&
+            CBrokerExecutionCommentFactory::TicketSuffixMatches(context.Comment(),broker.PositionTicket()))
+           {
+            strategyUsed=BRE_CORRELATION_MATCH_PROFIT_CLOSE_COMMENT;
+            return true;
+           }
+         return false;
+        }
 
       if(context.OrderId()>0 && broker.HasBrokerOrderId() && context.OrderId()==broker.BrokerOrderId())
         {
@@ -103,6 +125,7 @@ public:
          case BRE_CORRELATION_MATCH_POSITION_TICKET: return BRE_PENDING_CORRELATION_TICKET;
          case BRE_CORRELATION_MATCH_MAGIC_SYMBOL_COMMENT: return BRE_PENDING_CORRELATION_MAGIC_COMMENT;
          case BRE_CORRELATION_MATCH_REQUEST_FINGERPRINT: return BRE_PENDING_CORRELATION_FINGERPRINT;
+         case BRE_CORRELATION_MATCH_PROFIT_CLOSE_COMMENT: return BRE_PENDING_CORRELATION_MAGIC_COMMENT;
          default: return BRE_PENDING_CORRELATION_UNMATCHED;
         }
      }

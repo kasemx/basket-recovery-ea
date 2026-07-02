@@ -2,6 +2,7 @@
 #define BRE_APP_PENDING_EXECUTION_COMMENT_COLLISION_DETECTOR_MQH
 
 #include <BasketRecovery/Application/Execution/PendingExecutionRegistry.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerCommentCollisionDiagnostic.mqh>
 #include <BasketRecovery/Domain/Execution/TradeExecutionStatus.mqh>
 
 class CPendingExecutionCommentCollisionDetector
@@ -11,6 +12,16 @@ public:
                                                const string brokerComment,
                                                const string executionRequestId)
      {
+      CBrokerCommentCollisionDiagnostic diagnostic;
+      return EvaluateCommentCollision(registry,brokerComment,executionRequestId,diagnostic);
+     }
+
+   static bool       EvaluateCommentCollision(const CPendingExecutionRegistry &registry,
+                                              const string brokerComment,
+                                              const string executionRequestId,
+                                              CBrokerCommentCollisionDiagnostic &diagnostic)
+     {
+      diagnostic=CBrokerCommentCollisionDiagnostic();
       if(brokerComment=="")
          return false;
 
@@ -20,11 +31,26 @@ public:
          if(!registry.TryGetEntry(i,entry))
             continue;
          if(entry.ExecutionRequestId()==executionRequestId)
+           {
+            if(entry.BrokerComment()==brokerComment && IsActivePending(entry.Status()))
+              {
+               diagnostic.SetIsSameAuthorizedRequest(true);
+              }
             continue;
+           }
          if(entry.BrokerComment()!=brokerComment)
             continue;
-         if(IsActivePending(entry.Status()))
-            return true;
+         if(!IsActivePending(entry.Status()))
+            continue;
+
+         diagnostic.SetHasCollision(true);
+         diagnostic.SetIsSameAuthorizedRequest(false);
+         diagnostic.SetSource(CBrokerCommentCollisionDiagnostic::SourceUnresolvedForeignPending());
+         diagnostic.SetMatchedComment(entry.BrokerComment());
+         diagnostic.SetMatchedRequestId(entry.ExecutionRequestId());
+         diagnostic.SetMatchedTicket(entry.BrokerCorrelation().PositionTicket());
+         diagnostic.SetMatchedStatus(TradeExecutionStatusLabel(entry.Status()));
+         return true;
         }
       return false;
      }

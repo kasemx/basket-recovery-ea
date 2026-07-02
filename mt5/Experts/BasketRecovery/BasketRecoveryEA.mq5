@@ -3,6 +3,8 @@
 #property version   "0.0.3"
 
 #include <BasketRecovery/Interfaces/Bootstrapper.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseSubmitDiagnostics.mqh>
+#include <BasketRecovery/Domain/Execution/ProfitCloseAuthorizationBinding.mqh>
 #include <BasketRecovery/Infrastructure/MT5/Mt5TradeTransactionNormalizer.mqh>
 #include <BasketRecovery/Domain/Execution/DemoManualSubmissionResult.mqh>
 #include <BasketRecovery/Domain/Execution/TradeExecutionStatus.mqh>
@@ -61,6 +63,42 @@ int g_manualValidationTimerTicks=0;
 int g_manualSubmissionTimerTicks=0;
 bool g_manualRecoverySubmitAttempted=false;
 bool g_manualProfitCloseSubmitAttempted=false;
+
+void PrintEaInitFailureDiagnostics(const string stageOverride="",
+                                   const string reasonOverride="",
+                                   const int errorCodeOverride=-1)
+  {
+   string stage=stageOverride;
+   string reason=reasonOverride;
+   int errorCode=errorCodeOverride;
+
+   if(stage=="")
+     {
+      if(CBootstrapper::HasEaInitFailureRecord())
+        {
+         stage=CBootstrapper::EaInitFailureStage();
+         reason=CBootstrapper::EaInitFailureReason();
+         errorCode=CBootstrapper::EaInitFailureErrorCode();
+        }
+      else
+        {
+         stage=CBootstrapper::EaInitCurrentStage();
+         reason="bootstrap_returned_null_without_recorded_reason";
+         errorCode=0;
+        }
+     }
+
+   if(reason=="")
+      reason="unknown";
+
+   Print("ea_init_failure_stage=",stage);
+   Print("ea_init_failure_reason=",reason);
+   Print("ea_init_failure_error_code=",IntegerToString(errorCode));
+   Print("ea_init_live_demo_execution=",InpEnableLiveDemoExecution?"true":"false");
+   Print("ea_init_global_kill_switch=",InpGlobalExecutionKillSwitch?"true":"false");
+   Print("ea_init_basket_kill_switch=",InpBasketExecutionKillSwitch?"true":"false");
+   Print("ea_init_dry_run=",InpEnableExecutionDryRun?"true":"false");
+  }
 
 void ProcessManualProfitCloseSubmissionChartValidation(void)
   {
@@ -142,6 +180,12 @@ void ProcessManualRecoverySubmissionChartValidation(void)
 
 int OnInit()
   {
+   Print("ea_build_marker=S8C_BROKER_COMMENT_FACTORY_V1");
+   Print("broker_comment_factory_build_marker=",CBrokerExecutionCommentFactory::BuildMarker());
+   Print("auth_validate_runtime_build_marker=",BRE_AUTH_VALIDATE_RUNTIME_BUILD_MARKER);
+   Print("auth_binding_build_marker=",CProfitCloseAuthorizationBinding::BuildMarker());
+   Print("pending_precheck_runtime_build_marker=",BRE_PENDING_PRECHECK_BUILD_MARKER);
+   Print("profit_close_transaction_correlation_build_marker=",BRE_PROFIT_CLOSE_TRANSACTION_CORRELATION_BUILD_MARKER);
    MathSrand((int)GetTickCount());
 
    g_applicationContext=CBootstrapper::Bootstrap(InpProfileName,
@@ -178,6 +222,7 @@ int OnInit()
                                                  InpManualProfitCloseCandidateExpirySeconds);
    if(g_applicationContext==NULL)
      {
+      PrintEaInitFailureDiagnostics();
       Print("BasketRecoveryEA initialization failed");
       return INIT_FAILED;
      }
@@ -187,6 +232,7 @@ int OnInit()
    int timerIntervalMs=g_applicationContext.ApplicationTimerIntervalMs();
    if(!EventSetMillisecondTimer(timerIntervalMs))
      {
+      PrintEaInitFailureDiagnostics("timer_setup","application_timer_start_failed",GetLastError());
       Print("BasketRecoveryEA failed to start application timer | interval_ms=",timerIntervalMs);
       return INIT_FAILED;
      }
@@ -239,12 +285,21 @@ void OnTick()
    if(g_applicationContext==NULL)
       return;
 
+   if(InpManualProfitCloseCandidateId!="")
+      return;
+
    g_applicationContext.OnTick(_Symbol);
   }
 
 void OnTimer()
   {
    if(g_applicationContext==NULL)
+      return;
+
+   if(InpManualProfitCloseCandidateId!="" && !g_manualProfitCloseSubmitAttempted)
+      ProcessManualProfitCloseSubmissionChartValidation();
+
+   if(InpManualProfitCloseCandidateId!="")
       return;
 
    int commandsProcessed=0;
@@ -262,12 +317,6 @@ void OnTimer()
         }
       return;
      }
-
-   if(InpManualProfitCloseCandidateId!="" && !g_manualProfitCloseSubmitAttempted)
-      ProcessManualProfitCloseSubmissionChartValidation();
-
-   if(InpManualProfitCloseCandidateId!="")
-      return;
 
    if(InpManualRecoveryCandidateId!="" && InpManualDemoValidationAutoShutdown)
      {

@@ -25,12 +25,12 @@ public:
       m_count=size+1;
      }
 
-   virtual void      OnBrokerFillConfirmed(const string executionRequestId)
+   virtual void      OnBrokerFillConfirmed(const string executionRequestId,const string completionPath="")
      {
       for(int i=0;i<m_count;i++)
         {
          if(m_notifiers[i]!=NULL)
-            m_notifiers[i].OnBrokerFillConfirmed(executionRequestId);
+            m_notifiers[i].OnBrokerFillConfirmed(executionRequestId,completionPath);
         }
      }
   };

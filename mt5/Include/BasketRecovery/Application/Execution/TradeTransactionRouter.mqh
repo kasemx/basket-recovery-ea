@@ -11,6 +11,7 @@
 #include <BasketRecovery/Application/FastPath/ForceReevaluationFlag.mqh>
 #include <BasketRecovery/Application/Ports/IClock.mqh>
 #include <BasketRecovery/Domain/Execution/BrokerCommentStamp.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerExecutionCommentFactory.mqh>
 #include <BasketRecovery/Domain/Execution/TradeTransactionResultCode.mqh>
 
 class CTradeTransactionRouter
@@ -49,6 +50,58 @@ private:
       m_eventBuffer.Append(event);
      }
 
+   int               FindEntryIndexByLastTransactionKey(const string transactionKey) const
+     {
+      if(m_registry==NULL || transactionKey=="")
+         return -1;
+      for(int i=0;i<m_registry.Count();i++)
+        {
+         CPendingExecutionEntry candidate;
+         if(m_registry.TryGetEntry(i,candidate) && candidate.LastTransactionKey()==transactionKey)
+            return i;
+        }
+      return -1;
+     }
+
+   int               TryCorrelateTerminalProfitClose(const CTradeTransactionCorrelationContext &context,
+                                                     ENUM_BRE_CORRELATION_MATCH_STRATEGY &strategyUsed) const
+     {
+      if(m_registry==NULL || !CBrokerExecutionCommentFactory::IsProfitCloseComment(context.Comment()))
+         return -1;
+
+      strategyUsed=BRE_CORRELATION_MATCH_NONE;
+      for(int i=0;i<m_registry.Count();i++)
+        {
+         CPendingExecutionEntry entry;
+         if(!m_registry.TryGetEntry(i,entry))
+            continue;
+         if(entry.BrokerComment()!=context.Comment())
+            continue;
+         if(CBrokerExecutionCommentFactory::TicketSuffixMatches(context.Comment(),context.PositionId()) ||
+            (entry.BrokerCorrelation().HasPositionTicket() &&
+             CBrokerExecutionCommentFactory::TicketSuffixMatches(context.Comment(),entry.BrokerCorrelation().PositionTicket())))
+           {
+            strategyUsed=BRE_CORRELATION_MATCH_PROFIT_CLOSE_COMMENT;
+            return i;
+           }
+        }
+      return -1;
+     }
+
+   ENUM_BRE_TRADE_TRANSACTION_RESULT_CODE ReturnDuplicate(const CPendingExecutionEntry &entry,
+                                                        const CTradeTransactionCorrelationContext &context)
+     {
+      if(m_diagnostics!=NULL)
+         m_diagnostics.OnDuplicateTransaction(entry.ExecutionRequestId(),context.TransactionKey());
+      if(CBrokerExecutionCommentFactory::IsProfitCloseComment(context.Comment()))
+        {
+         Print("profit_close_transaction_duplicate=true");
+         Print("profit_close_transaction_duplicate_reason=transaction_key_already_processed");
+        }
+      EmitEvent(entry.ExecutionRequestId(),BRE_TRADE_TX_RESULT_DUPLICATE,"duplicate");
+      return BRE_TRADE_TX_RESULT_DUPLICATE;
+     }
+
 public:
                      CTradeTransactionRouter(CPendingExecutionRegistry *registry,
                                              CPendingExecutionDiagnostics *diagnostics,
@@ -74,18 +127,33 @@ public:
          m_diagnostics.OnTransactionNormalized(context.TransactionKey(),
                                                TradeTransactionTypeLabel(context.TransactionType()));
 
-      if(StringFind(context.Comment(),"BRE|")==0 && !CBrokerCommentStamp::ValidateChecksum(context.Comment()))
+      if(StringFind(context.Comment(),"BRE|")==0)
         {
-         if(m_diagnostics!=NULL)
-            m_diagnostics.OnUnrelatedTransaction(context.TransactionKey());
-         return BRE_TRADE_TX_RESULT_UNRELATED;
+         if(CBrokerExecutionCommentFactory::IsProfitCloseComment(context.Comment()))
+           {
+            if(!CBrokerExecutionCommentFactory::ValidateLength(context.Comment()))
+              {
+               if(m_diagnostics!=NULL)
+                  m_diagnostics.OnUnrelatedTransaction(context.TransactionKey());
+               return BRE_TRADE_TX_RESULT_UNRELATED;
+              }
+           }
+         else if(!CBrokerCommentStamp::ValidateChecksum(context.Comment()))
+           {
+            if(m_diagnostics!=NULL)
+               m_diagnostics.OnUnrelatedTransaction(context.TransactionKey());
+            return BRE_TRADE_TX_RESULT_UNRELATED;
+           }
         }
 
       if(context.CorrelationToken()=="" && StringFind(context.Comment(),"BRE|")==0)
         {
-         if(m_diagnostics!=NULL)
-            m_diagnostics.OnUnrelatedTransaction(context.TransactionKey());
-         return BRE_TRADE_TX_RESULT_UNRELATED;
+         if(!CBrokerExecutionCommentFactory::IsProfitCloseComment(context.Comment()))
+           {
+            if(m_diagnostics!=NULL)
+               m_diagnostics.OnUnrelatedTransaction(context.TransactionKey());
+            return BRE_TRADE_TX_RESULT_UNRELATED;
+           }
         }
 
       CPendingExecutionEntry priceProbe;
@@ -96,6 +164,20 @@ public:
          if(m_diagnostics!=NULL)
             m_diagnostics.OnUnrelatedTransaction(context.TransactionKey());
          return BRE_TRADE_TX_RESULT_UNRELATED;
+        }
+
+      if(m_registry.IsDuplicateTransaction(context.TransactionKey()))
+        {
+         ENUM_BRE_CORRELATION_MATCH_STRATEGY duplicateStrategy=BRE_CORRELATION_MATCH_NONE;
+         int duplicateIndex=FindEntryIndexByLastTransactionKey(context.TransactionKey());
+         if(duplicateIndex<0)
+            duplicateIndex=TryCorrelateTerminalProfitClose(context,duplicateStrategy);
+         if(duplicateIndex>=0)
+           {
+            CPendingExecutionEntry duplicateEntry;
+            if(m_registry.TryGetEntry(duplicateIndex,duplicateEntry))
+               return ReturnDuplicate(duplicateEntry,context);
+           }
         }
 
       ENUM_BRE_CORRELATION_MATCH_STRATEGY strategy=BRE_CORRELATION_MATCH_NONE;
@@ -115,12 +197,7 @@ public:
          m_diagnostics.OnCorrelationMatch(entry.ExecutionRequestId(),strategy);
 
       if(m_registry.IsDuplicateTransaction(context.TransactionKey()))
-        {
-         if(m_diagnostics!=NULL)
-            m_diagnostics.OnDuplicateTransaction(entry.ExecutionRequestId(),context.TransactionKey());
-         EmitEvent(entry.ExecutionRequestId(),BRE_TRADE_TX_RESULT_DUPLICATE,"duplicate");
-         return BRE_TRADE_TX_RESULT_DUPLICATE;
-        }
+         return ReturnDuplicate(entry,context);
 
       ENUM_BRE_TRADE_EXECUTION_STATUS fromStatus=entry.Status();
       ENUM_BRE_TRADE_EXECUTION_STATUS proposedStatus=fromStatus;

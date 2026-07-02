@@ -42,7 +42,18 @@ bool CBasketAggregateRestorer::Restore(CBasketAggregate &aggregate,const CBasket
    ArrayResize(levels,levelCount);
    for(int i=0;i<levelCount;i++)
      {
-      if(dto.profitLevelProgress[i].reached)
+      const bool dtoReached=dto.profitLevelProgress[i].reached;
+      const bool dtoCloseRequested=dto.profitLevelProgress[i].closeRequested;
+      const bool dtoCloseCompleted=dto.profitLevelProgress[i].closeCompleted;
+
+      // Normalize inconsistent runtime state safely:
+      // - completed implies requested and reached
+      // - requested implies reached
+      const bool normalizedCloseCompleted=dtoCloseCompleted;
+      const bool normalizedCloseRequested=(dtoCloseRequested || dtoCloseCompleted);
+      const bool normalizedReached=(dtoReached || normalizedCloseRequested || normalizedCloseCompleted);
+
+      if(normalizedReached)
         {
          levels[i]=CBasketProfitLevelProgress::CreateReached(dto.profitLevelProgress[i].levelId,
                                                              CUtcTime((datetime)dto.profitLevelProgress[i].reachedAtUtc),
@@ -51,6 +62,15 @@ bool CBasketAggregateRestorer::Restore(CBasketAggregate &aggregate,const CBasket
         }
       else
          levels[i]=CBasketProfitLevelProgress::CreateEmpty(dto.profitLevelProgress[i].levelId);
+
+      if(normalizedCloseRequested)
+         levels[i]=levels[i].WithCloseRequested(CUtcTime((datetime)dto.profitLevelProgress[i].reachedAtUtc),
+                                                CCommandId(dto.profitLevelProgress[i].executionCommandId));
+
+      if(normalizedCloseCompleted)
+         levels[i]=levels[i].WithCloseCompleted(CMoney(dto.profitLevelProgress[i].realizedProfit),
+                                                CUtcTime((datetime)dto.profitLevelProgress[i].completedAtUtc),
+                                                CEventId(dto.profitLevelProgress[i].executionEventId));
      }
    aggregate.RestoreProfitLevels(levels,levelCount);
    aggregate.RestoreExecutedBreakEvenRules(dto.executedBreakEvenRuleIds);

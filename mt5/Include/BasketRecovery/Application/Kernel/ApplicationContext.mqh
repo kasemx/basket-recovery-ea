@@ -40,6 +40,8 @@
 #include <BasketRecovery/Application/Execution/ManualRecoveryCandidateRegistrationService.mqh>
 #include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateSubmissionValidationService.mqh>
 #include <BasketRecovery/Application/Execution/ManualProfitCloseSubmissionService.mqh>
+#include <BasketRecovery/Application/Execution/CompositePendingExecutionFillNotifier.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionStartupReconciliationService.mqh>
 #include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateRegistry.mqh>
 #include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateRegistrationService.mqh>
 #include <BasketRecovery/Application/Execution/ProfitLevelCloseExecutionTracker.mqh>
@@ -121,6 +123,7 @@ private:
    CManualProfitCloseCandidateSubmissionValidationService *m_manualProfitCloseSubmissionValidationService;
    CManualProfitCloseSubmissionService *m_manualProfitCloseSubmissionService;
    CProfitLevelCloseExecutionTracker *m_profitLevelCloseExecutionTracker;
+   IPendingExecutionFillNotifier *m_pendingExecutionFillNotifier;
    bool                m_initialized;
 
 public:
@@ -178,6 +181,7 @@ public:
       m_manualProfitCloseSubmissionValidationService=NULL;
       m_manualProfitCloseSubmissionService=NULL;
       m_profitLevelCloseExecutionTracker=NULL;
+      m_pendingExecutionFillNotifier=NULL;
       m_initialized=false;
      }
 
@@ -232,6 +236,11 @@ public:
       m_pendingExecutionTestInjection=testInjection;
       m_executionReconciliationReader=reconciliationReader;
       m_pendingExecutionLifecycle=lifecycle;
+     }
+
+   void              RegisterPendingExecutionFillNotifier(IPendingExecutionFillNotifier *fillNotifier)
+     {
+      m_pendingExecutionFillNotifier=fillNotifier;
      }
 
    void              RegisterRecoveryRiskRuntime(CRecoveryRiskEventBuffer *eventBuffer,
@@ -633,7 +642,7 @@ public:
          ENUM_BRE_TRADE_TRANSACTION_RESULT_CODE routeResult=m_tradeTransactionRouter.Route(context);
          if((routeResult==BRE_TRADE_TX_RESULT_ACCEPTED || routeResult==BRE_TRADE_TX_RESULT_RECONCILED) &&
             m_pendingExecutionRegistry!=NULL &&
-            (m_manualRecoverySubmissionService!=NULL || m_manualProfitCloseSubmissionService!=NULL))
+            m_pendingExecutionFillNotifier!=NULL)
            {
             ENUM_BRE_CORRELATION_MATCH_STRATEGY strategy=BRE_CORRELATION_MATCH_NONE;
             int index=m_pendingExecutionRegistry.TryCorrelate(context,strategy);
@@ -642,12 +651,7 @@ public:
                CPendingExecutionEntry entry;
                if(m_pendingExecutionRegistry.TryGetEntry(index,entry) &&
                   entry.Status()==BRE_TRADE_EXEC_STATUS_FILLED)
-                 {
-                  if(m_manualRecoverySubmissionService!=NULL)
-                     m_manualRecoverySubmissionService.OnBrokerFillConfirmed(entry.ExecutionRequestId());
-                  if(m_manualProfitCloseSubmissionService!=NULL)
-                     m_manualProfitCloseSubmissionService.OnBrokerFillConfirmed(entry.ExecutionRequestId());
-                 }
+                  m_pendingExecutionFillNotifier.OnBrokerFillConfirmed(entry.ExecutionRequestId(),"trade_transaction");
               }
            }
         }

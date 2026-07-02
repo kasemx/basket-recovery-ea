@@ -37,7 +37,7 @@ public:
 
    int               FillCalls(void) const { return m_fillCalls; }
 
-   virtual void      OnBrokerFillConfirmed(const string executionRequestId) override
+   virtual void      OnBrokerFillConfirmed(const string executionRequestId,const string brokerComment) override
      {
       m_fillCalls++;
       if(m_tracker!=NULL)
@@ -118,6 +118,7 @@ public:
       CPositionSnapshotEntry empty[];
       brokerReader.SetEntries(empty,0);
       historyReader.Clear();
+      historyReader.SetQueryAvailable(true);
      }
   };
 
@@ -237,8 +238,8 @@ void TestRecoveryStepAdvancesOnce(CTerminalizationHarness &h)
    h.stepTracker.MarkSubmitted(basketId.Value(),2,"req-step");
 
    h.lifecycle.MarkFilled("req-step",0.10);
-   notifier.OnBrokerFillConfirmed("req-step");
-   notifier.OnBrokerFillConfirmed("req-step");
+   notifier.OnBrokerFillConfirmed("req-step","test");
+   notifier.OnBrokerFillConfirmed("req-step","test");
 
    CTestAssert::True(h.stepTracker.IsStepExecuted(basketId.Value(),2),"step must be filled once");
    CTestAssert::EqualInt(2,notifier.FillCalls(),"fill notifier invoked twice but step idempotent");
@@ -708,13 +709,13 @@ void TestAmbiguousFingerprintPolicyCountsTwo(CTerminalizationHarness &h)
 
    SFingerprintDealCandidate candidates[2];
    candidates[0].time=1010;
-   candidates[0].symbol="BTCUSD";
+   candidates[0].symbol="EURUSD";
    candidates[0].magic=202606001;
    candidates[0].volume=0.01;
    candidates[0].entryType=DEAL_ENTRY_IN;
    candidates[0].dealType=DEAL_TYPE_BUY;
    candidates[1].time=1020;
-   candidates[1].symbol="BTCUSD";
+   candidates[1].symbol="EURUSD";
    candidates[1].magic=202606001;
    candidates[1].volume=0.01;
    candidates[1].entryType=DEAL_ENTRY_IN;
@@ -750,7 +751,7 @@ void TestReadOnlyResolveDoesNotPersist(CTerminalizationHarness &h)
    h.Reset();
    CPendingExecutionEntry entry=BuildSubmittedEntry("req-readonly-no-persist",CBasketId("basket-readonly-no-persist"));
    entry.SetStatus(BRE_TRADE_EXEC_STATUS_SUBMITTED);
-   h.store.SaveEntryState(entry);
+   h.store.SavePreparedState(entry,BuildEnvelope(entry));
 
    double matchedVolume=0.0;
    CExecutionReconciliationResolver::Resolve(entry,h.brokerReader,matchedVolume,h.historyReader,h.clock.Now());
@@ -758,6 +759,8 @@ void TestReadOnlyResolveDoesNotPersist(CTerminalizationHarness &h)
    CPendingExecutionEntry entries[];
    int count=h.store.RestoreEntries(entries);
    CTestAssert::EqualInt(1,count,"entry must remain in store");
+   if(count<=0)
+      return;
    CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_SUBMITTED,(int)entries[0].Status(),
                          "read-only resolve must not persist lifecycle mutation");
   }
@@ -898,13 +901,13 @@ void TestOrderEvidencePolicyFilledStateAndExecutedVolume(CTerminalizationHarness
 
    SFingerprintOrderCandidate candidates[2];
    candidates[0].time=1010;
-   candidates[0].symbol="BTCUSD";
+   candidates[0].symbol="EURUSD";
    candidates[0].magic=202606001;
    candidates[0].orderType=ORDER_TYPE_BUY;
    candidates[0].orderState=ORDER_STATE_FILLED;
    candidates[0].executedVolume=0.01;
    candidates[1].time=1020;
-   candidates[1].symbol="BTCUSD";
+   candidates[1].symbol="EURUSD";
    candidates[1].magic=202606001;
    candidates[1].orderType=ORDER_TYPE_BUY;
    candidates[1].orderState=ORDER_STATE_FILLED;
@@ -926,6 +929,7 @@ void TestOrderEvidencePolicyFilledStateAndExecutedVolume(CTerminalizationHarness
 
 void OnStart(void)
   {
+   CTestAssert::Reset();
    CTerminalizationHarness harness;
    TestFillPersistsTerminalState(harness);
    TestDuplicateFillIsIdempotent(harness);
@@ -961,5 +965,9 @@ void OnStart(void)
    TestCloseDealDoesNotBlockHistoricalOrderFill(harness);
    TestUnrelatedDealVolumeMismatchDoesNotBlockOrderFill(harness);
    TestOrderEvidencePolicyFilledStateAndExecutedVolume(harness);
-   Print("TestPendingExecutionTerminalization: all tests passed");
+   CTestAssert::Summary("TestPendingExecutionTerminalization");
+   if(CTestAssert::AllPassed())
+      Print("TestPendingExecutionTerminalization: all tests passed");
+   else
+      Print("TestPendingExecutionTerminalization FAILED");
   }

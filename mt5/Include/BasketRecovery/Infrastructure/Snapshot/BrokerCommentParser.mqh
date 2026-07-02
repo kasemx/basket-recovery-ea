@@ -5,11 +5,46 @@
 #include <BasketRecovery/Domain/Enums/TradeRole.mqh>
 #include <BasketRecovery/Domain/Enums/TradeDirection.mqh>
 
+#define BRE_BROKER_COMMENT_PARSER_PROFIT_CLOSE_BUILD_MARKER "S8C_BROKER_COMMENT_PARSER_PROFIT_CLOSE_V1"
+
 class CBrokerCommentParser
   {
+private:
+   static bool       StartsWithNormalized(const string comment,const string prefix)
+     {
+      if(prefix=="")
+         return false;
+      return StringFind(comment,prefix)==0;
+     }
+
+   static void       PrintProfitCloseReconcileExclusionDiagnosticsOnce(const string comment)
+     {
+      static string loggedProfitCloseComments[];
+      for(int i=0;i<ArraySize(loggedProfitCloseComments);i++)
+        {
+         if(loggedProfitCloseComments[i]==comment)
+            return;
+        }
+
+      int size=ArraySize(loggedProfitCloseComments);
+      ArrayResize(loggedProfitCloseComments,size+1);
+      loggedProfitCloseComments[size]=comment;
+
+      Print("broker_comment_parser_build_marker=",BRE_BROKER_COMMENT_PARSER_PROFIT_CLOSE_BUILD_MARKER);
+      Print("broker_comment_parser_classification=PROFIT_CLOSE");
+      Print("broker_comment_parser_basket_id=");
+      Print("broker_comment_parser_reconcile_excluded=true");
+     }
+
 public:
    static CBasketId  ExtractBasketId(const string comment)
      {
+      if(StartsWithNormalized(comment,"BRE|PC|"))
+        {
+         PrintProfitCloseReconcileExclusionDiagnosticsOnce(comment);
+         return CBasketId("");
+        }
+
       int brIndex=StringFind(comment,"BR:");
       if(brIndex>=0)
         {
@@ -35,6 +70,9 @@ public:
 
    static ENUM_BRE_TRADE_ROLE ExtractRole(const string comment)
      {
+      if(StartsWithNormalized(comment,"BRE|PC|"))
+         return BRE_TRADE_ROLE_NONE;
+
       int breIndex=StringFind(comment,"BRE|");
       if(breIndex>=0)
         {

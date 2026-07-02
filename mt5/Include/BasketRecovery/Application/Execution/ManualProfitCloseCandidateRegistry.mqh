@@ -111,6 +111,22 @@ public:
       return count;
      }
 
+   bool              HasActiveCandidateForBasket(const CBasketId &basketId) const
+     {
+      for(int i=0;i<ArraySize(m_entries);i++)
+        {
+         if(m_entries[i].BasketId().Value()!=basketId.Value())
+            continue;
+         ENUM_BRE_MANUAL_PROFIT_CLOSE_CANDIDATE_REGISTRY_STATUS status=m_entries[i].Status();
+         if(status==BRE_MANUAL_PROFIT_CLOSE_CANDIDATE_AVAILABLE ||
+            status==BRE_MANUAL_PROFIT_CLOSE_CANDIDATE_SELECTED ||
+            status==BRE_MANUAL_PROFIT_CLOSE_CANDIDATE_SUBMITTED ||
+            status==BRE_MANUAL_PROFIT_CLOSE_CANDIDATE_REJECTED)
+            return true;
+        }
+      return false;
+     }
+
    void              Clear(void) { ArrayResize(m_entries,0); }
   };
 

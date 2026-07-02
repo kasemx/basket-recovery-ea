@@ -77,6 +77,7 @@ private:
          ArrayResize(outViews,outCount);
      }
 
+public:
    static double     SumFloatingProfit(IPositionSnapshotStore *snapshotStore,const CBasketId &basketId)
      {
       if(snapshotStore==NULL)
@@ -98,7 +99,14 @@ private:
       return total;
      }
 
-public:
+   static void       BuildOpenPositionViews(const CBasketAggregate &basket,
+                                            IPositionSnapshotStore *snapshotStore,
+                                            CPositionRuntimeView &outViews[],
+                                            int &outCount)
+     {
+      BuildPositionViews(basket,snapshotStore,outViews,outCount);
+     }
+
    static CResult<CStrategyEvaluationContext> TryBuild(const CBasketAggregate &basket,
                                                        const CMarketContext &market,
                                                        const CRiskRuntimeContext &riskContext,

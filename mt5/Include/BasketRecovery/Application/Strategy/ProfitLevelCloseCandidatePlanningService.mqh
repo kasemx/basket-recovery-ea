@@ -1,6 +1,7 @@
 #ifndef BRE_APP_PROFIT_LEVEL_CLOSE_CANDIDATE_PLANNING_SERVICE_MQH
 #define BRE_APP_PROFIT_LEVEL_CLOSE_CANDIDATE_PLANNING_SERVICE_MQH
 
+#include <BasketRecovery/Application/Execution/Ports/IPendingExecutionStore.mqh>
 #include <BasketRecovery/Application/Risk/RecoveryPendingExecutionChecker.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionRegistry.mqh>
 #include <BasketRecovery/Application/Strategy/ProfitLevelCloseCandidateEventBuffer.mqh>
@@ -17,6 +18,7 @@ private:
    CProfitLevelCloseCandidatePlanner      m_planner;
    CProfitLevelCloseCandidateEventBuffer *m_eventBuffer;
    CPendingExecutionRegistry             *m_pendingRegistry;
+   IPendingExecutionStore                *m_pendingStore;
    int                                    m_quoteStaleThresholdMs;
 
    CProfitLevelEvaluationContext BuildEvaluationContext(const CBasketAggregate &basket,
@@ -27,8 +29,20 @@ private:
       CStrategyProfileValidator validator;
       bool profileValid=validator.Validate(profile).IsOk();
 
-      bool unresolved=m_pendingRegistry!=NULL &&
-                      CRecoveryPendingExecutionChecker::HasUnresolvedForBasket(*m_pendingRegistry,basket.Id());
+      bool unresolved=false;
+      if(m_pendingRegistry!=NULL)
+        {
+         ulong openTickets[];
+         int openTicketCount=evalContext.PositionCount();
+         ArrayResize(openTickets,openTicketCount);
+         for(int ticketIndex=0;ticketIndex<openTicketCount;ticketIndex++)
+            openTickets[ticketIndex]=evalContext.PositionAt(ticketIndex).Ticket();
+         unresolved=CRecoveryPendingExecutionChecker::HasBlockingUnresolvedForOpenTickets(*m_pendingRegistry,
+                                                                                          basket.Id(),
+                                                                                          openTickets,
+                                                                                          openTicketCount,
+                                                                                          m_pendingStore);
+        }
 
       CPositionRuntimeView positions[];
       int positionCount=evalContext.PositionCount();
@@ -125,14 +139,20 @@ private:
      }
 
 public:
+#define BRE_PROFIT_LEVEL_CLOSE_PLANNING_BUILD_MARKER "S8C_TICKET_SCOPED_PLANNER_V2"
+
                      CProfitLevelCloseCandidatePlanningService(CPendingExecutionRegistry *pendingRegistry,
                                                                CProfitLevelCloseCandidateEventBuffer *eventBuffer,
-                                                               const int quoteStaleThresholdMs=5000)
+                                                               const int quoteStaleThresholdMs=5000,
+                                                               IPendingExecutionStore *pendingStore=NULL)
      {
       m_pendingRegistry=pendingRegistry;
+      m_pendingStore=pendingStore;
       m_eventBuffer=eventBuffer;
       m_quoteStaleThresholdMs=quoteStaleThresholdMs;
      }
+
+   static string     BuildMarker(void) { return BRE_PROFIT_LEVEL_CLOSE_PLANNING_BUILD_MARKER; }
 
    CProfitLevelCloseCandidate EvaluateAndEmit(const CBasketAggregate &basket,
                                               const CStrategyEvaluationContext &evalContext,

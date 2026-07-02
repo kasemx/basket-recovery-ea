@@ -12,6 +12,7 @@
 #include <BasketRecovery/Application/Execution/PendingExecutionTestInjectionService.mqh>
 #include <BasketRecovery/Application/FastPath/BasketFastStateRegistry.mqh>
 #include <BasketRecovery/Infrastructure/Snapshot/InMemoryBrokerPositionReader.mqh>
+#include <BasketRecovery/Infrastructure/Snapshot/InMemoryBrokerExecutionHistoryReader.mqh>
 #include <BasketRecovery/Infrastructure/MT5/Mt5TradeTransactionAdapter.mqh>
 #include <BasketRecovery/Infrastructure/Logging/FileLogger.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionLifecycleService.mqh>
@@ -250,7 +251,7 @@ void TestPartialFillAccumulation(CPendingExecutionTestHarness &h)
    CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_FILLED,(int)updated.Status(),"accumulated fill completes");
   }
 
-void TestTimeoutTerminalizesWithoutRetry(CPendingExecutionTestHarness &h)
+void TestIndeterminateTimeoutEntersReconciling(CPendingExecutionTestHarness &h)
   {
    h.Reset();
    h.clock.SetNow(2000);
@@ -264,10 +265,47 @@ void TestTimeoutTerminalizesWithoutRetry(CPendingExecutionTestHarness &h)
 
    CPendingExecutionEntry updated;
    h.registry.TryGetByExecutionRequestId("req-timeout",updated);
-   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_TIMED_OUT,(int)updated.Status(),"confirmed no-fill timeout must terminalize");
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_RECONCILING,(int)updated.Status(),
+                         "indeterminate timeout enters reconciling");
+   CTestAssert::True(CPendingExecutionTransitionRules::BlocksBlindResend(updated.Status()),
+                     "indeterminate timeout blocks blind resend");
+   CTestAssert::EqualInt(1,h.reconciliationScheduler.PendingCount(),
+                         "indeterminate timeout queues read-only reconciliation");
+  }
+
+void TestConfirmedTimeoutTerminalizesWithoutQueue(CPendingExecutionTestHarness &h)
+  {
+   h.Reset();
+   // Evidence window for timeout confirmation is 86400s after anchor/deadline.
+   // Use a far-future "now" so resolver can legitimately return TIMED_OUT.
+   h.clock.SetNow(200000);
+   CBrokerRequestCorrelation broker;
+   broker.SetBrokerOrderId(9005);
+   CPendingExecutionEntry entry=BuildEntry("req-timeout-confirmed",BRE_TRADE_EXEC_STATUS_SUBMITTED,"EURUSD",0.10,broker,1500);
+   entry.SetSubmittedAtUtc(1000);
+   entry.SetPreparedAtUtc(0);
+   entry.SetCreatedAtUtc(0);
+   h.injection.RegisterPendingEntry(entry);
+
+   CInMemoryBrokerExecutionHistoryReader historyReader;
+   CBrokerExecutionHistoryCorrelation noEvidence;
+   noEvidence.SetQueryAvailable(true);
+   noEvidence.SetSummary("no_history_match");
+   historyReader.SetCorrelation("req-timeout-confirmed",noEvidence);
+
+   CExecutionTimeoutMonitor monitor(h.registry,h.reconciliationScheduler,h.brokerReader,h.diagnostics,
+                                    h.clock,h.lifecycle,&historyReader);
+   int handled=monitor.ScanDueTimeouts();
+   CTestAssert::EqualInt(1,handled,"confirmed timeout scan must handle due entry");
+
+   CPendingExecutionEntry updated;
+   h.registry.TryGetByExecutionRequestId("req-timeout-confirmed",updated);
+   CTestAssert::EqualInt((int)BRE_TRADE_EXEC_STATUS_TIMED_OUT,(int)updated.Status(),
+                         "confirmed timeout terminalizes");
    CTestAssert::False(CPendingExecutionTransitionRules::BlocksBlindResend(updated.Status()),
-                      "timed out terminal audit must not block blind resend via reconciling gate");
-   CTestAssert::EqualInt(0,h.reconciliationScheduler.PendingCount(),"terminal timeout must not queue reconciliation");
+                      "TIMED_OUT does not block blind resend");
+   CTestAssert::EqualInt(0,h.reconciliationScheduler.PendingCount(),
+                         "confirmed timeout does not queue reconciliation");
   }
 
 void TestLateFillAfterTimeoutThroughReconciliation(CPendingExecutionTestHarness &h)
@@ -363,7 +401,8 @@ void OnStart(void)
    TestDuplicateTransactionIgnored(harness);
    TestOutOfOrderCannotRegress(harness);
    TestPartialFillAccumulation(harness);
-   TestTimeoutTerminalizesWithoutRetry(harness);
+   TestIndeterminateTimeoutEntersReconciling(harness);
+   TestConfirmedTimeoutTerminalizesWithoutQueue(harness);
    TestLateFillAfterTimeoutThroughReconciliation(harness);
    TestUnknownReconcilingBlocksResubmission(harness);
    TestUnrelatedTransactionIgnored(harness);

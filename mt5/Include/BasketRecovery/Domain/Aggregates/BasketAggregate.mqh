@@ -362,6 +362,7 @@ public:
    void                              SetSignalFromDto(const CBasketPersistenceDto &dto);
    void                              SetMetadataFromDto(const CBasketPersistenceDto &dto);
    void                              SetPositionSnapshotsFromDto(const CBasketPersistenceDto &dto);
+   void                              ReplaceOpenPositionMembership(const CPositionSnapshotEntry &entries[],const int count);
    void                              SetAuditHistoryFromDto(const CBasketPersistenceDto &dto);
    void                              CopyRuntimeStateToDto(CBasketPersistenceDto &dto) const;
    void                              AppendEvaluationAudit(const CCommandId &commandId,const CEventId &eventId,

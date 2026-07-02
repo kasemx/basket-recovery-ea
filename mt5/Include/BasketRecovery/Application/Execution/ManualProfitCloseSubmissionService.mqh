@@ -11,7 +11,14 @@
 #include <BasketRecovery/Application/Execution/ExecutionSubmissionPreparer.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionAuthorizationRegistry.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionAuthorizationPolicy.mqh>
+#include <BasketRecovery/Application/Execution/BasketTicketOwnershipHydrator.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseSubmitDiagnostics.mqh>
+#include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionRegistry.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5AsyncSubmissionGateway.mqh>
+#include <BasketRecovery/Infrastructure/Execution/Mt5/Mt5LivePositionTicketAuthority.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionStartupReconciliationService.mqh>
+#include <BasketRecovery/Application/Execution/ProfitCloseFilledPendingCompletionService.mqh>
 #include <BasketRecovery/Application/Ports/IBasketRepository.mqh>
 #include <BasketRecovery/Application/Ports/IClock.mqh>
 #include <BasketRecovery/Application/Ports/IUniqueIdGenerator.mqh>
@@ -40,7 +47,51 @@ private:
    IBasketRepository                           *m_basketRepository;
    IClock                                      *m_clock;
    IUniqueIdGenerator                          *m_idGenerator;
+   IPositionSnapshotStore                      *m_snapshotStore;
+   CPendingExecutionRegistry                   *m_pendingRegistry;
+   CMt5AsyncSubmissionGateway                  *m_asyncGateway;
    string                                       m_lastProcessedTriggerToken;
+
+   CManualProfitCloseCandidateEntry BuildSubmitEntryWithLiveAuthority(const CManualProfitCloseCandidateEntry &entry,
+                                                                      const ENUM_BRE_TRADE_DIRECTION livePositionDirection) const
+     {
+      return CManualProfitCloseCandidateEntry::Create(entry.CandidateId(),
+                                                      entry.ExecutionRequestId(),
+                                                      entry.IdempotencyKey(),
+                                                      entry.BasketId(),
+                                                      entry.ProfitLevelId(),
+                                                      entry.ProfitLevelIndex(),
+                                                      entry.StrategyProfileHash(),
+                                                      entry.BasketVersion(),
+                                                      entry.Symbol(),
+                                                      entry.BasketDirection(),
+                                                      livePositionDirection,
+                                                      entry.PositionTicket(),
+                                                      entry.OriginalPositionVolume(),
+                                                      entry.ProposedCloseVolume(),
+                                                      entry.EstimatedCloseMoney(),
+                                                      entry.TriggerType(),
+                                                      entry.TriggerValue(),
+                                                      entry.QuoteSequence(),
+                                                      entry.CreatedAtUtc(),
+                                                      entry.ExpiresAtUtc(),
+                                                      entry.AccountPositionModel());
+     }
+
+   void              FinalizePreSubmitRejection(const string candidateId,
+                                                const string triggerToken,
+                                                const CManualProfitCloseCandidateEntry &entry,
+                                                const string validationMessage,
+                                                const datetime nowUtc)
+     {
+      m_candidateRegistry.TryUpdateStatus(candidateId,BRE_MANUAL_PROFIT_CLOSE_CANDIDATE_REJECTED);
+      EmitRejected(entry,validationMessage,nowUtc);
+      m_lastProcessedTriggerToken=triggerToken;
+      if(m_triggerRegistry!=NULL)
+         m_triggerRegistry.Consume(triggerToken);
+      CManualProfitCloseSubmitDiagnostics::PrintDirectionValidation(entry.PositionTicket(),"FAIL","pre_submit_validation");
+      CManualProfitCloseSubmitDiagnostics::PrintBoundsValidationRejection(m_asyncGateway,m_pendingRegistry,entry.ExecutionRequestId());
+     }
 
    void              EmitRejected(const CManualProfitCloseCandidateEntry &entry,
                                   const string detail,
@@ -122,7 +173,8 @@ private:
          eventId=CEventId("profit-close-fill");
 
       CBasketProfitLevelProgress progress;
-      if(basket.FindProfitLevelProgress(entry.ProfitLevelId(),progress) && !progress.Reached())
+      bool hasProgress=basket.FindProfitLevelProgress(entry.ProfitLevelId(),progress);
+      if(!hasProgress || !progress.Reached())
          basket.ApplyProfitLevelReached(entry.ProfitLevelId(),CUtcTime(nowUtc),CCommandId(""),eventId);
 
       basket.ApplyProfitLevelCloseCompleted(entry.ProfitLevelId(),
@@ -146,7 +198,10 @@ public:
                                                          CDemoManualSubmissionService *demoSubmissionService,
                                                          IBasketRepository *basketRepository,
                                                          IClock *clock,
-                                                         IUniqueIdGenerator *idGenerator)
+                                                         IUniqueIdGenerator *idGenerator,
+                                                         IPositionSnapshotStore *snapshotStore=NULL,
+                                                         CPendingExecutionRegistry *pendingRegistry=NULL,
+                                                         CMt5AsyncSubmissionGateway *asyncGateway=NULL)
      {
       m_config=config;
       m_candidateRegistry=candidateRegistry;
@@ -160,6 +215,9 @@ public:
       m_basketRepository=basketRepository;
       m_clock=clock;
       m_idGenerator=idGenerator;
+      m_snapshotStore=snapshotStore;
+      m_pendingRegistry=pendingRegistry;
+      m_asyncGateway=asyncGateway;
       m_lastProcessedTriggerToken="";
      }
 
@@ -234,20 +292,120 @@ public:
 
       if(m_validator!=NULL)
         {
+         CManualProfitCloseSubmitDiagnostics::PrintDirectionValidation(entry.PositionTicket(),"PENDING");
          CVoidResult validation=m_validator.ValidateForSubmission(entry,basket,quote,gateInput,nowUtc);
          if(validation.IsFail())
            {
-            m_candidateRegistry.TryUpdateStatus(candidateId,BRE_MANUAL_PROFIT_CLOSE_CANDIDATE_REJECTED);
-            EmitRejected(entry,validation.ErrorMessage(),nowUtc);
+            FinalizePreSubmitRejection(candidateId,triggerToken,entry,validation.ErrorMessage(),nowUtc);
             return CDemoManualSubmissionResult::Rejected(BRE_LIVE_SAFETY_REQUEST_NOT_FOUND,
                                                          validation.ErrorMessage(),
                                                          BRE_TRADE_EXEC_STATUS_NONE,
                                                          false);
            }
+         CManualProfitCloseSubmitDiagnostics::PrintDirectionValidation(entry.PositionTicket(),"OK");
         }
 
-      CTradeExecutionRequest request=CProfitCloseCandidateExecutionRequestFactory::CreateCloseRequest(entry,nowUtc);
-      CSubmissionPreparationResult prep=m_preparer.Prepare(request,basket,magicNumber);
+      string liveSymbol="";
+      long livePositionType=0;
+      ENUM_BRE_TRADE_DIRECTION livePositionDirection=BRE_DIRECTION_NONE;
+      double liveVolume=0.0;
+      string liveLookupFailure="";
+      bool hasLive=CMt5LivePositionTicketAuthority::TryResolveByTicket(entry.PositionTicket(),
+                                                                      liveSymbol,
+                                                                      livePositionType,
+                                                                      livePositionDirection,
+                                                                      liveVolume,
+                                                                      liveLookupFailure);
+
+      ENUM_BRE_TRADE_DIRECTION submitPositionDirection=hasLive ? livePositionDirection : entry.PositionDirection();
+      if(submitPositionDirection==BRE_DIRECTION_NONE)
+        {
+         FinalizePreSubmitRejection(candidateId,triggerToken,entry,"Selected position direction is unresolved",nowUtc);
+         return CDemoManualSubmissionResult::Rejected(BRE_LIVE_SAFETY_REQUEST_NOT_FOUND,
+                                                      "Selected position direction is unresolved",
+                                                      BRE_TRADE_EXEC_STATUS_NONE,
+                                                      false);
+        }
+
+      CManualProfitCloseCandidateEntry submitEntry=BuildSubmitEntryWithLiveAuthority(entry,submitPositionDirection);
+      ENUM_BRE_TRADE_DIRECTION liveCloseDirection=
+         CManualProfitCloseCandidateEntry::CloseDirectionForPosition(submitPositionDirection);
+      CTradeExecutionRequest request=CProfitCloseCandidateExecutionRequestFactory::CreateCloseRequest(submitEntry,
+                                                                                                      liveCloseDirection,
+                                                                                                      nowUtc);
+
+      CBasketAggregate submitBasket=basket;
+      SBasketTicketOwnershipDiagnostics ownershipDiagnostics;
+      bool restoreRegistryBasketFound=entry.BasketId().Value()==basket.Id().Value();
+      bool restoreRegistryCandidateFound=m_candidateRegistry!=NULL &&
+                                         m_candidateRegistry.TryGetByCandidateId(candidateId,entry);
+      bool ownershipOk=CBasketTicketOwnershipHydrator::TryEnsureCandidateTicketMembership(submitBasket,
+                                                                                          entry,
+                                                                                          m_snapshotStore,
+                                                                                          restoreRegistryBasketFound,
+                                                                                          restoreRegistryCandidateFound,
+                                                                                          ownershipDiagnostics);
+      CManualProfitCloseSubmitDiagnostics::PrintTicketOwnershipValidation(ownershipDiagnostics,request);
+      if(!ownershipOk)
+        {
+         FinalizePreSubmitRejection(candidateId,triggerToken,entry,ownershipDiagnostics.ownership_failure_reason,nowUtc);
+         return CDemoManualSubmissionResult::Rejected(BRE_LIVE_SAFETY_REQUEST_NOT_FOUND,
+                                                      ownershipDiagnostics.ownership_failure_reason,
+                                                      BRE_TRADE_EXEC_STATUS_NONE,
+                                                      false);
+        }
+
+      double currentPositionVolume=hasLive ? liveVolume : entry.OriginalPositionVolume();
+      string pendingDetail="";
+      bool pendingPrecheckOk=CManualProfitCloseSubmitDiagnostics::PendingExecutionPrecheck(m_pendingRegistry,
+                                                                                           basket.Id(),
+                                                                                           submitEntry.ExecutionRequestId(),
+                                                                                           submitEntry.PositionTicket(),
+                                                                                           pendingDetail);
+      string authFailureReason="";
+      string authValidation="SKIPPED";
+      if(authorizationToken!="")
+        {
+         authValidation=CManualProfitCloseSubmitDiagnostics::PreviewAuthorizationToken(authorizationToken,
+                                                                                       submitEntry,
+                                                                                       nowUtc,
+                                                                                       authFailureReason) ? "OK" : "FAIL";
+        }
+      else
+         authValidation="MISSING";
+
+      bool singleSubmitGuard=(triggerToken!="" &&
+                              triggerToken!=m_lastProcessedTriggerToken &&
+                              (m_triggerRegistry==NULL || !m_triggerRegistry.IsConsumed(triggerToken)));
+      string typeFillingLabel=CManualProfitCloseSubmitDiagnostics::ResolveCloseTypeFillingLabel(submitEntry.Symbol());
+
+      if(!pendingPrecheckOk || authValidation=="FAIL" || authValidation=="MISSING")
+        {
+         CManualProfitCloseSubmitDiagnostics::PrintPreSubmit(submitEntry,
+                                                             currentPositionVolume,
+                                                             singleSubmitGuard,
+                                                             pendingPrecheckOk,
+                                                             pendingDetail,
+                                                             authValidation,
+                                                             authFailureReason,
+                                                             typeFillingLabel);
+         string rejectionDetail=!pendingPrecheckOk ? pendingDetail :
+                                (authFailureReason!="" ? authFailureReason : "Authorization token missing");
+         ENUM_BRE_LIVE_SUBMISSION_SAFETY_REJECTION_REASON rejectionReason=BRE_LIVE_SAFETY_TOKEN_BINDING_MISMATCH;
+         if(!pendingPrecheckOk)
+            rejectionReason=BRE_LIVE_SAFETY_CONFLICTING_PENDING;
+         else if(authValidation=="MISSING")
+            rejectionReason=BRE_LIVE_SAFETY_TOKEN_MISSING;
+         FinalizePreSubmitRejection(candidateId,triggerToken,submitEntry,rejectionDetail,nowUtc);
+         CManualProfitCloseSubmitDiagnostics::PrintPostSubmit(m_asyncGateway,m_pendingRegistry,submitEntry.ExecutionRequestId(),false);
+         return CDemoManualSubmissionResult::Rejected(rejectionReason,
+                                                      rejectionDetail,
+                                                      BRE_TRADE_EXEC_STATUS_NONE,
+                                                      false);
+        }
+
+      CSubmissionPreparationResult prep=m_preparer.Prepare(request,submitBasket,magicNumber);
+      CManualProfitCloseSubmitDiagnostics::PrintBrokerCommentSubmitDiagnostics(m_preparer.LastCommentSubmitDiagnostics());
       if(!prep.IsSuccess())
         {
          m_candidateRegistry.TryUpdateStatus(candidateId,BRE_MANUAL_PROFIT_CLOSE_CANDIDATE_REJECTED);
@@ -256,11 +414,23 @@ public:
                                                       BRE_TRADE_EXEC_STATUS_NONE,false);
         }
 
-      CDemoManualSubmissionResult result=m_demoSubmissionService.TrySubmit(entry.ExecutionRequestId(),
+      CManualProfitCloseSubmitDiagnostics::PrintPreSubmit(submitEntry,
+                                                          currentPositionVolume,
+                                                          singleSubmitGuard,
+                                                          pendingPrecheckOk,
+                                                          pendingDetail,
+                                                          authValidation,
+                                                          authFailureReason,
+                                                          typeFillingLabel);
+
+      CDemoManualSubmissionResult result=m_demoSubmissionService.TrySubmit(submitEntry.ExecutionRequestId(),
                                                                            authorizationToken,
                                                                            triggerToken,
                                                                            basket,
-                                                                           quote);
+                                                                           quote,
+                                                                           submitEntry.CandidateId(),
+                                                                           submitEntry.PositionTicket(),
+                                                                           submitEntry.ProposedCloseVolume());
 
       if(result.TriggerTokenConsumed())
         {
@@ -284,10 +454,15 @@ public:
          EmitRejected(entry,result.Detail(),nowUtc);
         }
 
+      CManualProfitCloseSubmitDiagnostics::PrintPostSubmit(m_asyncGateway,
+                                                           m_pendingRegistry,
+                                                           entry.ExecutionRequestId(),
+                                                           result.BrokerInvoked());
+
       return result;
      }
 
-   void              OnBrokerFillConfirmed(const string executionRequestId) override
+   void              OnBrokerFillConfirmed(const string executionRequestId,const string completionPath="") override
      {
       if(m_candidateRegistry==NULL || m_levelTracker==NULL)
          return;
@@ -296,16 +471,55 @@ public:
       if(!m_candidateRegistry.TryGetByExecutionRequestId(executionRequestId,entry))
          return;
 
-      datetime nowUtc=m_clock!=NULL ? m_clock.Now() : TimeCurrent();
       if(!m_levelTracker.TryMarkFilled(executionRequestId))
          return;
 
+      datetime nowUtc=m_clock!=NULL ? m_clock.Now() : TimeCurrent();
       m_candidateRegistry.TryUpdateStatus(entry.CandidateId(),BRE_MANUAL_PROFIT_CLOSE_CANDIDATE_EXECUTED);
       TryCompleteProfitLevel(entry,nowUtc);
       EmitCloseConfirmed(entry,nowUtc);
-      Print("BRE profit_level_close_execution_tracker | filled=true | basket_id=",entry.BasketId().Value(),
-            " | profit_level_id=",entry.ProfitLevelId(),
-            " | execution_request_id=",executionRequestId);
+
+      string brokerComment="";
+      if(m_pendingRegistry!=NULL)
+        {
+         CPendingExecutionEntry pending;
+         if(m_pendingRegistry.TryGetByExecutionRequestId(executionRequestId,pending))
+            brokerComment=pending.BrokerComment();
+        }
+
+      bool profitLevelCompleted=false;
+      if(m_basketRepository!=NULL)
+        {
+         CResult<CBasketAggregate> loaded=m_basketRepository.Load(entry.BasketId());
+         CBasketAggregate basket;
+         if(loaded.TryGetValue(basket))
+           {
+            CBasketProfitLevelProgress progress;
+            if(basket.FindProfitLevelProgress(entry.ProfitLevelId(),progress))
+               profitLevelCompleted=progress.CloseCompleted();
+           }
+        }
+
+      CManualProfitCloseSubmitDiagnostics::PrintBrokerFillCompletion(brokerComment,
+                                                                     executionRequestId,
+                                                                     entry.ProfitLevelId(),
+                                                                     profitLevelCompleted,
+                                                                     completionPath);
+     }
+
+   static bool       TryCompleteFilledProfitCloseFromPending(const CPendingExecutionEntry &entry,
+                                                             IBasketRepository *basketRepository,
+                                                             SProfitClosePersistedCompletionOutcome &outcomeOut,
+                                                             IClock *clock=NULL,
+                                                             IUniqueIdGenerator *idGenerator=NULL,
+                                                             const string completionPath="startup_persisted_pending")
+     {
+      return CProfitCloseFilledPendingCompletionService::TryCompleteFilledProfitCloseFromPending(entry,
+                                                                                                 basketRepository,
+                                                                                                 outcomeOut,
+                                                                                                 clock,
+                                                                                                 idGenerator,
+                                                                                                 completionPath);
      }
   };
 

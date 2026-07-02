@@ -8,6 +8,7 @@
 #include <BasketRecovery/Application/Ports/IClock.mqh>
 #include <BasketRecovery/Application/Ports/IUniqueIdGenerator.mqh>
 #include <BasketRecovery/Application/Ports/IPositionSnapshotStore.mqh>
+#include <BasketRecovery/Domain/Execution/ProfitCloseCandidateCloseVolumeCalculator.mqh>
 #include <BasketRecovery/Domain/Strategy/ValueObjects/ProfitLevelCloseCandidate.mqh>
 #include <BasketRecovery/Domain/Strategy/Context/StrategyEvaluationContext.mqh>
 #include <BasketRecovery/Domain/Events/ManualProfitCloseCandidateDomainEvent.mqh>
@@ -73,7 +74,7 @@ public:
       m_positionModelProvider=positionModelProvider;
       m_clock=clock;
       m_idGenerator=idGenerator;
-      m_candidateExpirySeconds=candidateExpirySeconds>0 ? candidateExpirySeconds : 30;
+      m_candidateExpirySeconds=candidateExpirySeconds>0 ? candidateExpirySeconds : 360;
      }
 
    int               TryRegisterFromCandidate(const CBasketAggregate &basket,
@@ -81,6 +82,9 @@ public:
                                               const CRecoveryRiskGateInput &gateInput)
      {
       if(m_registry==NULL || !gateInput.HasQuote())
+         return 0;
+
+      if(m_registry.HasActiveCandidateForBasket(basket.Id()))
          return 0;
 
       datetime nowUtc=m_clock!=NULL ? m_clock.Now() : gateInput.TimestampUtc();
@@ -112,6 +116,13 @@ public:
       if(!TryFindOpenPosition(basket.Id(),instruction.Ticket(),position))
          return 0;
 
+      double canonicalCloseVolume=CProfitCloseCandidateCloseVolumeCalculator::ComputePartialCloseVolume(
+         position.Volume(),
+         candidate.Audit().TargetClosePercent(),
+         gateInput.Quote().Constraints());
+      if(canonicalCloseVolume<=0.0)
+         return 0;
+
       CProfitLevelCloseAudit audit=candidate.Audit();
       string executionRequestId=m_idGenerator!=NULL ? "profit-close-manual:"+m_idGenerator.NewGuid() : "profit-close-manual:unknown";
       datetime expiresAt=nowUtc+m_candidateExpirySeconds;
@@ -129,7 +140,7 @@ public:
                                                                                       position.Direction(),
                                                                                       instruction.Ticket(),
                                                                                       position.Volume(),
-                                                                                      instruction.ProposedCloseVolume(),
+                                                                                      canonicalCloseVolume,
                                                                                       instruction.EstimatedCloseMoney(),
                                                                                       audit.TriggerType(),
                                                                                       audit.TriggerValue(),

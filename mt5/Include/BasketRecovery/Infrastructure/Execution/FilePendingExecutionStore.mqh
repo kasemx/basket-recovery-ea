@@ -3,6 +3,8 @@
 
 #include <BasketRecovery/Infrastructure/Execution/InMemoryPendingExecutionStore.mqh>
 
+#define BRE_FILE_PENDING_EXECUTION_STORE_BUILD_MARKER "S8C_FILE_PENDING_STORE_V2"
+
 class CFilePendingExecutionStore : public CInMemoryPendingExecutionStore
   {
 private:
@@ -41,6 +43,10 @@ public:
       m_filePath=filePath;
      }
 
+   static string     BuildMarker(void) { return BRE_FILE_PENDING_EXECUTION_STORE_BUILD_MARKER; }
+
+   string            FileRelativePath(void) const { return m_filePath; }
+
    CVoidResult       RestoreFromDisk(void)
      {
       string content;
@@ -53,6 +59,29 @@ public:
          ImportEntriesText(sections[0]);
       if(sectionCount>=2)
          ImportEnvelopesText(sections[1]);
+      return CVoidResult::Ok();
+     }
+
+   int               CountPersistedEntriesOnDisk(void) const
+     {
+      string content;
+      if(!ReadFileText(content))
+         return 0;
+      string sections[];
+      int sectionCount=StringSplit(content,'\f',sections);
+      if(sectionCount<1 || sections[0]=="")
+         return 0;
+      string lines[];
+      return StringSplit(sections[0],'\n',lines);
+     }
+
+   virtual CVoidResult Clear(void)
+     {
+      CVoidResult cleared=CInMemoryPendingExecutionStore::Clear();
+      if(cleared.IsFail())
+         return cleared;
+      if(!WriteFileText(""))
+         return CVoidResult::Fail(-1,"Failed to clear persisted pending execution store");
       return CVoidResult::Ok();
      }
 

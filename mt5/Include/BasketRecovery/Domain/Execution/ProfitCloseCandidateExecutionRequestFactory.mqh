@@ -12,6 +12,13 @@ public:
    static CTradeExecutionRequest CreateCloseRequest(const CManualProfitCloseCandidateEntry &entry,
                                                     const datetime requestedAtUtc)
      {
+      return CreateCloseRequest(entry,entry.CloseDirection(),requestedAtUtc);
+     }
+
+   static CTradeExecutionRequest CreateCloseRequest(const CManualProfitCloseCandidateEntry &entry,
+                                                    const ENUM_BRE_TRADE_DIRECTION closeDirection,
+                                                    const datetime requestedAtUtc)
+     {
       CTradeExecutionRequest request=CTradeExecutionRequest::Create(entry.ExecutionRequestId(),
                                                                     entry.IdempotencyKey(),
                                                                     entry.CandidateId(),
@@ -20,7 +27,7 @@ public:
                                                                     entry.StrategyProfileHash(),
                                                                     entry.Symbol(),
                                                                     BRE_EXEC_INTENT_CLOSE_POSITION,
-                                                                    entry.CloseDirection(),
+                                                                    closeDirection,
                                                                     entry.PositionTicket(),
                                                                     entry.ProposedCloseVolume(),
                                                                     0.0,

@@ -3,7 +3,7 @@
 
 #include <BasketRecovery/Domain/Execution/ValueObjects/ManualProfitCloseCandidateEntry.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionAuthorizationToken.mqh>
-#include <BasketRecovery/Domain/Execution/TradeExecutionIntentType.mqh>
+#include <BasketRecovery/Domain/Execution/ProfitCloseAuthorizationBinding.mqh>
 
 class CProfitCloseManualAuthorizationContext
   {
@@ -22,13 +22,7 @@ public:
      {
       CProfitCloseManualAuthorizationContext context;
       context.m_executionRequestId=entry.ExecutionRequestId();
-      context.m_bindingFingerprint=CExecutionAuthorizationToken::ComputeBindingFingerprint(entry.ExecutionRequestId(),
-                                                                                           entry.BasketId(),
-                                                                                           entry.Symbol(),
-                                                                                           BRE_EXEC_INTENT_CLOSE_POSITION,
-                                                                                           entry.ProposedCloseVolume(),
-                                                                                           entry.BasketVersion(),
-                                                                                           entry.StrategyProfileHash());
+      context.m_bindingFingerprint=CProfitCloseAuthorizationBinding::ComputeBindingHashFromEntry(entry);
       context.m_tokenHash=CExecutionAuthorizationToken::ComputeTokenHash(plaintextToken);
       return context;
      }

@@ -150,7 +150,8 @@ public:
                                                    eligibility,clock,submitUseCase,asyncGateway,CMarketSafetyConfig());
       profitCloseService=new CManualProfitCloseSubmissionService(config,candidateRegistry,profitCloseTriggers,events,
                                                                  validator,levelTracker,authRegistry,preparer,
-                                                                 demoService,basketRepository,clock,NULL);
+                                                                 demoService,basketRepository,clock,NULL,
+                                                                 snapshotStore,pendingRegistry,asyncGateway);
       validationService=new CManualProfitCloseCandidateSubmissionValidationService();
       validationService.Configure(config,profitCloseService,basketRepository,marketData,5000);
       SetDemoEligibility(true,true,true);

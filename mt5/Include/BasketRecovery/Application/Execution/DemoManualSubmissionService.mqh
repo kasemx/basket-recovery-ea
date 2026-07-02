@@ -17,6 +17,7 @@
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
 #include <BasketRecovery/Domain/Execution/DemoManualSubmissionResult.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionAuthorizationToken.mqh>
+#include <BasketRecovery/Domain/Execution/ProfitCloseAuthorizationBinding.mqh>
 #include <BasketRecovery/Domain/Execution/ManualDemoExecutionAuthorization.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionAuthorizationStatus.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionAuthorizationScope.mqh>
@@ -87,6 +88,10 @@ private:
 
    bool              ValidateAuthorizationToken(const string plaintextToken,
                                               const CPendingExecutionEntry &entry,
+                                              const CBrokerSubmissionEnvelope &envelope,
+                                              const string profitCloseCandidateId,
+                                              const ulong profitCloseTicket,
+                                              const double profitCloseVolume,
                                               datetime nowUtc,
                                               string &tokenHashOut,
                                               ENUM_BRE_LIVE_SUBMISSION_SAFETY_REJECTION_REASON &reason,
@@ -122,13 +127,39 @@ private:
          detail="Authorization token already consumed";
          return false;
         }
-      string expectedFingerprint=CExecutionAuthorizationToken::ComputeBindingFingerprint(entry.ExecutionRequestId(),
-                                                                                         entry.BasketId(),
-                                                                                         entry.Symbol(),
-                                                                                         entry.IntentType(),
-                                                                                         entry.RequestedVolume(),
-                                                                                         entry.ExpectedBasketVersion(),
-                                                                                         entry.StrategyProfileHash());
+      string expectedFingerprint="";
+      if(CProfitCloseAuthorizationBinding::IsProfitCloseExecutionRequestId(entry.ExecutionRequestId()) &&
+         profitCloseCandidateId!="")
+        {
+         ulong ticket=profitCloseTicket>0 ? profitCloseTicket : envelope.Ticket();
+         double closeVolume=profitCloseVolume>0.0 ? profitCloseVolume : entry.RequestedVolume();
+         string bindingFailureField="";
+         if(!CProfitCloseAuthorizationBinding::ValidateTokenFingerprint(bindingFingerprint,
+                                                                        entry.BasketId().Value(),
+                                                                        profitCloseCandidateId,
+                                                                        entry.ExecutionRequestId(),
+                                                                        ticket,
+                                                                        closeVolume,
+                                                                        bindingFailureField))
+           {
+            reason=BRE_LIVE_SAFETY_TOKEN_BINDING_MISMATCH;
+            detail=bindingFailureField=="legacy_auth_binding_version" ?
+                   "Legacy authorization binding version is not accepted" :
+                   "Authorization token binding mismatch";
+            return false;
+           }
+         return true;
+        }
+      else
+        {
+         expectedFingerprint=CExecutionAuthorizationToken::ComputeBindingFingerprint(entry.ExecutionRequestId(),
+                                                                                     entry.BasketId(),
+                                                                                     entry.Symbol(),
+                                                                                     entry.IntentType(),
+                                                                                     entry.RequestedVolume(),
+                                                                                     entry.ExpectedBasketVersion(),
+                                                                                     entry.StrategyProfileHash());
+        }
       if(bindingFingerprint!=expectedFingerprint)
         {
          reason=BRE_LIVE_SAFETY_TOKEN_BINDING_MISMATCH;
@@ -167,7 +198,10 @@ public:
                                          const string authorizationToken,
                                          const string triggerToken,
                                          const CBasketAggregate &basket,
-                                         const CMarketQuote &quote)
+                                         const CMarketQuote &quote,
+                                         const string profitCloseCandidateId="",
+                                         const ulong profitCloseTicket=0,
+                                         const double profitCloseVolume=0.0)
      {
       datetime nowUtc=m_clock!=NULL ? m_clock.Now() : TimeCurrent();
 
@@ -208,7 +242,7 @@ public:
       string tokenHash="";
       ENUM_BRE_LIVE_SUBMISSION_SAFETY_REJECTION_REASON authReason=BRE_LIVE_SAFETY_NONE;
       string authDetail="";
-      if(!ValidateAuthorizationToken(authorizationToken,entry,nowUtc,tokenHash,authReason,authDetail))
+      if(!ValidateAuthorizationToken(authorizationToken,entry,envelope,profitCloseCandidateId,profitCloseTicket,profitCloseVolume,nowUtc,tokenHash,authReason,authDetail))
          return Reject(authReason,authDetail);
 
       CLiveSubmissionSafetyGateContext context;

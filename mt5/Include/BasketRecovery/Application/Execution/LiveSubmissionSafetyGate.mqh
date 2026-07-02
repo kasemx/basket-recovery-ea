@@ -4,8 +4,10 @@
 #include <BasketRecovery/Application/Execution/LiveSubmissionSafetyGateContext.mqh>
 #include <BasketRecovery/Application/Execution/ExecutionAuthorizationPolicy.mqh>
 #include <BasketRecovery/Application/Execution/PendingExecutionRegistry.mqh>
+#include <BasketRecovery/Application/Risk/RecoveryPendingExecutionChecker.mqh>
 #include <BasketRecovery/Domain/Execution/PendingExecutionTransitionRules.mqh>
 #include <BasketRecovery/Domain/Execution/LiveSubmissionSafetyRejectionReason.mqh>
+#include <BasketRecovery/Domain/Execution/TradeExecutionIntentType.mqh>
 #include <BasketRecovery/Domain/Enums/BasketLifecycleState.mqh>
 
 class CLiveSubmissionSafetyGate
@@ -13,10 +15,25 @@ class CLiveSubmissionSafetyGate
 private:
    static bool       BasketHasBlockingPendingState(CPendingExecutionRegistry *registry,
                                                      const CBasketId &basketId,
-                                                     const string executionRequestId)
+                                                     const string executionRequestId,
+                                                     const ENUM_BRE_TRADE_EXECUTION_INTENT intentType,
+                                                     const ulong positionTicket)
      {
       if(registry==NULL)
          return false;
+
+      if(intentType==BRE_EXEC_INTENT_CLOSE_POSITION && positionTicket>0)
+        {
+         ulong openTickets[];
+         ArrayResize(openTickets,1);
+         openTickets[0]=positionTicket;
+         return CRecoveryPendingExecutionChecker::HasOtherBlockingUnresolvedForOpenTickets(*registry,
+                                                                                           basketId,
+                                                                                           executionRequestId,
+                                                                                           openTickets,
+                                                                                           1);
+        }
+
       for(int i=0;i<registry.Count();i++)
         {
          CPendingExecutionEntry other;
@@ -196,7 +213,11 @@ public:
          return false;
         }
 
-      if(BasketHasBlockingPendingState(registry,context.Entry().BasketId(),context.Entry().ExecutionRequestId()))
+      if(BasketHasBlockingPendingState(registry,
+                                       context.Entry().BasketId(),
+                                       context.Entry().ExecutionRequestId(),
+                                       context.Entry().IntentType(),
+                                       context.Envelope().Ticket()))
         {
          reason=BRE_LIVE_SAFETY_CONFLICTING_PENDING;
          detail="Conflicting pending execution request exists";

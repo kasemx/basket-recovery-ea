@@ -4,6 +4,7 @@
 #include <BasketRecovery/Shared/DTOs/NormalizedTradeTransaction.mqh>
 #include <BasketRecovery/Domain/Execution/TradeTransactionType.mqh>
 #include <BasketRecovery/Domain/Execution/BrokerCommentStamp.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerExecutionCommentFactory.mqh>
 
 enum ENUM_BRE_CORRELATION_MATCH_STRATEGY
   {
@@ -12,7 +13,8 @@ enum ENUM_BRE_CORRELATION_MATCH_STRATEGY
    BRE_CORRELATION_MATCH_BROKER_DEAL_ID=2,
    BRE_CORRELATION_MATCH_POSITION_TICKET=3,
    BRE_CORRELATION_MATCH_MAGIC_SYMBOL_COMMENT=4,
-   BRE_CORRELATION_MATCH_REQUEST_FINGERPRINT=5
+   BRE_CORRELATION_MATCH_REQUEST_FINGERPRINT=5,
+   BRE_CORRELATION_MATCH_PROFIT_CLOSE_COMMENT=6
   };
 
 inline string CorrelationMatchStrategyLabel(const ENUM_BRE_CORRELATION_MATCH_STRATEGY strategy)
@@ -24,6 +26,7 @@ inline string CorrelationMatchStrategyLabel(const ENUM_BRE_CORRELATION_MATCH_STR
       case BRE_CORRELATION_MATCH_POSITION_TICKET: return "position_ticket";
       case BRE_CORRELATION_MATCH_MAGIC_SYMBOL_COMMENT: return "magic_symbol_comment";
       case BRE_CORRELATION_MATCH_REQUEST_FINGERPRINT: return "request_fingerprint";
+      case BRE_CORRELATION_MATCH_PROFIT_CLOSE_COMMENT: return "profit_close_comment";
       default: return "none";
      }
   }
@@ -83,6 +86,9 @@ public:
 
    static string     ExtractCorrelationToken(const string comment)
      {
+      if(CBrokerExecutionCommentFactory::IsProfitCloseComment(comment))
+         return CBrokerExecutionCommentFactory::ExtractFingerprint(comment);
+
       if(StringFind(comment,"BRE|")==0)
         {
          if(!CBrokerCommentStamp::ValidateChecksum(comment))

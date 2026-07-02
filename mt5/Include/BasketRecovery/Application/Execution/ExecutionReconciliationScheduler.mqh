@@ -10,6 +10,7 @@
 #include <BasketRecovery/Application/Ports/IBrokerExecutionHistoryReader.mqh>
 #include <BasketRecovery/Domain/Execution/PendingExecutionTransitionRules.mqh>
 #include <BasketRecovery/Domain/Execution/PendingExecutionQuery.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionStartupReconciliationService.mqh>
 
 class CExecutionReconciliationScheduler
   {
@@ -20,6 +21,7 @@ private:
    IBrokerExecutionHistoryReader   *m_historyReader;
    CPendingExecutionDiagnostics    *m_diagnostics;
    CPendingExecutionLifecycleService *m_lifecycle;
+   IPendingExecutionFillNotifier *m_fillNotifier;
    int                              m_maxBatchSize;
 
    int               FindEntryIndex(const string executionRequestId) const
@@ -54,7 +56,13 @@ private:
       if(m_lifecycle!=NULL)
         {
          if(resolved==BRE_TRADE_EXEC_STATUS_FILLED)
-            return m_lifecycle.MarkFilled(entry.ExecutionRequestId(),matchedVolume);
+           {
+            ENUM_BRE_TRADE_EXECUTION_STATUS priorStatus=entry.Status();
+            bool transitioned=m_lifecycle.MarkFilled(entry.ExecutionRequestId(),matchedVolume);
+            if(transitioned && priorStatus!=BRE_TRADE_EXEC_STATUS_FILLED && m_fillNotifier!=NULL)
+               m_fillNotifier.OnBrokerFillConfirmed(entry.ExecutionRequestId(),"timer");
+            return transitioned;
+           }
          if(resolved==BRE_TRADE_EXEC_STATUS_REJECTED)
             return m_lifecycle.MarkRejected(entry.ExecutionRequestId());
          if(resolved==BRE_TRADE_EXEC_STATUS_TIMED_OUT)
@@ -92,7 +100,13 @@ public:
       m_historyReader=historyReader;
       m_diagnostics=diagnostics;
       m_lifecycle=lifecycle;
+      m_fillNotifier=NULL;
       m_maxBatchSize=(maxBatchSize<=0 ? 8 : maxBatchSize);
+     }
+
+   void              SetFillNotifier(IPendingExecutionFillNotifier *fillNotifier)
+     {
+      m_fillNotifier=fillNotifier;
      }
 
    void              Enqueue(const CExecutionReconciliationRequest &request)

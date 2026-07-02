@@ -12,6 +12,9 @@
 #include <BasketRecovery/Application/Risk/BasketRiskReadModelService.mqh>
 #include <BasketRecovery/Domain/Risk/ValueObjects/RiskValidationResult.mqh>
 #include <BasketRecovery/Domain/Execution/BrokerCommentStamp.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerExecutionCommentFactory.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerCommentCollisionDiagnostic.mqh>
+#include <BasketRecovery/Domain/Execution/ProfitCloseAuthorizationBinding.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionRequestFingerprint.mqh>
 #include <BasketRecovery/Domain/Execution/BrokerSubmissionTransitionGate.mqh>
 #include <BasketRecovery/Domain/Execution/PendingExecutionTransitionRules.mqh>
@@ -19,6 +22,7 @@
 #include <BasketRecovery/Domain/Execution/TradeExecutionStatus.mqh>
 #include <BasketRecovery/Domain/Execution/SubmissionPreparationResult.mqh>
 #include <BasketRecovery/Domain/Aggregates/BasketAggregate.mqh>
+#include <BasketRecovery/Application/Execution/BasketTicketOwnershipHydrator.mqh>
 
 class CExecutionSubmissionPreparer
   {
@@ -31,6 +35,103 @@ private:
    IPositionSnapshotStore        *m_snapshotStore;
    IMarketDataProvider           *m_marketDataForRisk;
    CRiskValidationResult         m_lastReadOnlyRiskValidation;
+   CBrokerCommentSubmitDiagnostics m_lastCommentSubmitDiagnostics;
+
+   bool              UsesProfitCloseCommentFactory(const CTradeExecutionRequest &request) const
+     {
+      return CProfitCloseAuthorizationBinding::IsProfitCloseExecutionRequestId(request.ExecutionRequestId());
+     }
+
+   void              BuildBrokerCommentForRequest(const CTradeExecutionRequest &request,
+                                                  const int alternateAttempt,
+                                                  string &brokerComment,
+                                                  string &correlationToken) const
+     {
+      if(UsesProfitCloseCommentFactory(request))
+        {
+         brokerComment=CBrokerExecutionCommentFactory::BuildProfitCloseComment(request.ExecutionRequestId(),
+                                                                               request.Ticket(),
+                                                                               alternateAttempt);
+         correlationToken=CBrokerExecutionCommentFactory::ExtractFingerprint(brokerComment);
+         return;
+        }
+
+      brokerComment=CBrokerCommentStamp::Build(request.ExecutionRequestId(),
+                                               request.IdempotencyKey(),
+                                               request.BasketId(),
+                                               request.IntentType(),
+                                               m_policy.MaxCommentLength());
+      correlationToken=CBrokerCommentStamp::ExtractCorrelationToken(brokerComment);
+     }
+
+   bool              TryResolveBrokerComment(const CTradeExecutionRequest &request,
+                                             string &brokerComment,
+                                             string &correlationToken,
+                                             CBrokerCommentSubmitDiagnostics &diagnostics) const
+     {
+      diagnostics.Clear();
+      diagnostics.SetExecutionRequestId(request.ExecutionRequestId());
+      diagnostics.SetTargetTicket(request.Ticket());
+      diagnostics.SetRequestedVolume(request.RequestedVolume());
+      if(UsesProfitCloseCommentFactory(request))
+         diagnostics.SetFactoryBuildMarker(CBrokerExecutionCommentFactory::BuildMarker());
+
+      BuildBrokerCommentForRequest(request,0,brokerComment,correlationToken);
+      diagnostics.SetBrokerComment(brokerComment);
+      diagnostics.SetBrokerCommentFingerprint(correlationToken);
+      diagnostics.SetFinalComment(brokerComment);
+
+      if(m_registry==NULL)
+        {
+         diagnostics.SetCollisionCheckResult("OK");
+         return true;
+        }
+
+      CBrokerCommentCollisionDiagnostic collisionDiagnostic;
+      bool collision=CPendingExecutionCommentCollisionDetector::EvaluateCommentCollision(*m_registry,
+                                                                                            brokerComment,
+                                                                                            request.ExecutionRequestId(),
+                                                                                            collisionDiagnostic);
+      if(!collision)
+        {
+         diagnostics.SetCollisionCheckResult("OK");
+         diagnostics.SetCollisionDiagnostic(collisionDiagnostic);
+         return true;
+        }
+
+      if(!UsesProfitCloseCommentFactory(request))
+        {
+         diagnostics.SetCollisionCheckResult("BLOCKED");
+         diagnostics.SetCollisionDiagnostic(collisionDiagnostic);
+         return false;
+        }
+
+      string alternateComment="";
+      string alternateToken="";
+      BuildBrokerCommentForRequest(request,1,alternateComment,alternateToken);
+      diagnostics.SetResolutionAttempted(true);
+
+      CBrokerCommentCollisionDiagnostic alternateDiagnostic;
+      bool alternateCollision=CPendingExecutionCommentCollisionDetector::EvaluateCommentCollision(*m_registry,
+                                                                                                    alternateComment,
+                                                                                                    request.ExecutionRequestId(),
+                                                                                                    alternateDiagnostic);
+      if(!alternateCollision)
+        {
+         brokerComment=alternateComment;
+         correlationToken=alternateToken;
+         diagnostics.SetBrokerComment(brokerComment);
+         diagnostics.SetBrokerCommentFingerprint(correlationToken);
+         diagnostics.SetFinalComment(brokerComment);
+         diagnostics.SetCollisionCheckResult("OK");
+         diagnostics.SetCollisionDiagnostic(alternateDiagnostic);
+         return true;
+        }
+
+      diagnostics.SetCollisionCheckResult("BLOCKED");
+      diagnostics.SetCollisionDiagnostic(collisionDiagnostic);
+      return false;
+     }
 
    bool              IsEnvelopeReusable(const CBrokerSubmissionEnvelope &envelope,
                                         const CTradeExecutionRequest &request,
@@ -291,6 +392,7 @@ public:
      }
 
    CRiskValidationResult LastReadOnlyRiskValidation(void) const { return m_lastReadOnlyRiskValidation; }
+   CBrokerCommentSubmitDiagnostics LastCommentSubmitDiagnostics(void) const { return m_lastCommentSubmitDiagnostics; }
 
    CSubmissionPreparationResult Prepare(const CTradeExecutionRequest &request,
                                         const CBasketAggregate &basket,
@@ -322,7 +424,15 @@ public:
         }
 
       CMarketQuote quote;
-      if(!m_validator.ValidateRequestContext(request,basket,quote,failureReason,failureMessage))
+      CBasketAggregate validationBasket=basket;
+      if(request.Ticket()>0 &&
+         (request.IntentType()==BRE_EXEC_INTENT_REDUCE_POSITION ||
+          request.IntentType()==BRE_EXEC_INTENT_CLOSE_POSITION ||
+          request.IntentType()==BRE_EXEC_INTENT_MODIFY_STOP_LOSS ||
+          request.IntentType()==BRE_EXEC_INTENT_MODIFY_TAKE_PROFIT))
+         CBasketTicketOwnershipHydrator::SyncMembershipFromSnapshotStore(validationBasket,m_snapshotStore);
+
+      if(!m_validator.ValidateRequestContext(request,validationBasket,quote,failureReason,failureMessage))
         {
          CPendingExecutionEntry rejectedEntry;
          rejectedEntry.SetExecutionRequestId(request.ExecutionRequestId());
@@ -339,12 +449,18 @@ public:
         }
 
       CExecutionRequestFingerprint fingerprint=CExecutionRequestFingerprint::Compute(request);
-      string brokerComment=CBrokerCommentStamp::Build(request.ExecutionRequestId(),
-                                                      request.IdempotencyKey(),
-                                                      request.BasketId(),
-                                                      request.IntentType(),
-                                                      m_policy.MaxCommentLength());
-      string correlationToken=CBrokerCommentStamp::ExtractCorrelationToken(brokerComment);
+      string brokerComment="";
+      string correlationToken="";
+      CBrokerCommentSubmitDiagnostics commentDiagnostics;
+      if(!TryResolveBrokerComment(request,brokerComment,correlationToken,commentDiagnostics))
+        {
+         m_lastCommentSubmitDiagnostics=commentDiagnostics;
+         CPendingExecutionEntry rejectedEntry;
+         rejectedEntry.SetExecutionRequestId(request.ExecutionRequestId());
+         rejectedEntry.SetIdempotencyKey(request.IdempotencyKey());
+         return FailEntry(rejectedEntry,BRE_PREP_FAIL_COMMENT_COLLISION,commentDiagnostics.CollisionDiagnostic().FailureMessage());
+        }
+      m_lastCommentSubmitDiagnostics=commentDiagnostics;
 
       CPendingExecutionEntry entry;
       if(m_registry!=NULL && m_registry.TryGetByExecutionRequestId(request.ExecutionRequestId(),entry))
@@ -353,6 +469,12 @@ public:
            {
             return CSubmissionPreparationResult::Fail(BRE_PREP_FAIL_VALIDATION,"Pending entry status does not allow preparation");
            }
+         entry.SetBasketId(request.BasketId());
+         entry.SetExpectedBasketVersion((int)request.ExpectedBasketVersion());
+         entry.SetStrategyProfileHash(request.StrategyProfileHash());
+         entry.SetSymbol(request.Symbol());
+         entry.SetIntentType(request.IntentType());
+         entry.SetRequestedVolume(request.RequestedVolume());
         }
       else
         {
@@ -369,23 +491,19 @@ public:
          entry.SetStatus(BRE_TRADE_EXEC_STATUS_CREATED);
         }
 
-      if(m_registry!=NULL)
-        {
-         if(CPendingExecutionCommentCollisionDetector::HasActiveCommentCollision(*m_registry,brokerComment,request.ExecutionRequestId()))
-            return FailEntry(entry,BRE_PREP_FAIL_COMMENT_COLLISION,"Broker comment collision detected");
-         if(CPendingExecutionCommentCollisionDetector::HasActiveCorrelationCollision(*m_registry,correlationToken,request.ExecutionRequestId()))
-            return FailEntry(entry,BRE_PREP_FAIL_CORRELATION_COLLISION,"Correlation token collision detected");
-        }
+      if(m_registry!=NULL &&
+         CPendingExecutionCommentCollisionDetector::HasActiveCorrelationCollision(*m_registry,correlationToken,request.ExecutionRequestId()))
+         return FailEntry(entry,BRE_PREP_FAIL_CORRELATION_COLLISION,"Correlation token collision detected");
 
       if(entry.Status()==BRE_TRADE_EXEC_STATUS_CREATED)
          entry.SetStatus(BRE_TRADE_EXEC_STATUS_QUEUED);
 
-      CBrokerSubmissionEnvelope envelope=BuildEnvelope(request,basket,quote,magicNumber,brokerComment,
+      CBrokerSubmissionEnvelope envelope=BuildEnvelope(request,validationBasket,quote,magicNumber,brokerComment,
                                                          correlationToken,fingerprint,nowUtc);
       entry.IncrementPreparationAttemptCount();
       entry.SetLastPreparationFailureReason(BRE_PREP_FAIL_NONE);
       ApplyPreparationMetadata(entry,envelope,quote);
-      EvaluateRiskReadOnly(request,basket,quote);
+      EvaluateRiskReadOnly(request,validationBasket,quote);
 
       UpsertEntry(entry);
       if(m_store!=NULL)
@@ -423,12 +541,18 @@ public:
         }
 
       CExecutionRequestFingerprint fingerprint=CExecutionRequestFingerprint::Compute(request);
-      string brokerComment=CBrokerCommentStamp::Build(request.ExecutionRequestId(),
-                                                      request.IdempotencyKey(),
-                                                      request.BasketId(),
-                                                      request.IntentType(),
-                                                      m_policy.MaxCommentLength());
-      string correlationToken=CBrokerCommentStamp::ExtractCorrelationToken(brokerComment);
+      string brokerComment="";
+      string correlationToken="";
+      CBrokerCommentSubmitDiagnostics commentDiagnostics;
+      if(!TryResolveBrokerComment(request,brokerComment,correlationToken,commentDiagnostics))
+        {
+         m_lastCommentSubmitDiagnostics=commentDiagnostics;
+         CPendingExecutionEntry rejectedEntry;
+         rejectedEntry.SetExecutionRequestId(request.ExecutionRequestId());
+         rejectedEntry.SetIdempotencyKey(request.IdempotencyKey());
+         return FailEntry(rejectedEntry,BRE_PREP_FAIL_COMMENT_COLLISION,commentDiagnostics.CollisionDiagnostic().FailureMessage());
+        }
+      m_lastCommentSubmitDiagnostics=commentDiagnostics;
 
       CPendingExecutionEntry entry;
       if(m_registry!=NULL && m_registry.TryGetByExecutionRequestId(request.ExecutionRequestId(),entry))
@@ -437,6 +561,12 @@ public:
            {
             return CSubmissionPreparationResult::Fail(BRE_PREP_FAIL_VALIDATION,"Pending entry status does not allow preparation");
            }
+         entry.SetBasketId(request.BasketId());
+         entry.SetExpectedBasketVersion((int)request.ExpectedBasketVersion());
+         entry.SetStrategyProfileHash(request.StrategyProfileHash());
+         entry.SetSymbol(request.Symbol());
+         entry.SetIntentType(request.IntentType());
+         entry.SetRequestedVolume(request.RequestedVolume());
         }
       else
         {
@@ -453,13 +583,9 @@ public:
          entry.SetStatus(BRE_TRADE_EXEC_STATUS_CREATED);
         }
 
-      if(m_registry!=NULL)
-        {
-         if(CPendingExecutionCommentCollisionDetector::HasActiveCommentCollision(*m_registry,brokerComment,request.ExecutionRequestId()))
-            return FailEntry(entry,BRE_PREP_FAIL_COMMENT_COLLISION,"Broker comment collision detected");
-         if(CPendingExecutionCommentCollisionDetector::HasActiveCorrelationCollision(*m_registry,correlationToken,request.ExecutionRequestId()))
-            return FailEntry(entry,BRE_PREP_FAIL_CORRELATION_COLLISION,"Correlation token collision detected");
-        }
+      if(m_registry!=NULL &&
+         CPendingExecutionCommentCollisionDetector::HasActiveCorrelationCollision(*m_registry,correlationToken,request.ExecutionRequestId()))
+         return FailEntry(entry,BRE_PREP_FAIL_CORRELATION_COLLISION,"Correlation token collision detected");
 
       if(entry.Status()==BRE_TRADE_EXEC_STATUS_CREATED)
          entry.SetStatus(BRE_TRADE_EXEC_STATUS_QUEUED);

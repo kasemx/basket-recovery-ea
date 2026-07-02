@@ -66,6 +66,8 @@
 #include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateTriggerRegistry.mqh>
 #include <BasketRecovery/Application/Execution/ManualProfitCloseSubmissionService.mqh>
 #include <BasketRecovery/Application/Execution/ManualProfitCloseCandidateSubmissionValidationService.mqh>
+#include <BasketRecovery/Validation/Sprint8C/ManualProfitCloseCandidateValidationArtifact.mqh>
+#include <BasketRecovery/Application/Execution/ManualProfitCloseSubmitDiagnostics.mqh>
 #include <BasketRecovery/Application/Execution/ProfitCloseCandidateSubmissionValidator.mqh>
 #include <BasketRecovery/Application/Execution/ProfitLevelCloseExecutionTracker.mqh>
 #include <BasketRecovery/Application/Execution/CompositePendingExecutionFillNotifier.mqh>
@@ -80,9 +82,49 @@
 #include <BasketRecovery/Shared/Constants/FeatureFlags.mqh>
 #include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
 
+#include <BasketRecovery/Shared/Constants/ErrorCodes.mqh>
+
+string g_breEaInitFailureStage="";
+string g_breEaInitFailureReason="";
+int    g_breEaInitFailureErrorCode=0;
+string g_breEaInitCurrentStage="bootstrap";
+
 class CBootstrapper
   {
+private:
+   static void       ClearEaInitFailureRecord(void)
+     {
+      g_breEaInitFailureStage="";
+      g_breEaInitFailureReason="";
+      g_breEaInitFailureErrorCode=0;
+      g_breEaInitCurrentStage="bootstrap";
+     }
+
+   static void       SetEaInitCurrentStage(const string stage)
+     {
+      g_breEaInitCurrentStage=stage;
+     }
+
+   static void       RecordEaInitFailure(const string stage,
+                                           const string reason,
+                                           const int errorCode=0)
+     {
+      g_breEaInitFailureStage=(stage=="" ? g_breEaInitCurrentStage : stage);
+      g_breEaInitFailureReason=reason;
+      g_breEaInitFailureErrorCode=errorCode;
+     }
+
 public:
+   static bool       HasEaInitFailureRecord(void)
+     {
+      return g_breEaInitFailureStage!="";
+     }
+
+   static string     EaInitFailureStage(void) { return g_breEaInitFailureStage; }
+   static string     EaInitFailureReason(void) { return g_breEaInitFailureReason; }
+   static int        EaInitFailureErrorCode(void) { return g_breEaInitFailureErrorCode; }
+   static string     EaInitCurrentStage(void) { return g_breEaInitCurrentStage; }
+
    static CApplicationContext* Bootstrap(const string profileName,
                                          const string logFilePath,
                                          const int logLevel,
@@ -116,6 +158,8 @@ public:
                                          const int manualRecoveryCandidateExpirySeconds,
                                          const int manualProfitCloseCandidateExpirySeconds)
      {
+      ClearEaInitFailureRecord();
+      SetEaInitCurrentStage("config_validation");
       CResult<CEAConfiguration> configurationResult=
          CMt5ConfigurationLoader::LoadFromInputs(profileName,logFilePath,logLevel,accountLabel,apiBaseUrl,apiKey,
                                                  restPollIntervalMs,applicationTimerIntervalMs,
@@ -135,21 +179,29 @@ public:
 
       if(configurationResult.IsFail())
         {
-         Print("BasketRecovery bootstrap failed: ",configurationResult.ErrorMessage());
+         string reason=configurationResult.ErrorMessage();
+         string stage="config_validation";
+         if(StringFind(reason,"Execution runtime mode")>=0)
+            stage="execution_mode_validation";
+         RecordEaInitFailure(stage,reason,configurationResult.ErrorCode());
+         Print("BasketRecovery bootstrap failed: ",reason);
          return NULL;
         }
 
       CEAConfiguration configuration;
       if(!configurationResult.TryGetValue(configuration))
         {
+         RecordEaInitFailure("config_validation","configuration_result_missing_value",BRE_ERR_CONFIG_INVALID);
          Print("BasketRecovery bootstrap failed: configuration result has no value");
          return NULL;
         }
 
+      SetEaInitCurrentStage("bootstrap");
       CFileLogger *logger=new CFileLogger();
       if(!logger.Initialize(configuration.LogFilePath(),configuration.LogLevel()))
         {
          delete logger;
+         RecordEaInitFailure("bootstrap","logger_initialization_failed",BRE_ERR_CONFIG_INVALID);
          Print("BasketRecovery logger initialization failed");
          return NULL;
         }
@@ -160,6 +212,7 @@ public:
       CResult<CProfileBundle> profileResult=profileLoader.LoadProfile(configuration.ProfileName());
       if(profileResult.IsFail())
         {
+         RecordEaInitFailure("bootstrap","profile_load_failed",profileResult.ErrorCode());
          logger.Error("SYSTEM","Bootstrap","","Profile load failed",profileResult.ErrorCode());
          delete profileLoader;
          delete clock;
@@ -170,6 +223,7 @@ public:
       CProfileBundle profileBundle;
       if(!profileResult.TryGetValue(profileBundle))
         {
+         RecordEaInitFailure("bootstrap","profile_result_missing_value",BRE_ERR_PROFILE_LOAD_FAILED);
          logger.Error("SYSTEM","Bootstrap","","Profile result has no value",BRE_ERR_PROFILE_LOAD_FAILED);
          delete profileLoader;
          delete clock;
@@ -191,6 +245,7 @@ public:
          CDefaultTransitionRuleTable::RegisterDefaultRules(*transitionRuleRegistry,&s_defaultTransitionGuard);
       if(populateResult.IsFail())
         {
+         RecordEaInitFailure("bootstrap","transition_rule_table_population_failed",populateResult.ErrorCode());
          logger.Error("SYSTEM","Bootstrap","","Transition rule table population failed",populateResult.ErrorCode());
          delete transitionRuleRegistry;
          delete profileLoader;
@@ -202,6 +257,7 @@ public:
       CVoidResult registryValidation=transitionRuleRegistry.Validate();
       if(registryValidation.IsFail())
         {
+         RecordEaInitFailure("bootstrap","transition_registry_validation_failed",registryValidation.ErrorCode());
          logger.Error("SYSTEM","Bootstrap","","Transition registry validation failed",registryValidation.ErrorCode());
          delete transitionRuleRegistry;
          delete profileLoader;
@@ -227,8 +283,12 @@ public:
       container.SetEAConfiguration(configuration);
 
       CPersistenceManager *persistenceManager=new CPersistenceManager(false,500);
-      if(persistenceManager.RecoverOnStartup().IsFail())
+      SetEaInitCurrentStage("bootstrap");
+      CVoidResult persistenceRecoverResult=persistenceManager.RecoverOnStartup();
+      if(persistenceRecoverResult.IsFail())
         {
+         RecordEaInitFailure("bootstrap","persistence_recover_on_startup_failed",
+                             persistenceRecoverResult.ErrorCode());
          delete marketContextProvider;
          delete persistenceManager;
          delete container;
@@ -272,9 +332,12 @@ public:
       container.RegisterCommandSource(commandSource,true);
       container.RegisterCommandIngestionService(commandIngestionService,true);
 
+      SetEaInitCurrentStage("startup_reconcile");
       CVoidResult reconciliationResult=reconciliationService.ReconcileAtStartup();
       if(reconciliationResult.IsFail())
         {
+         RecordEaInitFailure("startup_reconcile","broker_basket_reconciliation_startup_failed",
+                             reconciliationResult.ErrorCode());
          logger.Error("SYSTEM","Bootstrap","","Startup reconciliation failed",reconciliationResult.ErrorCode());
          delete reconciliationScheduler;
          delete marketContextProvider;
@@ -283,12 +346,14 @@ public:
          return NULL;
         }
 
+      SetEaInitCurrentStage("bootstrap");
       CApplicationKernel *kernel=new CApplicationKernel();
       if(!kernel.Initialize(transitionRuleRegistry,clock,container.UniqueIdGenerator(),
                              commandIngestionService,profileSnapshot,persistenceManager,
                              snapshotStore,marketContextProvider,reconciliationScheduler,
                              fastPathConfig,effectivePollIntervalMs,true))
         {
+         RecordEaInitFailure("bootstrap","application_kernel_initialization_failed",BRE_ERR_PROFILE_LOAD_FAILED);
          delete kernel;
          delete reconciliationScheduler;
          delete marketContextProvider;
@@ -300,6 +365,7 @@ public:
       CApplicationContext *context=new CApplicationContext();
       if(!context.Initialize(container,kernel))
         {
+         RecordEaInitFailure("bootstrap","application_context_initialization_failed",BRE_ERR_PROFILE_LOAD_FAILED);
          delete context;
          delete kernel;
          delete container;
@@ -350,6 +416,7 @@ public:
          new CPendingExecutionDiagnostics(logger,configuration.EnableExecutionDiagnostics(),64);
       CFilePendingExecutionStore *pendingExecutionStore=
          new CFilePendingExecutionStore("BasketRecovery/pending_executions.dat");
+      SetEaInitCurrentStage("pending_restore");
       pendingExecutionStore.RestoreFromDisk();
       CPendingExecutionLifecycleService *pendingExecutionLifecycle=
          new CPendingExecutionLifecycleService(pendingExecutionRegistry,
@@ -411,7 +478,8 @@ public:
       CProfitLevelCloseCandidatePlanningService *profitLevelCloseCandidatePlanningService=
          new CProfitLevelCloseCandidatePlanningService(pendingExecutionRegistry,
                                                        profitLevelCloseCandidateEventBuffer,
-                                                       configuration.MarketSafetyConfig().QuoteStaleThresholdMs());
+                                                       configuration.MarketSafetyConfig().QuoteStaleThresholdMs(),
+                                                       pendingExecutionStore);
       kernel.ConfigureProfitLevelCloseCandidatePlanning(profitLevelCloseCandidatePlanningService);
       context.RegisterProfitLevelCloseCandidateRuntime(profitLevelCloseCandidateEventBuffer,profitLevelCloseCandidatePlanningService);
 
@@ -597,7 +665,10 @@ public:
                                                  demoManualSubmissionService,
                                                  persistenceManager.BasketRepository(),
                                                  clock,
-                                                 container.UniqueIdGenerator());
+                                                 container.UniqueIdGenerator(),
+                                                 container.SnapshotStore(),
+                                                 pendingExecutionRegistry,
+                                                 asyncSubmissionGateway);
       CManualProfitCloseCandidateSubmissionValidationService *manualProfitCloseSubmissionValidationService=
          new CManualProfitCloseCandidateSubmissionValidationService();
       manualProfitCloseSubmissionValidationService.Configure(configuration.DemoAuthorizationConfig(),
@@ -614,14 +685,33 @@ public:
       CCompositePendingExecutionFillNotifier *startupFillNotifier=new CCompositePendingExecutionFillNotifier();
       startupFillNotifier.AddNotifier(manualRecoverySubmissionService);
       startupFillNotifier.AddNotifier(manualProfitCloseSubmissionService);
+      executionReconciliationScheduler.SetFillNotifier(startupFillNotifier);
+      context.RegisterPendingExecutionFillNotifier(startupFillNotifier);
+      SetEaInitCurrentStage("artifact_restore");
+      CManualRecoveryCandidateValidationArtifact::TryRestoreToRegistry(*manualRecoveryCandidateRegistry);
+      SSprint8cProfitCloseRestoreOutcome profitCloseRestoreOutcome;
+      CManualProfitCloseCandidateValidationArtifact::TryRestoreToRegistry(*manualProfitCloseCandidateRegistry,
+                                                                            clock.Now(),
+                                                                            profitCloseRestoreOutcome);
+      CManualProfitCloseSubmitDiagnostics::PrintRestoreOutcome(profitCloseRestoreOutcome.attempted,
+                                                               profitCloseRestoreOutcome.restored,
+                                                               profitCloseRestoreOutcome.failure_reason,
+                                                               profitCloseRestoreOutcome.candidate_id,
+                                                               profitCloseRestoreOutcome.execution_request_id,
+                                                               profitCloseRestoreOutcome.ticket,
+                                                               profitCloseRestoreOutcome.close_volume);
+      SetEaInitCurrentStage("startup_reconcile");
       CPendingExecutionStartupReconciliationService::ReconcilePersistedEntries(pendingExecutionStoreRef,
                                                                                pendingExecutionRegistry,
                                                                                pendingExecutionLifecycle,
                                                                                executionReconciliationReader,
                                                                                startupFillNotifier,
                                                                                executionHistoryReader,
-                                                                               clock.Now());
-      CManualRecoveryCandidateValidationArtifact::TryRestoreToRegistry(*manualRecoveryCandidateRegistry);
+                                                                               clock.Now(),
+                                                                               manualProfitCloseCandidateRegistry,
+                                                                               persistenceManager.BasketRepository(),
+                                                                               clock,
+                                                                               container.UniqueIdGenerator());
       // Sprint 7D: manual recovery route only; automatic recovery execution remains disabled.
       // Sprint 8C: manual profit close route only; automatic partial-close execution remains disabled.
       // Sprint 6G: OrderSendAsync exists only in CMt5AsyncSubmissionGateway; manual route only.

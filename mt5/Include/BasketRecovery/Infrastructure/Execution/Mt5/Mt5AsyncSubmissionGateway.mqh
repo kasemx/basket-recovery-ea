@@ -73,8 +73,9 @@ public:
       if(!m_attemptActive)
          return CSubmissionGatewayResult::Rejected("Async submission attempt context is not active");
 
-      if(envelope.IntentType()!=BRE_EXEC_INTENT_OPEN_POSITION)
-         return CSubmissionGatewayResult::Rejected("Only OPEN_POSITION is supported for demo manual submission");
+      if(envelope.IntentType()!=BRE_EXEC_INTENT_OPEN_POSITION &&
+         envelope.IntentType()!=BRE_EXEC_INTENT_CLOSE_POSITION)
+         return CSubmissionGatewayResult::Rejected("Only OPEN_POSITION and CLOSE_POSITION are supported for demo manual submission");
 
       ENUM_BRE_LIVE_SUBMISSION_SAFETY_REJECTION_REASON safetyReason=BRE_LIVE_SAFETY_NONE;
       string safetyDetail="";
@@ -91,12 +92,22 @@ public:
       CMarketQuote quote=m_attemptContext.Quote();
       MqlTradeRequest request;
       string translateError="";
-      if(!m_translator.TryTranslateOpenMarketDeal(envelope,
-                                                  quote.Bid(),
-                                                  quote.Ask(),
-                                                  m_slippagePoints,
-                                                  request,
-                                                  translateError))
+      bool translated=false;
+      if(envelope.IntentType()==BRE_EXEC_INTENT_OPEN_POSITION)
+         translated=m_translator.TryTranslateOpenMarketDeal(envelope,
+                                                            quote.Bid(),
+                                                            quote.Ask(),
+                                                            m_slippagePoints,
+                                                            request,
+                                                            translateError);
+      else
+         translated=m_translator.TryTranslateCloseMarketDeal(envelope,
+                                                             quote.Bid(),
+                                                             quote.Ask(),
+                                                             m_slippagePoints,
+                                                             request,
+                                                             translateError);
+      if(!translated)
          return CSubmissionGatewayResult::Rejected(translateError);
 
       MqlTradeResult asyncResult;
