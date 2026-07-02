@@ -256,18 +256,14 @@ void TestRealAccountRejected(CDemoManualSubmissionTestHarness &h)
    CTestAssert::EqualInt((int)BRE_LIVE_SAFETY_ACCOUNT_NOT_DEMO,(int)result.RejectionReason(),"real account rejected");
   }
 
-void TestOnlyOpenPositionAllowed(CDemoManualSubmissionTestHarness &h)
+void TestCloseWithoutTicketRejectedBeforeBroker(CDemoManualSubmissionTestHarness &h)
   {
    h.Reset();
    CBrokerSubmissionEnvelope envelope;
    CBasketAggregate basket;
-   CTestAssert::True(h.Prepare("req-close","idem-close","b-close",basket,envelope,BRE_EXEC_INTENT_CLOSE_POSITION,0.05),
-                     "prepare close");
-   CPendingExecutionEntry entry;
-   h.registry.TryGetByExecutionRequestId("req-close",entry);
-   string token=h.IssueToken(entry,h.clock.Now()+300);
-   CDemoManualSubmissionResult result=h.SubmitPrepared("req-close","b-close",token,"trigger-close");
-   CTestAssert::EqualInt((int)BRE_LIVE_SAFETY_INTENT_NOT_ALLOWED,(int)result.RejectionReason(),"close intent rejected");
+   CTestAssert::False(h.Prepare("req-close","idem-close","b-close",basket,envelope,BRE_EXEC_INTENT_CLOSE_POSITION,0.05),
+                      "ticketless close must be rejected during prepare");
+   CTestAssert::EqualInt(0,h.mockTransport.CallCount(),"ticketless close must not reach broker transport");
   }
 
 void TestMaxVolumeEnforced(CDemoManualSubmissionTestHarness &h)
@@ -490,7 +486,7 @@ void OnStart(void)
 
    TestDefaultModeRejects(harness);
    TestRealAccountRejected(harness);
-   TestOnlyOpenPositionAllowed(harness);
+   TestCloseWithoutTicketRejectedBeforeBroker(harness);
    TestMaxVolumeEnforced(harness);
    TestFalseOrderSendAsyncNotSubmitted(harness);
    TestAcceptedOrderSendAsyncSubmittedNotFilled(harness);

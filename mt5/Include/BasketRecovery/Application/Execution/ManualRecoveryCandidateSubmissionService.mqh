@@ -236,7 +236,7 @@ public:
       return result;
      }
 
-   void              OnBrokerFillConfirmed(const string executionRequestId) override
+   void              OnBrokerFillConfirmed(const string executionRequestId,const string completionPath="") override
      {
       if(m_candidateRegistry==NULL || m_stepTracker==NULL)
          return;
