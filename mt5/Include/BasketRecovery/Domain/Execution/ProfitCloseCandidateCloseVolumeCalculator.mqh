@@ -5,7 +5,6 @@
 #include <BasketRecovery/Domain/Strategy/ValueObjects/ProfitLevel.mqh>
 #include <BasketRecovery/Domain/Strategy/Aggregates/StrategyProfile.mqh>
 #include <BasketRecovery/Domain/Market/SymbolTradingConstraints.mqh>
-#include <BasketRecovery/Domain/Risk/Services/SlRiskMath.mqh>
 
 #define BRE_PROFIT_CLOSE_VOLUME_CALC_BUILD_MARKER "S8C_PROFIT_CLOSE_VOLUME_CALC_V1"
 
@@ -55,13 +54,13 @@ public:
       if(positionLot<=0.0 || closePercent<=0.0)
          return 0.0;
       if(closePercent>=100.0)
-         return CSlRiskMath::NormalizeVolumeDown(positionLot,constraints);
-      return CSlRiskMath::NormalizeVolumeDown(positionLot*closePercent/100.0,constraints);
+         return NormalizeVolumeDown(positionLot,constraints);
+      return NormalizeVolumeDown(positionLot*closePercent/100.0,constraints);
      }
 
    static double     NormalizeVolume(const double volume,const CSymbolTradingConstraints &constraints)
      {
-      return CSlRiskMath::NormalizeVolumeDown(volume,constraints);
+      return NormalizeVolumeDown(volume,constraints);
      }
 
    static bool       VolumesMatch(const double expectedVolume,
@@ -111,6 +110,37 @@ public:
       return volume>epsilon && volume+epsilon<minLot;
      }
 
+   static double     NormalizeVolumeDown(const double volume,
+                                         const double minLot,
+                                         const double lotStep)
+     {
+      if(volume<=0.0)
+         return 0.0;
+      if(lotStep<=0.0)
+         return volume;
+
+      const double boundaryEpsilon=VolumeComparisonEpsilon(lotStep);
+      const double steps=volume/lotStep;
+      const long nearestStep=(long)MathRound(steps);
+      if(MathAbs(steps-(double)nearestStep)<=boundaryEpsilon)
+        {
+         const double exactMultiple=(double)nearestStep*lotStep;
+         if(exactMultiple+boundaryEpsilon<minLot)
+            return 0.0;
+         return exactMultiple;
+        }
+
+      const double normalized=MathFloor(steps)*lotStep;
+      if(normalized+boundaryEpsilon<minLot)
+         return 0.0;
+      return normalized;
+     }
+
+   static double     NormalizeVolumeDown(const double volume,const CSymbolTradingConstraints &constraints)
+     {
+      return NormalizeVolumeDown(volume,constraints.VolumeMin(),constraints.VolumeStep());
+     }
+
    static SProfitCloseVolumeCalculation CalculateNextCloseVolume(const double remainingVolume,
                                                                  const double closePercent,
                                                                  const double minLot,
@@ -129,7 +159,7 @@ public:
       double epsilon=VolumeComparisonEpsilon(lotStep);
 
       // 1. Normalize remaining volume safely to broker step.
-      double remaining=CSlRiskMath::NormalizeVolumeDown(remainingVolume,constraints);
+      double remaining=NormalizeVolumeDown(remainingVolume,minLot,lotStep);
       if(remaining<minLot-epsilon)
          return out;
 
@@ -139,7 +169,7 @@ public:
       double rawClose=remaining*closePercent/100.0;
       if(closePercent>=100.0)
          rawClose=remaining;
-      double partialClose=CSlRiskMath::NormalizeVolumeDown(rawClose,constraints);
+      double partialClose=NormalizeVolumeDown(rawClose,minLot,lotStep);
 
       // 4. partialClose below min lot is the only NO_VALID_CLOSE_VOLUME path.
       if(partialClose<minLot-epsilon)

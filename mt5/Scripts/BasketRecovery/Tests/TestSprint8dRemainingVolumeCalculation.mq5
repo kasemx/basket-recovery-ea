@@ -49,6 +49,66 @@ void TestDustRemainderPromotesFullClose(void)
    CTestAssert::EqualDouble(0.0,calc.remainderVolume,0.0000001,"full close remainder must be zero");
   }
 
+void TestExactStepPreserves006(void)
+  {
+   CSymbolTradingConstraints constraints=CSymbolTradingConstraints::Create(0,0,0.01,100.0,0.01);
+   CTestAssert::EqualDouble(0.06,
+                            CProfitCloseCandidateCloseVolumeCalculator::NormalizeVolume(0.06,constraints),
+                            0.0000001,
+                            "0.06 must preserve exact lot-step multiple");
+  }
+
+void TestExactStepPreserves003(void)
+  {
+   CSymbolTradingConstraints constraints=CSymbolTradingConstraints::Create(0,0,0.01,100.0,0.01);
+   CTestAssert::EqualDouble(0.03,
+                            CProfitCloseCandidateCloseVolumeCalculator::NormalizeVolume(0.03,constraints),
+                            0.0000001,
+                            "0.03 must preserve exact lot-step multiple");
+  }
+
+void TestNonStepNormalizesDown0025(void)
+  {
+   CSymbolTradingConstraints constraints=CSymbolTradingConstraints::Create(0,0,0.01,100.0,0.01);
+   CTestAssert::EqualDouble(0.02,
+                            CProfitCloseCandidateCloseVolumeCalculator::NormalizeVolume(0.025,constraints),
+                            0.0000001,
+                            "0.025 must normalize down to 0.02");
+   CTestAssert::EqualDouble(0.02,
+                            CProfitCloseCandidateCloseVolumeCalculator::NormalizeVolume(0.0201,constraints),
+                            0.0000001,
+                            "0.0201 must normalize down to 0.02");
+   CTestAssert::EqualDouble(0.02,
+                            CProfitCloseCandidateCloseVolumeCalculator::NormalizeVolume(0.029,constraints),
+                            0.0000001,
+                            "0.029 must normalize down to 0.02");
+  }
+
+void TestFullChainSeed006M1M2M3(void)
+  {
+   const double m1Percent=33.0;
+   const double m2Percent=50.0;
+   const double m3Percent=34.0;
+   SProfitCloseVolumeCalculation m1=
+      CProfitCloseCandidateCloseVolumeCalculator::CalculateNextCloseVolume(0.06,m1Percent,0.01,0.01);
+   CTestAssert::EqualInt((int)BRE_PROFIT_CLOSE_VOLUME_RESULT_OK,(int)m1.result,"M1 must be valid");
+   CTestAssert::EqualDouble(0.01,m1.closeVolume,0.0000001,"M1 close volume");
+   CTestAssert::EqualDouble(0.05,m1.remainderVolume,0.0000001,"M1 remainder volume");
+
+   SProfitCloseVolumeCalculation m2=
+      CProfitCloseCandidateCloseVolumeCalculator::CalculateNextCloseVolume(m1.remainderVolume,m2Percent,0.01,0.01);
+   CTestAssert::EqualInt((int)BRE_PROFIT_CLOSE_VOLUME_RESULT_OK,(int)m2.result,"M2 must be valid");
+   CTestAssert::EqualDouble(0.02,m2.closeVolume,0.0000001,"M2 close volume");
+   CTestAssert::EqualDouble(0.03,m2.remainderVolume,0.0000001,"M2 remainder volume");
+
+   SProfitCloseVolumeCalculation m3=
+      CProfitCloseCandidateCloseVolumeCalculator::CalculateNextCloseVolume(m2.remainderVolume,m3Percent,0.01,0.01);
+   CTestAssert::EqualInt((int)BRE_PROFIT_CLOSE_VOLUME_RESULT_OK,(int)m3.result,"M3 must be valid");
+   CTestAssert::EqualDouble(0.01,m3.closeVolume,0.0000001,"M3 close volume");
+   CTestAssert::EqualDouble(0.02,m3.remainderVolume,0.0000001,"M3 remainder volume");
+   CTestAssert::True(m3.closeVolume+0.0000001<m3.sourceRemainingVolume,"M3 must not promote to full close");
+  }
+
 void TestPlannerUsesRemainingVolumeForM2(void)
   {
    string levelIds[];
@@ -97,6 +157,10 @@ void OnStart(void)
    TestRemaining002Half();
    TestRemaining001HalfNoValidPartial();
    TestDustRemainderPromotesFullClose();
+   TestExactStepPreserves006();
+   TestExactStepPreserves003();
+   TestNonStepNormalizesDown0025();
+   TestFullChainSeed006M1M2M3();
    TestPlannerUsesRemainingVolumeForM2();
    CTestAssert::Summary("TestSprint8dRemainingVolumeCalculation");
   }
