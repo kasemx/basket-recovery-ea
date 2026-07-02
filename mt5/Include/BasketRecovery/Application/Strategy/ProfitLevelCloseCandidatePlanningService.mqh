@@ -302,6 +302,18 @@ public:
       return out;
      }
 
+   static double     ReadEmittedCloseVolume(const CProfitLevelCloseCandidate &candidate)
+     {
+      double total=0.0;
+      CPositionReductionInstruction instruction;
+      for(int i=0;i<candidate.Audit().ReductionCount();i++)
+        {
+         if(candidate.Audit().ReductionAt(i,instruction))
+            total+=instruction.ProposedCloseVolume();
+        }
+      return total;
+     }
+
    CProfitLevelCloseCandidate EvaluateAndEmit(const CBasketAggregate &basket,
                                               const CStrategyEvaluationContext &evalContext,
                                               const CRecoveryRiskGateInput &gateInput) const

@@ -4,7 +4,8 @@
 #include <BasketRecovery/Domain/Strategy/Context/ProfitLevelEvaluationContext.mqh>
 #include <BasketRecovery/Domain/Strategy/ValueObjects/ProfitLevelCloseCandidate.mqh>
 #include <BasketRecovery/Domain/Strategy/Services/ProfitLevelTriggerEvaluator.mqh>
-#include <BasketRecovery/Domain/Strategy/Services/ProfitLevelCloseVolumePlanner.mqh>
+#include <BasketRecovery/Domain/Strategy/Services/ProfitLevelPositionSelector.mqh>
+#include <BasketRecovery/Domain/Execution/ProfitCloseCandidateCloseVolumeCalculator.mqh>
 #include <BasketRecovery/Domain/Enums/BasketLifecycleState.mqh>
 
 class CProfitLevelCloseCandidatePlanner
@@ -58,6 +59,66 @@ private:
    bool              IsBlockingLifecycle(const ENUM_BRE_BASKET_LIFECYCLE_STATE state) const
      {
       return state==BRE_STATE_SUSPENDED || state==BRE_STATE_CLOSING;
+     }
+
+   double            SumRemainingVolume(const CPositionRuntimeView &positions[],const int positionCount) const
+     {
+      double total=0.0;
+      for(int i=0;i<positionCount;i++)
+        {
+         if(positions[i].Lot()>0.0)
+            total+=positions[i].Lot();
+        }
+      return total;
+     }
+
+   double            EstimateCloseMoney(const CPositionRuntimeView &position,const double closeVolume) const
+     {
+      if(position.Lot()<=0.0 || closeVolume<=0.0)
+         return 0.0;
+      return position.FloatingProfit()*(closeVolume/position.Lot());
+     }
+
+   bool              BuildReductionsForPlannedCloseVolume(const ENUM_BRE_CLOSE_MODE closeMode,
+                                                          const ENUM_BRE_TRADE_DIRECTION direction,
+                                                          const CPositionRuntimeView &positions[],
+                                                          const int positionCount,
+                                                          const double plannedCloseVolume,
+                                                          const CSymbolTradingConstraints &constraints,
+                                                          CPositionReductionInstruction &reductions[],
+                                                          int &reductionCount) const
+     {
+      reductionCount=0;
+      ArrayResize(reductions,0);
+      if(positionCount<=0 || plannedCloseVolume<=0.0)
+         return false;
+
+      CPositionRuntimeView ordered[];
+      int orderedCount=CProfitLevelPositionSelector::SelectOrdered(closeMode,direction,positions,positionCount,ordered);
+      if(orderedCount<=0)
+         return false;
+
+      double remainingToClose=plannedCloseVolume;
+      const double epsilon=CProfitCloseCandidateCloseVolumeCalculator::VolumeComparisonEpsilon(constraints.VolumeStep());
+
+      for(int i=0;i<orderedCount && remainingToClose>epsilon;i++)
+        {
+         CPositionRuntimeView position=ordered[i];
+         if(position.Lot()<=epsilon)
+            continue;
+
+         double slice=MathMin(position.Lot(),remainingToClose);
+         if(slice<=epsilon)
+            continue;
+
+         double estimated=EstimateCloseMoney(position,slice);
+         ArrayResize(reductions,reductionCount+1);
+         reductions[reductionCount]=CPositionReductionInstruction::Create(position.Ticket(),slice,estimated);
+         reductionCount++;
+         remainingToClose-=slice;
+        }
+
+      return reductionCount>0;
      }
 
 public:
@@ -169,19 +230,31 @@ public:
                            trigger.TriggerType(),trigger.TriggerValue());
 
          if(!trigger.Reached())
+           {
+            if(!progress.Reached())
+               continue;
             return Blocked(ctx,level,
                            BRE_PROFIT_LEVEL_CLOSE_NOT_REACHED,
                            BRE_PROFIT_LEVEL_CLOSE_REASON_TRIGGER_NOT_SATISFIED,
                            progressState,
                            trigger.TriggerType(),trigger.TriggerValue());
+           }
 
-         double targetCloseMoney=ctx.FloatingProfitUsd()*level.ClosePercent()/100.0;
-         if(targetCloseMoney<=0.0)
-            return Blocked(ctx,level,
-                           BRE_PROFIT_LEVEL_CLOSE_INVALID_CLOSE_PLAN,
-                           BRE_PROFIT_LEVEL_CLOSE_REASON_VOLUME_PLAN_FAILED,
-                           progressState,
-                           trigger.TriggerType(),trigger.TriggerValue());
+         bool requiresBasketReach=false;
+         for(int prior=0;prior<i;prior++)
+           {
+            CProfitLevel priorLevel=plan.LevelAt(prior);
+            if(!priorLevel.Enabled())
+               continue;
+            CBasketProfitLevelProgress priorProgress;
+            if(ctx.FindLevelProgress(priorLevel.LevelId(),priorProgress) && priorProgress.CloseCompleted())
+              {
+               requiresBasketReach=true;
+               break;
+              }
+           }
+         if(requiresBasketReach && !progress.Reached())
+            continue;
 
          ENUM_BRE_CLOSE_MODE closeMode=level.CloseMode();
          if(closeMode==BRE_CLOSE_MODE_NONE)
@@ -192,14 +265,12 @@ public:
          for(int p=0;p<ctx.PositionCount();p++)
             positions[p]=ctx.PositionAt(p);
 
-         CProfitLevelCloseVolumePlan volumePlan=CProfitLevelCloseVolumePlanner::Plan(closeMode,
-                                                                                     ctx.Direction(),
-                                                                                     positions,
-                                                                                     ctx.PositionCount(),
-                                                                                     targetCloseMoney,
-                                                                                     level.ClosePercent(),
-                                                                                     ctx.Constraints());
-         if(!volumePlan.Valid())
+         double sourceRemainingVolume=SumRemainingVolume(positions,ctx.PositionCount());
+         SProfitCloseVolumeCalculation volumeCalc=
+            CProfitCloseCandidateCloseVolumeCalculator::CalculateNextCloseVolume(sourceRemainingVolume,
+                                                                               level.ClosePercent(),
+                                                                               ctx.Constraints());
+         if(volumeCalc.result==BRE_PROFIT_CLOSE_VOLUME_RESULT_NO_VALID_CLOSE_VOLUME)
             return Blocked(ctx,level,
                            BRE_PROFIT_LEVEL_CLOSE_INVALID_CLOSE_PLAN,
                            BRE_PROFIT_LEVEL_CLOSE_REASON_VOLUME_PLAN_FAILED,
@@ -207,18 +278,28 @@ public:
                            trigger.TriggerType(),trigger.TriggerValue());
 
          CPositionReductionInstruction reductions[];
-         int reductionCount=volumePlan.ReductionCount();
-         ArrayResize(reductions,reductionCount);
-         for(int r=0;r<reductionCount;r++)
-           {
-            CPositionReductionInstruction instruction;
-            volumePlan.ReductionAt(r,instruction);
-            reductions[r]=instruction;
-           }
+         int reductionCount=0;
+         if(!BuildReductionsForPlannedCloseVolume(closeMode,
+                                                  ctx.Direction(),
+                                                  positions,
+                                                  ctx.PositionCount(),
+                                                  volumeCalc.closeVolume,
+                                                  ctx.Constraints(),
+                                                  reductions,
+                                                  reductionCount))
+            return Blocked(ctx,level,
+                           BRE_PROFIT_LEVEL_CLOSE_INVALID_CLOSE_PLAN,
+                           BRE_PROFIT_LEVEL_CLOSE_REASON_VOLUME_PLAN_FAILED,
+                           progressState,
+                           trigger.TriggerType(),trigger.TriggerValue());
 
-         ENUM_BRE_PROFIT_LEVEL_CLOSE_REASON dueReason=volumePlan.MinimumVolumeOverrun()
-            ? BRE_PROFIT_LEVEL_CLOSE_REASON_BROKER_MIN_VOLUME_OVERRUN
-            : BRE_PROFIT_LEVEL_CLOSE_REASON_NONE;
+         double targetCloseMoney=ctx.FloatingProfitUsd()*level.ClosePercent()/100.0;
+         if(targetCloseMoney<=0.0)
+            return Blocked(ctx,level,
+                           BRE_PROFIT_LEVEL_CLOSE_INVALID_CLOSE_PLAN,
+                           BRE_PROFIT_LEVEL_CLOSE_REASON_VOLUME_PLAN_FAILED,
+                           progressState,
+                           trigger.TriggerType(),trigger.TriggerValue());
 
          string idempotencyKey=BuildIdempotencyKey(ctx.BasketId(),level.LevelId(),ctx.QuoteSequence());
          CProfitLevelCloseAudit audit=CProfitLevelCloseAudit::Create(ctx.BasketId(),
@@ -238,9 +319,9 @@ public:
                                                                     idempotencyKey,
                                                                     ctx.TimestampUtc(),
                                                                     BRE_PROFIT_LEVEL_CLOSE_DUE,
-                                                                    dueReason,
+                                                                    BRE_PROFIT_LEVEL_CLOSE_REASON_NONE,
                                                                     BRE_PROFIT_LEVEL_PROGRESS_NOT_STARTED,
-                                                                    volumePlan.MinimumVolumeOverrun());
+                                                                    false);
          return CProfitLevelCloseCandidate::FromAudit(audit);
         }
 
