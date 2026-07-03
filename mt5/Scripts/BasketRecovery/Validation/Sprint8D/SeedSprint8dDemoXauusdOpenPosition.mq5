@@ -1,9 +1,30 @@
 #property script_show_inputs
-#property description "Sprint 8D: DRY_RUN seed setup preflight for fresh XAUUSD OPEN_POSITION 0.06. No writes, orders, tokens, or store mutation."
+#property description "Sprint 8D: DRY_RUN preflight and optional isolated write-mode seed for XAUUSD OPEN_POSITION 0.06. No broker submission."
 
 #include <BasketRecovery/Domain/Enums/TradeDirection.mqh>
+#include <BasketRecovery/Validation/Sprint8D/Sprint8dDemoM123StrategyProfile.mqh>
+#include <BasketRecovery/Application/Services/ExecutionDryRunTestBasketSeedService.mqh>
+#include <BasketRecovery/Application/Execution/ExecutionSubmissionPreparer.mqh>
+#include <BasketRecovery/Application/Execution/SubmissionPreparationPolicy.mqh>
+#include <BasketRecovery/Application/Execution/SubmissionPreparationValidator.mqh>
+#include <BasketRecovery/Application/Execution/PendingExecutionRegistry.mqh>
+#include <BasketRecovery/Domain/Execution/BrokerSubmissionTransitionGate.mqh>
+#include <BasketRecovery/Domain/Execution/ExecutionRequestFingerprint.mqh>
+#include <BasketRecovery/Domain/Execution/TradeExecutionStatus.mqh>
+#include <BasketRecovery/Domain/Execution/PendingExecutionEntry.mqh>
+#include <BasketRecovery/Infrastructure/Execution/FilePendingExecutionStore.mqh>
+#include <BasketRecovery/Infrastructure/Market/Mt5MarketDataProvider.mqh>
+#include <BasketRecovery/Infrastructure/MT5/Mt5Clock.mqh>
+#include <BasketRecovery/Infrastructure/MT5/Mt5UniqueIdGenerator.mqh>
+#include <BasketRecovery/Infrastructure/Persistence/FileBasketRepository.mqh>
+#include <BasketRecovery/Shared/Constants/PersistenceSchema.mqh>
+#include <BasketRecovery/Domain/Execution/SubmissionPreparationResult.mqh>
+#include <BasketRecovery/Domain/Execution/TradeExecutionRequest.mqh>
+#include <BasketRecovery/Application/Configuration/MarketSafetyConfig.mqh>
+#include <BasketRecovery/Domain/Enums/BasketLifecycleState.mqh>
 
 const string REQUIRED_TERMINAL_DATA_ID="D0E8209F77C8CF37AD8BF550E51FF075";
+const string PENDING_STORE_RELATIVE_PATH="BasketRecovery/pending_executions.dat";
 const string RETIRED_BASKET_ID="sprint8c-demo-xauusd-002";
 const ulong RETIRED_TICKET_A=1516350243;
 const ulong RETIRED_TICKET_B=1516503131;
@@ -11,8 +32,10 @@ const double REQUIRED_SEED_VOLUME=0.06;
 const double VOLUME_TOLERANCE=0.00000001;
 const double EXPECTED_MIN_LOT=0.01;
 const double EXPECTED_LOT_STEP=0.01;
+const int ENVELOPE_VALIDITY_SECONDS=3600;
 
 input bool   InpDryRunOnly=true;
+input bool   InpWriteMode=false;
 input string InpBasketId="";
 input string InpExecutionRequestId="";
 input string InpIdempotencyKey="";
@@ -23,6 +46,25 @@ input long   InpExpectedBasketVersion=1;
 input string InpStrategyProfileHash="";
 input long   InpMagicNumber=202608401;
 input ulong  InpQuoteSequence=0;
+
+string CanonicalStrategyProfileHash(void)
+  {
+   return CSprint8dDemoM123StrategyProfile::ExpectedHash();
+  }
+
+bool ProfileHashInputMatchesCanonical(void)
+  {
+   if(InpStrategyProfileHash=="")
+      return true;
+   return InpStrategyProfileHash==CanonicalStrategyProfileHash();
+  }
+
+void PrintCanonicalProfileContext(void)
+  {
+   PrintLine("canonical_strategy_id="+CSprint8dDemoM123StrategyProfile::StrategyId());
+   PrintLine("canonical_strategy_profile_hash="+CanonicalStrategyProfileHash());
+   PrintLine("profile_hash_input_matches_canonical="+(ProfileHashInputMatchesCanonical()?"true":"false"));
+  }
 
 void PrintLine(const string line)
   {
@@ -65,11 +107,6 @@ string FillingModeSummary(const long fillingMask)
    if(parts=="")
       return "NONE";
    return parts;
-  }
-
-bool IocFillingSupported(const long fillingMask)
-  {
-   return (fillingMask & SYMBOL_FILLING_IOC)!=0;
   }
 
 int CountSymbolOpenPositions(const string symbol)
@@ -195,6 +232,342 @@ bool TerminalDataPathMatchesD0E(const string terminalDataPath)
    return StringFind(upper,REQUIRED_TERMINAL_DATA_ID)>=0;
   }
 
+bool WaitForD0EBrokerAuthorization(string &failureReasonOut)
+  {
+   failureReasonOut="";
+   if(!TerminalDataPathMatchesD0E(TerminalInfoString(TERMINAL_DATA_PATH)))
+      return true;
+
+   const int maxAttempts=120;
+   for(int attempt=0;attempt<maxAttempts;attempt++)
+     {
+      const bool tradeAllowed=AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)!=0;
+      const string marginMode=MarginModeLabel(AccountInfoInteger(ACCOUNT_MARGIN_MODE));
+      if(tradeAllowed && marginMode=="RETAIL_HEDGING")
+         return true;
+      Sleep(500);
+     }
+
+   failureReasonOut="Timed out waiting for D0E RETAIL_HEDGING broker authorization";
+   return false;
+  }
+
+CTradeExecutionRequest BuildSeedExecutionRequest(const CBasketId &basketId,
+                                               const ENUM_BRE_TRADE_DIRECTION direction,
+                                               const long expectedBasketVersion,
+                                               const string strategyProfileHash,
+                                               const CMt5Clock &clock)
+  {
+   return CTradeExecutionRequest::Create(InpExecutionRequestId,
+                                         InpIdempotencyKey,
+                                         "corr-"+InpExecutionRequestId,
+                                         basketId,
+                                         expectedBasketVersion,
+                                         strategyProfileHash,
+                                         InpSymbol,
+                                         BRE_EXEC_INTENT_OPEN_POSITION,
+                                         direction,
+                                         0,
+                                         InpRequestedVolume,
+                                         0.0,
+                                         0.0,
+                                         0.0,
+                                         clock.Now(),
+                                         CCommandId("cmd-sprint8d-seed"),
+                                         "sprint8d-seed");
+  }
+
+bool BasketMatchesSeedContract(const CBasketAggregate &basket,
+                               const ENUM_BRE_TRADE_DIRECTION direction,
+                               string &reasonOut)
+  {
+   reasonOut="";
+   if(basket.LifecycleState()!=BRE_STATE_ACTIVE)
+     {
+      reasonOut="Basket lifecycle is not ACTIVE";
+      return false;
+     }
+   if(basket.Symbol()!=InpSymbol)
+     {
+      reasonOut="Basket symbol mismatch";
+      return false;
+     }
+   if(basket.Direction()!=direction)
+     {
+      reasonOut="Basket direction mismatch";
+      return false;
+     }
+   if((long)basket.Version()!=InpExpectedBasketVersion)
+     {
+      reasonOut="Basket version mismatch";
+      return false;
+     }
+   if(basket.StrategyProfileHash()!=CanonicalStrategyProfileHash())
+     {
+      reasonOut="Basket strategy profile hash mismatch";
+      return false;
+     }
+   if(!basket.HasStrategyProfile())
+     {
+      reasonOut="Basket strategy profile is not bound";
+      return false;
+     }
+   return true;
+  }
+
+bool PendingEntryMatchesRequest(const CPendingExecutionEntry &entry,
+                                const CTradeExecutionRequest &request)
+  {
+   if(entry.ExecutionRequestId()!=request.ExecutionRequestId())
+      return false;
+   if(entry.IdempotencyKey()!=request.IdempotencyKey())
+      return false;
+   if(entry.BasketId().Value()!=request.BasketId().Value())
+      return false;
+   if(entry.ExpectedBasketVersion()!=(int)request.ExpectedBasketVersion())
+      return false;
+   if(entry.StrategyProfileHash()!=request.StrategyProfileHash())
+      return false;
+   if(entry.Symbol()!=request.Symbol())
+      return false;
+   if(entry.IntentType()!=request.IntentType())
+      return false;
+   if(!VolumeMatchesRequiredSeedVolume(entry.RequestedVolume()))
+      return false;
+   if(entry.Status()!=BRE_TRADE_EXEC_STATUS_QUEUED)
+      return false;
+   if(!entry.IsPreparedQueued())
+      return false;
+   return true;
+  }
+
+bool EnvelopeMatchesSeedRequest(const CBrokerSubmissionEnvelope &envelope,
+                                const CTradeExecutionRequest &request,
+                                const datetime nowUtc)
+  {
+   if(envelope.IsExpired(nowUtc))
+      return false;
+   if(envelope.ExecutionRequestId()!=request.ExecutionRequestId())
+      return false;
+   if(envelope.IdempotencyKey()!=request.IdempotencyKey())
+      return false;
+   if(envelope.BasketId().Value()!=request.BasketId().Value())
+      return false;
+   if(envelope.ExpectedBasketVersion()!=(int)request.ExpectedBasketVersion())
+      return false;
+   if(envelope.StrategyProfileHash()!=request.StrategyProfileHash())
+      return false;
+   if(envelope.Symbol()!=request.Symbol())
+      return false;
+   if(envelope.IntentType()!=request.IntentType())
+      return false;
+   if(envelope.Direction()!=request.Direction())
+      return false;
+   if(!VolumeMatchesRequiredSeedVolume(envelope.RequestedVolume()))
+      return false;
+   if(envelope.MagicNumber()!=InpMagicNumber)
+      return false;
+   if(MathAbs(envelope.RequestedStopLoss())>VOLUME_TOLERANCE)
+      return false;
+   if(MathAbs(envelope.RequestedTakeProfit())>VOLUME_TOLERANCE)
+      return false;
+   CExecutionRequestFingerprint current=CExecutionRequestFingerprint::Compute(request);
+   if(envelope.Fingerprint()!=current)
+      return false;
+   return true;
+  }
+
+int CountUnrelatedPendingEntries(CFilePendingExecutionStore &store,
+                                 const string executionRequestId,
+                                 const string idempotencyKey)
+  {
+   CPendingExecutionEntry entries[];
+   int count=store.RestoreEntries(entries);
+   int unrelated=0;
+   for(int i=0;i<count;i++)
+     {
+      if(entries[i].ExecutionRequestId()==executionRequestId)
+         continue;
+      if(entries[i].IdempotencyKey()==idempotencyKey)
+         continue;
+      unrelated++;
+     }
+   return unrelated;
+  }
+
+void HydrateRegistryFromStore(CPendingExecutionRegistry &registry,
+                            CFilePendingExecutionStore &store)
+  {
+   CPendingExecutionEntry entries[];
+   int count=store.RestoreEntries(entries);
+   for(int i=0;i<count;i++)
+      registry.Upsert(entries[i]);
+  }
+
+bool DetectPayloadIdentityMismatch(CPendingExecutionRegistry &registry,
+                                   CFilePendingExecutionStore &store,
+                                   const CTradeExecutionRequest &request,
+                                   string &reasonOut)
+  {
+   reasonOut="";
+   CPendingExecutionEntry byRequest;
+   if(registry.TryGetByExecutionRequestId(request.ExecutionRequestId(),byRequest))
+     {
+      if(byRequest.IdempotencyKey()!=request.IdempotencyKey() ||
+         byRequest.BasketId().Value()!=request.BasketId().Value() ||
+         byRequest.ExpectedBasketVersion()!=(int)request.ExpectedBasketVersion() ||
+         byRequest.StrategyProfileHash()!=request.StrategyProfileHash() ||
+         byRequest.Symbol()!=request.Symbol() ||
+         byRequest.IntentType()!=request.IntentType() ||
+         !VolumeMatchesRequiredSeedVolume(byRequest.RequestedVolume()))
+        {
+         reasonOut="Execution request id exists with different payload";
+         return true;
+        }
+     }
+
+   CPendingExecutionEntry entries[];
+   int count=store.RestoreEntries(entries);
+   for(int i=0;i<count;i++)
+     {
+      if(entries[i].IdempotencyKey()==request.IdempotencyKey() &&
+         entries[i].ExecutionRequestId()!=request.ExecutionRequestId())
+        {
+         reasonOut="Idempotency key exists with different execution request id";
+         return true;
+        }
+     }
+
+   CResult<CBrokerSubmissionEnvelope> envelopeResult=store.FindEnvelopeByIdempotencyKey(request.IdempotencyKey());
+   CBrokerSubmissionEnvelope envelope;
+   if(envelopeResult.TryGetValue(envelope))
+     {
+      if(envelope.ExecutionRequestId()!=request.ExecutionRequestId())
+        {
+         reasonOut="Envelope idempotency key is bound to a different execution request id";
+         return true;
+        }
+      CExecutionRequestFingerprint current=CExecutionRequestFingerprint::Compute(request);
+      if(envelope.Fingerprint()!=current)
+        {
+         reasonOut="Envelope fingerprint does not match requested payload";
+         return true;
+        }
+     }
+   return false;
+  }
+
+bool ClassifySeedState(CFileBasketRepository &repository,
+                       CPendingExecutionRegistry &registry,
+                       CFilePendingExecutionStore &store,
+                       const CTradeExecutionRequest &request,
+                       const ENUM_BRE_TRADE_DIRECTION direction,
+                       const datetime nowUtc,
+                       string &classificationOut,
+                       string &reasonOut,
+                       bool &basketExistsBeforeOut,
+                       bool &pendingEntryExistsBeforeOut,
+                       bool &pendingEnvelopeExistsBeforeOut)
+  {
+   classificationOut="UNKNOWN";
+   reasonOut="";
+   basketExistsBeforeOut=false;
+   pendingEntryExistsBeforeOut=false;
+   pendingEnvelopeExistsBeforeOut=false;
+
+   const CBasketId basketId(request.BasketId());
+   basketExistsBeforeOut=repository.Exists(basketId);
+
+   CPendingExecutionEntry targetEntry;
+   pendingEntryExistsBeforeOut=registry.TryGetByExecutionRequestId(request.ExecutionRequestId(),targetEntry);
+
+   CResult<CBrokerSubmissionEnvelope> envelopeResult=store.FindEnvelopeByIdempotencyKey(request.IdempotencyKey());
+   CBrokerSubmissionEnvelope targetEnvelope;
+   pendingEnvelopeExistsBeforeOut=envelopeResult.TryGetValue(targetEnvelope);
+
+   string mismatchReason="";
+   if(DetectPayloadIdentityMismatch(registry,store,request,mismatchReason))
+     {
+      classificationOut="G_PAYLOAD_MISMATCH";
+      reasonOut=mismatchReason;
+      return false;
+     }
+
+   if(pendingEntryExistsBeforeOut &&
+      !CBrokerSubmissionTransitionGate::PreparationMaySetStatus(targetEntry.Status()))
+     {
+      classificationOut="H_TERMINAL_PENDING";
+      reasonOut="Target pending entry is not QUEUED";
+      return false;
+     }
+
+   if((pendingEntryExistsBeforeOut || pendingEnvelopeExistsBeforeOut) && !basketExistsBeforeOut)
+     {
+      classificationOut="E_ORPHAN_PENDING";
+      reasonOut="Target pending artifacts exist but basket file is missing";
+      return false;
+     }
+
+   if(pendingEntryExistsBeforeOut && !pendingEnvelopeExistsBeforeOut)
+     {
+      classificationOut="C_ENTRY_NO_ENVELOPE";
+      reasonOut="Target pending entry exists without matching envelope";
+      return false;
+     }
+
+   if(basketExistsBeforeOut)
+     {
+      CResult<CBasketAggregate> loaded=repository.Load(basketId);
+      if(loaded.IsFail())
+        {
+         classificationOut="F_BASKET_MISMATCH";
+         reasonOut="Target basket file exists but could not be loaded";
+         return false;
+        }
+      CBasketAggregate basket;
+      loaded.TryGetValue(basket);
+      string basketReason="";
+      if(!BasketMatchesSeedContract(basket,direction,basketReason))
+        {
+         classificationOut="F_BASKET_MISMATCH";
+         reasonOut=basketReason;
+         return false;
+        }
+
+      if(pendingEntryExistsBeforeOut &&
+         pendingEnvelopeExistsBeforeOut &&
+         PendingEntryMatchesRequest(targetEntry,request) &&
+         EnvelopeMatchesSeedRequest(targetEnvelope,request,nowUtc))
+        {
+         classificationOut="D_IDEMPOTENT_ALREADY_PREPARED";
+         reasonOut="Exact matching ACTIVE basket and QUEUED pending already prepared";
+         return true;
+        }
+
+      if(!pendingEntryExistsBeforeOut && !pendingEnvelopeExistsBeforeOut)
+        {
+         classificationOut="B_BASKET_ONLY";
+         reasonOut="Exact matching ACTIVE basket exists without target pending artifacts";
+         return true;
+        }
+
+      classificationOut="F_BASKET_MISMATCH";
+      reasonOut="Basket exists but target pending state is not an exact queued match";
+      return false;
+     }
+
+   if(!pendingEntryExistsBeforeOut && !pendingEnvelopeExistsBeforeOut)
+     {
+      classificationOut="A_FRESH";
+      reasonOut="No target basket or pending artifacts exist";
+      return true;
+     }
+
+   classificationOut="G_PAYLOAD_MISMATCH";
+   reasonOut="Pending artifacts exist without target basket";
+   return false;
+  }
+
 bool RunSeedSetupPreflight(const string terminalDataPath,
                            const string accountTradeModeLabel,
                            const string accountMarginModeLabel,
@@ -214,9 +587,9 @@ bool RunSeedSetupPreflight(const string terminalDataPath,
    oldStateReuseDetectedOut=false;
    matchedIdentifierOut="";
 
-   if(!InpDryRunOnly)
+   if(!InpWriteMode && !InpDryRunOnly)
      {
-      failureReasonOut="InpDryRunOnly must remain true; this script has no write mode";
+      failureReasonOut="InpDryRunOnly must remain true when InpWriteMode is false";
       return false;
      }
    if(!TerminalDataPathMatchesD0E(terminalDataPath))
@@ -304,9 +677,9 @@ bool RunSeedSetupPreflight(const string terminalDataPath,
       failureReasonOut="Expected basket version must be greater than zero";
       return false;
      }
-   if(InpStrategyProfileHash=="")
+   if(!ProfileHashInputMatchesCanonical())
      {
-      failureReasonOut="Strategy profile hash empty";
+      failureReasonOut="Strategy profile hash input does not match canonical profile";
       return false;
      }
    if(InpQuoteSequence<=0)
@@ -323,21 +696,17 @@ bool RunSeedSetupPreflight(const string terminalDataPath,
    return true;
   }
 
-void PrintSeedSetupSummary(const bool preflightOk,
-                           const string failureReason,
-                           const bool oldStateReuseDetected,
-                           const string directionLabel,
-                           const string terminalDataPath,
-                           const string accountTradeModeLabel,
-                           const string accountMarginModeLabel,
-                           const bool accountTradeAllowed,
-                           const string symbolTradeModeLabel,
-                           const double minVolume,
-                           const double volumeStep,
-                           const string fillingModeLabel,
-                           const int openPositionCount)
+void PrintCommonContext(const string directionLabel,
+                        const string terminalDataPath,
+                        const string accountTradeModeLabel,
+                        const string accountMarginModeLabel,
+                        const bool accountTradeAllowed,
+                        const string symbolTradeModeLabel,
+                        const double minVolume,
+                        const double volumeStep,
+                        const string fillingModeLabel,
+                        const int openPositionCount)
   {
-   PrintLine("sprint8d_seed_setup_mode=DRY_RUN");
    PrintLine("terminal_data_path="+terminalDataPath);
    PrintLine("account_trade_mode="+accountTradeModeLabel);
    PrintLine("account_margin_mode="+accountMarginModeLabel);
@@ -357,16 +726,496 @@ void PrintSeedSetupSummary(const bool preflightOk,
    PrintLine("requested_stop_loss=0");
    PrintLine("requested_take_profit=0");
    PrintLine("expected_basket_version="+IntegerToString((int)InpExpectedBasketVersion));
-   PrintLine("strategy_profile_hash="+InpStrategyProfileHash);
+   PrintCanonicalProfileContext();
+   PrintLine("strategy_profile_hash="+CanonicalStrategyProfileHash());
    PrintLine("magic_number="+IntegerToString((int)InpMagicNumber));
    PrintLine("quote_sequence="+IntegerToString((long)InpQuoteSequence));
+  }
+
+void PrintDryRunSummary(const bool preflightOk,
+                        const string failureReason,
+                        const bool oldStateReuseDetected,
+                        const string directionLabel,
+                        const string terminalDataPath,
+                        const string accountTradeModeLabel,
+                        const string accountMarginModeLabel,
+                        const bool accountTradeAllowed,
+                        const string symbolTradeModeLabel,
+                        const double minVolume,
+                        const double volumeStep,
+                        const string fillingModeLabel,
+                        const int openPositionCount)
+  {
+   PrintLine("sprint8d_seed_setup_mode=DRY_RUN");
+   PrintCommonContext(directionLabel,
+                      terminalDataPath,
+                      accountTradeModeLabel,
+                      accountMarginModeLabel,
+                      accountTradeAllowed,
+                      symbolTradeModeLabel,
+                      minVolume,
+                      volumeStep,
+                      fillingModeLabel,
+                      openPositionCount);
    PrintLine("old_sprint8c_state_reuse_detected="+(oldStateReuseDetected?"true":"false"));
+   PrintLine("seed_state_classification=NOT_APPLICABLE");
+   PrintLine("pending_restore_outcome=NOT_APPLICABLE");
+   PrintLine("basket_exists_before=NOT_APPLICABLE");
+   PrintLine("pending_entry_exists_before=NOT_APPLICABLE");
+   PrintLine("pending_envelope_exists_before=NOT_APPLICABLE");
+   PrintLine("write_performed=false");
    PrintLine("seed_setup_preflight_result="+(preflightOk?"PASS":"FAIL"));
    PrintLine("seed_setup_preflight_reason="+failureReason);
+   PrintLine("seed_state_result="+(preflightOk?"PASS":"FAIL"));
+   PrintLine("seed_state_reason="+failureReason);
    if(preflightOk)
       PrintLine("next_safe_step=REVIEW_WRITE_MODE_DESIGN_WITHOUT_GLOBAL_STORE_CLEAR");
    else
-      PrintLine("next_safe_step=DO_NOT_WRITE_STATE_OR_SUBMIT_ORDER");
+      PrintLine("next_safe_step=DO_NOT_SUBMIT_OR_OVERWRITE_STATE");
+  }
+
+void PrintWriteModeSummary(const string seedStateResult,
+                           const string seedStateReason,
+                           const string classification,
+                           const string pendingRestoreOutcome,
+                           const bool basketExistsBefore,
+                           const bool pendingEntryExistsBefore,
+                           const bool pendingEnvelopeExistsBefore,
+                           const bool writePerformed,
+                           const string directionLabel,
+                           const string terminalDataPath,
+                           const string accountTradeModeLabel,
+                           const string accountMarginModeLabel,
+                           const bool accountTradeAllowed,
+                           const string symbolTradeModeLabel,
+                           const double minVolume,
+                           const double volumeStep,
+                           const string fillingModeLabel,
+                           const int openPositionCount)
+  {
+   PrintLine("sprint8d_seed_setup_mode=WRITE_MODE");
+   PrintCommonContext(directionLabel,
+                      terminalDataPath,
+                      accountTradeModeLabel,
+                      accountMarginModeLabel,
+                      accountTradeAllowed,
+                      symbolTradeModeLabel,
+                      minVolume,
+                      volumeStep,
+                      fillingModeLabel,
+                      openPositionCount);
+   PrintLine("seed_state_classification="+classification);
+   PrintLine("pending_restore_outcome="+pendingRestoreOutcome);
+   PrintLine("basket_exists_before="+(basketExistsBefore?"true":"false"));
+   PrintLine("pending_entry_exists_before="+(pendingEntryExistsBefore?"true":"false"));
+   PrintLine("pending_envelope_exists_before="+(pendingEnvelopeExistsBefore?"true":"false"));
+   PrintLine("write_performed="+(writePerformed?"true":"false"));
+   PrintLine("seed_state_result="+seedStateResult);
+   PrintLine("seed_state_reason="+seedStateReason);
+   if(seedStateResult=="PASS" || seedStateResult=="IDEMPOTENT_ALREADY_PREPARED")
+      PrintLine("next_safe_step=REVIEW_PREPARED_STATE_BEFORE_ANY_SUBMISSION");
+   else
+      PrintLine("next_safe_step=DO_NOT_SUBMIT_OR_OVERWRITE_STATE");
+  }
+
+bool VerifyPostWriteState(CFileBasketRepository &repository,
+                          const CTradeExecutionRequest &request,
+                          const ENUM_BRE_TRADE_DIRECTION direction,
+                          const datetime nowUtc,
+                          const int unrelatedEntriesBefore,
+                          string &reasonOut)
+  {
+   reasonOut="";
+   CFilePendingExecutionStore verifyStore(PENDING_STORE_RELATIVE_PATH);
+   CVoidResult restoreResult=verifyStore.RestoreFromDisk();
+   if(restoreResult.IsFail())
+     {
+      reasonOut="Post-write pending restore failed: "+restoreResult.ErrorMessage();
+      return false;
+     }
+
+   int unrelatedAfter=CountUnrelatedPendingEntries(verifyStore,
+                                                   request.ExecutionRequestId(),
+                                                   request.IdempotencyKey());
+   if(unrelatedAfter<unrelatedEntriesBefore)
+     {
+      reasonOut="Post-write verification removed unrelated pending records";
+      return false;
+     }
+
+   CResult<CBasketAggregate> basketResult=repository.Load(request.BasketId());
+   if(basketResult.IsFail())
+     {
+      reasonOut="Post-write basket load failed";
+      return false;
+     }
+   CBasketAggregate basket;
+   basketResult.TryGetValue(basket);
+   string basketReason="";
+   if(!BasketMatchesSeedContract(basket,direction,basketReason))
+     {
+      reasonOut="Post-write basket contract mismatch: "+basketReason;
+      return false;
+     }
+
+   CPendingExecutionRegistry verifyRegistry;
+   HydrateRegistryFromStore(verifyRegistry,verifyStore);
+   CPendingExecutionEntry entry;
+   if(!verifyRegistry.TryGetByExecutionRequestId(request.ExecutionRequestId(),entry))
+     {
+      reasonOut="Post-write target pending entry missing";
+      return false;
+     }
+   if(!PendingEntryMatchesRequest(entry,request))
+     {
+      reasonOut="Post-write target pending entry contract mismatch";
+      return false;
+     }
+
+   CResult<CBrokerSubmissionEnvelope> envelopeResult=verifyStore.FindEnvelopeByIdempotencyKey(request.IdempotencyKey());
+   CBrokerSubmissionEnvelope envelope;
+   if(!envelopeResult.TryGetValue(envelope))
+     {
+      reasonOut="Post-write target envelope missing";
+      return false;
+     }
+   if(!EnvelopeMatchesSeedRequest(envelope,request,nowUtc))
+     {
+      reasonOut="Post-write target envelope contract mismatch";
+      return false;
+     }
+   return true;
+  }
+
+bool RunWriteMode(const ENUM_BRE_TRADE_DIRECTION direction,
+                  const string directionLabel,
+                  const string terminalDataPath,
+                  const string accountTradeModeLabel,
+                  const string accountMarginModeLabel,
+                  const bool accountTradeAllowed,
+                  const string symbolTradeModeLabel,
+                  const double minVolume,
+                  const double volumeStep,
+                  const string fillingModeLabel,
+                  const int openPositionCount)
+  {
+   CMt5Clock clock;
+   CMt5UniqueIdGenerator idGenerator;
+   CFileBasketRepository repository(BRE_PERSISTENCE_BASKET_SUBDIR);
+   CFilePendingExecutionStore store(PENDING_STORE_RELATIVE_PATH);
+
+   CVoidResult restoreResult=store.RestoreFromDisk();
+   string pendingRestoreOutcome=store.LastRestoreOutcome();
+   if(restoreResult.IsFail())
+     {
+      PrintWriteModeSummary("FAIL",
+                            restoreResult.ErrorMessage(),
+                            "RESTORE_FAILED",
+                            pendingRestoreOutcome,
+                            false,
+                            false,
+                            false,
+                            false,
+                            directionLabel,
+                            terminalDataPath,
+                            accountTradeModeLabel,
+                            accountMarginModeLabel,
+                            accountTradeAllowed,
+                            symbolTradeModeLabel,
+                            minVolume,
+                            volumeStep,
+                            fillingModeLabel,
+                            openPositionCount);
+      return false;
+     }
+
+   CPendingExecutionRegistry registry;
+   HydrateRegistryFromStore(registry,store);
+
+   const CBasketId basketId(InpBasketId);
+   CTradeExecutionRequest request=BuildSeedExecutionRequest(basketId,
+                                                          direction,
+                                                          InpExpectedBasketVersion,
+                                                          CanonicalStrategyProfileHash(),
+                                                          clock);
+   const datetime nowUtc=clock.Now();
+
+   string classification="";
+   string classifyReason="";
+   bool basketExistsBefore=false;
+   bool pendingEntryExistsBefore=false;
+   bool pendingEnvelopeExistsBefore=false;
+   bool classifiable=ClassifySeedState(repository,
+                                       registry,
+                                       store,
+                                       request,
+                                       direction,
+                                       nowUtc,
+                                       classification,
+                                       classifyReason,
+                                       basketExistsBefore,
+                                       pendingEntryExistsBefore,
+                                       pendingEnvelopeExistsBefore);
+
+   if(!classifiable)
+     {
+      PrintWriteModeSummary("FAIL",
+                            classifyReason,
+                            classification,
+                            pendingRestoreOutcome,
+                            basketExistsBefore,
+                            pendingEntryExistsBefore,
+                            pendingEnvelopeExistsBefore,
+                            false,
+                            directionLabel,
+                            terminalDataPath,
+                            accountTradeModeLabel,
+                            accountMarginModeLabel,
+                            accountTradeAllowed,
+                            symbolTradeModeLabel,
+                            minVolume,
+                            volumeStep,
+                            fillingModeLabel,
+                            openPositionCount);
+      return false;
+     }
+
+   if(classification=="D_IDEMPOTENT_ALREADY_PREPARED")
+     {
+      PrintWriteModeSummary("IDEMPOTENT_ALREADY_PREPARED",
+                            classifyReason,
+                            classification,
+                            pendingRestoreOutcome,
+                            basketExistsBefore,
+                            pendingEntryExistsBefore,
+                            pendingEnvelopeExistsBefore,
+                            false,
+                            directionLabel,
+                            terminalDataPath,
+                            accountTradeModeLabel,
+                            accountMarginModeLabel,
+                            accountTradeAllowed,
+                            symbolTradeModeLabel,
+                            minVolume,
+                            volumeStep,
+                            fillingModeLabel,
+                            openPositionCount);
+      return true;
+     }
+
+   const int unrelatedEntriesBefore=CountUnrelatedPendingEntries(store,
+                                                                 request.ExecutionRequestId(),
+                                                                 request.IdempotencyKey());
+
+   CBasketAggregate basket;
+   if(classification=="A_FRESH")
+     {
+      CExecutionDryRunTestBasketSeedService seedService;
+      if(!seedService.Initialize(&repository,&clock,&idGenerator,"default"))
+        {
+         PrintWriteModeSummary("FAIL",
+                               "Seed service init failed",
+                               classification,
+                               pendingRestoreOutcome,
+                               basketExistsBefore,
+                               pendingEntryExistsBefore,
+                               pendingEnvelopeExistsBefore,
+                               false,
+                               directionLabel,
+                               terminalDataPath,
+                               accountTradeModeLabel,
+                               accountMarginModeLabel,
+                               accountTradeAllowed,
+                               symbolTradeModeLabel,
+                               minVolume,
+                               volumeStep,
+                               fillingModeLabel,
+                               openPositionCount);
+         return false;
+        }
+
+      string strategyJson=CSprint8dDemoM123StrategyProfile::CanonicalJson();
+      CResult<CBasketAggregate> seedResult=seedService.SeedActiveBasket(basketId,
+                                                                        InpSymbol,
+                                                                        direction,
+                                                                        strategyJson);
+      if(seedResult.IsFail())
+        {
+         PrintWriteModeSummary("FAIL",
+                               seedResult.ErrorMessage(),
+                               classification,
+                               pendingRestoreOutcome,
+                               basketExistsBefore,
+                               pendingEntryExistsBefore,
+                               pendingEnvelopeExistsBefore,
+                               false,
+                               directionLabel,
+                               terminalDataPath,
+                               accountTradeModeLabel,
+                               accountMarginModeLabel,
+                               accountTradeAllowed,
+                               symbolTradeModeLabel,
+                               minVolume,
+                               volumeStep,
+                               fillingModeLabel,
+                               openPositionCount);
+         return false;
+        }
+      seedResult.TryGetValue(basket);
+     }
+   else if(classification=="B_BASKET_ONLY")
+     {
+      CResult<CBasketAggregate> loaded=repository.Load(basketId);
+      if(loaded.IsFail())
+        {
+         PrintWriteModeSummary("FAIL",
+                               loaded.ErrorMessage(),
+                               classification,
+                               pendingRestoreOutcome,
+                               basketExistsBefore,
+                               pendingEntryExistsBefore,
+                               pendingEnvelopeExistsBefore,
+                               false,
+                               directionLabel,
+                               terminalDataPath,
+                               accountTradeModeLabel,
+                               accountMarginModeLabel,
+                               accountTradeAllowed,
+                               symbolTradeModeLabel,
+                               minVolume,
+                               volumeStep,
+                               fillingModeLabel,
+                               openPositionCount);
+         return false;
+        }
+      loaded.TryGetValue(basket);
+     }
+   else
+     {
+      PrintWriteModeSummary("FAIL",
+                            "Unsupported writable classification: "+classification,
+                            classification,
+                            pendingRestoreOutcome,
+                            basketExistsBefore,
+                            pendingEntryExistsBefore,
+                            pendingEnvelopeExistsBefore,
+                            false,
+                            directionLabel,
+                            terminalDataPath,
+                            accountTradeModeLabel,
+                            accountMarginModeLabel,
+                            accountTradeAllowed,
+                            symbolTradeModeLabel,
+                            minVolume,
+                            volumeStep,
+                            fillingModeLabel,
+                            openPositionCount);
+      return false;
+     }
+
+   string basketReason="";
+   if(!BasketMatchesSeedContract(basket,direction,basketReason))
+     {
+      PrintWriteModeSummary("FAIL",
+                            "Basket contract mismatch before pending prepare: "+basketReason,
+                            classification,
+                            pendingRestoreOutcome,
+                            basketExistsBefore,
+                            pendingEntryExistsBefore,
+                            pendingEnvelopeExistsBefore,
+                            false,
+                            directionLabel,
+                            terminalDataPath,
+                            accountTradeModeLabel,
+                            accountMarginModeLabel,
+                            accountTradeAllowed,
+                            symbolTradeModeLabel,
+                            minVolume,
+                            volumeStep,
+                            fillingModeLabel,
+                            openPositionCount);
+      return false;
+     }
+
+   request=BuildSeedExecutionRequest(basketId,
+                                   direction,
+                                   (long)basket.Version(),
+                                   basket.StrategyProfileHash(),
+                                   clock);
+
+   CMt5MarketDataProvider marketData(&clock);
+   CMarketSafetyConfig marketSafety=CMarketSafetyConfig::Create(5000,500000,30000);
+   CSubmissionPreparationValidator validator(&marketData,marketSafety);
+   CSubmissionPreparationPolicy prepPolicy=CSubmissionPreparationPolicy(31,5000,ENVELOPE_VALIDITY_SECONDS);
+   CExecutionSubmissionPreparer preparer(prepPolicy,validator,&registry,&store,&clock);
+
+   CSubmissionPreparationResult prep=preparer.PrepareForValidationSeed(request,basket,InpMagicNumber);
+   if(!prep.IsSuccess())
+     {
+      PrintWriteModeSummary("FAIL",
+                            prep.FailureMessage(),
+                            classification,
+                            pendingRestoreOutcome,
+                            basketExistsBefore,
+                            pendingEntryExistsBefore,
+                            pendingEnvelopeExistsBefore,
+                            false,
+                            directionLabel,
+                            terminalDataPath,
+                            accountTradeModeLabel,
+                            accountMarginModeLabel,
+                            accountTradeAllowed,
+                            symbolTradeModeLabel,
+                            minVolume,
+                            volumeStep,
+                            fillingModeLabel,
+                            openPositionCount);
+      return false;
+     }
+
+   string verifyReason="";
+   if(!VerifyPostWriteState(repository,request,direction,nowUtc,unrelatedEntriesBefore,verifyReason))
+     {
+      PrintWriteModeSummary("FAIL",
+                            verifyReason,
+                            classification,
+                            pendingRestoreOutcome,
+                            basketExistsBefore,
+                            pendingEntryExistsBefore,
+                            pendingEnvelopeExistsBefore,
+                            true,
+                            directionLabel,
+                            terminalDataPath,
+                            accountTradeModeLabel,
+                            accountMarginModeLabel,
+                            accountTradeAllowed,
+                            symbolTradeModeLabel,
+                            minVolume,
+                            volumeStep,
+                            fillingModeLabel,
+                            openPositionCount);
+      return false;
+     }
+
+   PrintWriteModeSummary("PASS",
+                         "Isolated basket and pending state prepared without broker submission",
+                         classification,
+                         pendingRestoreOutcome,
+                         basketExistsBefore,
+                         pendingEntryExistsBefore,
+                         pendingEnvelopeExistsBefore,
+                         true,
+                         directionLabel,
+                         terminalDataPath,
+                         accountTradeModeLabel,
+                         accountMarginModeLabel,
+                         accountTradeAllowed,
+                         symbolTradeModeLabel,
+                         minVolume,
+                         volumeStep,
+                         fillingModeLabel,
+                         openPositionCount);
+   return true;
   }
 
 void OnStart(void)
@@ -375,6 +1224,45 @@ void OnStart(void)
    SymbolSelect(symbol,true);
 
    const string terminalDataPath=TerminalInfoString(TERMINAL_DATA_PATH);
+   string brokerWaitReason="";
+   if(!WaitForD0EBrokerAuthorization(brokerWaitReason))
+     {
+      if(InpWriteMode)
+         PrintWriteModeSummary("FAIL",
+                               brokerWaitReason,
+                               "BROKER_AUTHORIZATION_TIMEOUT",
+                               "NOT_EVALUATED",
+                               false,
+                               false,
+                               false,
+                               false,
+                               InpDirection,
+                               terminalDataPath,
+                               "UNKNOWN",
+                               "UNKNOWN",
+                               false,
+                               "UNKNOWN",
+                               0.0,
+                               0.0,
+                               "NONE",
+                               0);
+      else
+         PrintDryRunSummary(false,
+                            brokerWaitReason,
+                            false,
+                            InpDirection,
+                            terminalDataPath,
+                            "UNKNOWN",
+                            "UNKNOWN",
+                            false,
+                            "UNKNOWN",
+                            0.0,
+                            0.0,
+                            "NONE",
+                            0);
+      return;
+     }
+
    const ENUM_ACCOUNT_TRADE_MODE accountTradeMode=(ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE);
    const string accountTradeModeLabel=(accountTradeMode==ACCOUNT_TRADE_MODE_DEMO ? "DEMO" : "REAL");
    const bool accountTradeAllowed=AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)!=0;
@@ -392,6 +1280,8 @@ void OnStart(void)
    string directionLabel="";
    bool oldStateReuseDetected=false;
    string matchedIdentifier="";
+   ENUM_BRE_TRADE_DIRECTION direction=BRE_DIRECTION_NONE;
+   string parsedDirectionLabel="";
    bool preflightOk=RunSeedSetupPreflight(terminalDataPath,
                                           accountTradeModeLabel,
                                           accountMarginModeLabel,
@@ -401,23 +1291,81 @@ void OnStart(void)
                                           volumeStep,
                                           fillingModeLabel,
                                           openPositionCount,
-                                          directionLabel,
+                                          parsedDirectionLabel,
                                           oldStateReuseDetected,
                                           matchedIdentifier,
                                           failureReason);
-   if(directionLabel=="")
+   if(parsedDirectionLabel!="")
+      directionLabel=parsedDirectionLabel;
+   else
       directionLabel=InpDirection;
-   PrintSeedSetupSummary(preflightOk,
-                         failureReason,
-                         oldStateReuseDetected,
-                         directionLabel,
-                         terminalDataPath,
-                         accountTradeModeLabel,
-                         accountMarginModeLabel,
-                         accountTradeAllowed,
-                         symbolTradeModeLabel,
-                         minVolume,
-                         volumeStep,
-                         fillingModeLabel,
-                         openPositionCount);
+   TryParseDirection(InpDirection,direction,directionLabel);
+
+   if(!preflightOk)
+     {
+      if(InpWriteMode)
+         PrintWriteModeSummary("FAIL",
+                               failureReason,
+                               "PREFLIGHT_FAILED",
+                               "NOT_EVALUATED",
+                               false,
+                               false,
+                               false,
+                               false,
+                               directionLabel,
+                               terminalDataPath,
+                               accountTradeModeLabel,
+                               accountMarginModeLabel,
+                               accountTradeAllowed,
+                               symbolTradeModeLabel,
+                               minVolume,
+                               volumeStep,
+                               fillingModeLabel,
+                               openPositionCount);
+      else
+         PrintDryRunSummary(preflightOk,
+                            failureReason,
+                            oldStateReuseDetected,
+                            directionLabel,
+                            terminalDataPath,
+                            accountTradeModeLabel,
+                            accountMarginModeLabel,
+                            accountTradeAllowed,
+                            symbolTradeModeLabel,
+                            minVolume,
+                            volumeStep,
+                            fillingModeLabel,
+                            openPositionCount);
+      return;
+     }
+
+   if(InpWriteMode)
+     {
+      RunWriteMode(direction,
+                   directionLabel,
+                   terminalDataPath,
+                   accountTradeModeLabel,
+                   accountMarginModeLabel,
+                   accountTradeAllowed,
+                   symbolTradeModeLabel,
+                   minVolume,
+                   volumeStep,
+                   fillingModeLabel,
+                   openPositionCount);
+      return;
+     }
+
+   PrintDryRunSummary(preflightOk,
+                      failureReason,
+                      oldStateReuseDetected,
+                      directionLabel,
+                      terminalDataPath,
+                      accountTradeModeLabel,
+                      accountMarginModeLabel,
+                      accountTradeAllowed,
+                      symbolTradeModeLabel,
+                      minVolume,
+                      volumeStep,
+                      fillingModeLabel,
+                      openPositionCount);
   }
