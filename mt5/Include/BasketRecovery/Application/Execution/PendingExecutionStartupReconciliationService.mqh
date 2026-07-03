@@ -589,7 +589,8 @@ public:
                                                CManualProfitCloseCandidateRegistry *candidateRegistry=NULL,
                                                IBasketRepository *basketRepository=NULL,
                                                IClock *clock=NULL,
-                                               IUniqueIdGenerator *idGenerator=NULL)
+                                               IUniqueIdGenerator *idGenerator=NULL,
+                                               const bool skipLegacyProfitClosePersistedCompletion=false)
      {
       if(store==NULL || registry==NULL || lifecycle==NULL)
          return 0;
@@ -606,7 +607,8 @@ public:
          CPendingExecutionReconciliationHydrator::TryHydrate(entries[i],store);
          registry.Upsert(entries[i]);
 
-         if(entries[i].Status()==BRE_TRADE_EXEC_STATUS_REJECTED &&
+         if(!skipLegacyProfitClosePersistedCompletion &&
+            entries[i].Status()==BRE_TRADE_EXEC_STATUS_REJECTED &&
             entries[i].IntentType()==BRE_EXEC_INTENT_CLOSE_POSITION)
            {
             if(TryRecoverFalseRejectedEntry(store,registry,lifecycle,fillNotifier,entries[i],
@@ -617,7 +619,8 @@ public:
               }
            }
 
-         if(entries[i].Status()==BRE_TRADE_EXEC_STATUS_FILLED &&
+         if(!skipLegacyProfitClosePersistedCompletion &&
+            entries[i].Status()==BRE_TRADE_EXEC_STATUS_FILLED &&
             entries[i].IntentType()==BRE_EXEC_INTENT_CLOSE_POSITION)
            {
             if(TryCompleteFilledProfitCloseFromPendingStartup(entries[i],basketRepository,clock,idGenerator))

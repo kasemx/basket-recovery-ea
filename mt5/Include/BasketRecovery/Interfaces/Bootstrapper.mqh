@@ -125,6 +125,14 @@ public:
    static int        EaInitFailureErrorCode(void) { return g_breEaInitFailureErrorCode; }
    static string     EaInitCurrentStage(void) { return g_breEaInitCurrentStage; }
 
+   static void       PrintObserverStartupIsolationDiagnostics(const bool observerOnlyStartupIsolation)
+     {
+      const bool skipped=observerOnlyStartupIsolation;
+      Print("observer_only_startup_isolation=",skipped?"true":"false");
+      Print("observer_artifact_restore_skipped=",skipped?"true":"false");
+      Print("observer_legacy_profit_completion_skipped=",skipped?"true":"false");
+     }
+
    static CApplicationContext* Bootstrap(const string profileName,
                                          const string logFilePath,
                                          const int logLevel,
@@ -156,7 +164,8 @@ public:
                                          const int authorizationTokenExpirySeconds,
                                          const double maxManualDemoOpenVolume,
                                          const int manualRecoveryCandidateExpirySeconds,
-                                         const int manualProfitCloseCandidateExpirySeconds)
+                                         const int manualProfitCloseCandidateExpirySeconds,
+                                         const bool observerOnlyStartupIsolation=false)
      {
       ClearEaInitFailureRecord();
       SetEaInitCurrentStage("config_validation");
@@ -688,18 +697,22 @@ public:
       executionReconciliationScheduler.SetFillNotifier(startupFillNotifier);
       context.RegisterPendingExecutionFillNotifier(startupFillNotifier);
       SetEaInitCurrentStage("artifact_restore");
+      PrintObserverStartupIsolationDiagnostics(observerOnlyStartupIsolation);
       CManualRecoveryCandidateValidationArtifact::TryRestoreToRegistry(*manualRecoveryCandidateRegistry);
-      SSprint8cProfitCloseRestoreOutcome profitCloseRestoreOutcome;
-      CManualProfitCloseCandidateValidationArtifact::TryRestoreToRegistry(*manualProfitCloseCandidateRegistry,
-                                                                            clock.Now(),
-                                                                            profitCloseRestoreOutcome);
-      CManualProfitCloseSubmitDiagnostics::PrintRestoreOutcome(profitCloseRestoreOutcome.attempted,
-                                                               profitCloseRestoreOutcome.restored,
-                                                               profitCloseRestoreOutcome.failure_reason,
-                                                               profitCloseRestoreOutcome.candidate_id,
-                                                               profitCloseRestoreOutcome.execution_request_id,
-                                                               profitCloseRestoreOutcome.ticket,
-                                                               profitCloseRestoreOutcome.close_volume);
+      if(!observerOnlyStartupIsolation)
+        {
+         SSprint8cProfitCloseRestoreOutcome profitCloseRestoreOutcome;
+         CManualProfitCloseCandidateValidationArtifact::TryRestoreToRegistry(*manualProfitCloseCandidateRegistry,
+                                                                               clock.Now(),
+                                                                               profitCloseRestoreOutcome);
+         CManualProfitCloseSubmitDiagnostics::PrintRestoreOutcome(profitCloseRestoreOutcome.attempted,
+                                                                  profitCloseRestoreOutcome.restored,
+                                                                  profitCloseRestoreOutcome.failure_reason,
+                                                                  profitCloseRestoreOutcome.candidate_id,
+                                                                  profitCloseRestoreOutcome.execution_request_id,
+                                                                  profitCloseRestoreOutcome.ticket,
+                                                                  profitCloseRestoreOutcome.close_volume);
+        }
       SetEaInitCurrentStage("startup_reconcile");
       CPendingExecutionStartupReconciliationService::ReconcilePersistedEntries(pendingExecutionStoreRef,
                                                                                pendingExecutionRegistry,
@@ -711,7 +724,8 @@ public:
                                                                                manualProfitCloseCandidateRegistry,
                                                                                persistenceManager.BasketRepository(),
                                                                                clock,
-                                                                               container.UniqueIdGenerator());
+                                                                               container.UniqueIdGenerator(),
+                                                                               observerOnlyStartupIsolation);
       // Sprint 7D: manual recovery route only; automatic recovery execution remains disabled.
       // Sprint 8C: manual profit close route only; automatic partial-close execution remains disabled.
       // Sprint 6G: OrderSendAsync exists only in CMt5AsyncSubmissionGateway; manual route only.

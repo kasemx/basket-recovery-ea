@@ -56,6 +56,7 @@ input int    InpManualRecoveryCandidateExpirySeconds = 30;
 input string InpManualProfitCloseCandidateId = "";
 input string InpManualProfitCloseSubmissionTriggerToken = "";
 input int    InpManualProfitCloseCandidateExpirySeconds = 30;
+input bool   InpObserverOnlyStartupIsolation = false;
 
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
@@ -219,7 +220,8 @@ int OnInit()
                                                  InpAuthorizationTokenExpirySeconds,
                                                  InpMaxManualDemoOpenVolume,
                                                  InpManualRecoveryCandidateExpirySeconds,
-                                                 InpManualProfitCloseCandidateExpirySeconds);
+                                                 InpManualProfitCloseCandidateExpirySeconds,
+                                                 InpObserverOnlyStartupIsolation);
    if(g_applicationContext==NULL)
      {
       PrintEaInitFailureDiagnostics();
