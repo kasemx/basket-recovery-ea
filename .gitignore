@@ -17,6 +17,9 @@ Desktop.ini
 *.env
 credentials.json
 **/secrets/
+integrations/telegram/.env
+integrations/telegram/*.session
+integrations/telegram/*.log
 
 # Build / temp
 build/
