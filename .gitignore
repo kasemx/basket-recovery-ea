@@ -18,7 +18,11 @@ Desktop.ini
 credentials.json
 **/secrets/
 integrations/telegram/.env
+integrations/telegram/local-data/
+integrations/telegram/*.sqlite3
+integrations/telegram/*.db
 integrations/telegram/*.session
+integrations/telegram/*.session-journal
 integrations/telegram/*.log
 
 # Build / temp

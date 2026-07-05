@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telegram → MT5 Route Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <div class="brand">
+        <h1>Route Dashboard</h1>
+        <p class="subtitle">Local-only · Observer-only · Broker execution disabled</p>
+      </div>
+      <nav class="nav" id="nav">
+        <button type="button" class="nav-item active" data-view="overview">Overview</button>
+        <button type="button" class="nav-item" data-view="telegram">Telegram</button>
+        <button type="button" class="nav-item" data-view="channels">Channels</button>
+        <button type="button" class="nav-item" data-view="targets">MT5 Targets</button>
+        <button type="button" class="nav-item" data-view="routes">Routes</button>
+        <button type="button" class="nav-item" data-view="audit">Audit Log</button>
+        <button type="button" class="nav-item" data-view="safety">Safety</button>
+      </nav>
+    </aside>
+
+    <main class="content">
+      <header class="topbar">
+        <div>
+          <h2 id="view-title">Overview</h2>
+          <p id="view-subtitle" class="muted">Local dashboard foundation — no broker execution</p>
+        </div>
+        <div class="badges">
+          <span class="badge badge-danger">Broker Execution Disabled</span>
+          <span class="badge badge-warn">FILE_COMMON Write Not Implemented</span>
+          <span class="badge badge-warn">EA Control Not Implemented</span>
+        </div>
+      </header>
+
+      <div id="alert" class="alert hidden" role="alert"></div>
+      <div id="loading" class="loading hidden">Loading…</div>
+
+      <section id="view-overview" class="view active">
+        <div class="cards" id="overview-cards"></div>
+      </section>
+
+      <section id="view-telegram" class="view">
+        <div class="panel">
+          <h3>Telegram Connection</h3>
+          <p class="muted">API ID/hash are never sent to this panel. They will be read from local environment in Phase 9C-B.</p>
+          <form id="telegram-form" class="form-grid">
+            <label class="checkbox">
+              <input type="checkbox" id="api-id-present" checked>
+              API ID configured locally
+            </label>
+            <label class="checkbox">
+              <input type="checkbox" id="api-hash-present" checked>
+              API hash configured locally
+            </label>
+            <label>
+              Phone (international format)
+              <input type="tel" id="phone-input" placeholder="+905xxxxxxxxx" autocomplete="off">
+            </label>
+            <div class="actions">
+              <button type="submit" class="btn primary">Configure Local Session</button>
+            </div>
+          </form>
+          <div class="divider"></div>
+          <div class="form-grid">
+            <label>
+              Login code
+              <input type="text" id="code-input" disabled placeholder="Phase 9C-B">
+            </label>
+            <label>
+              2FA password
+              <input type="password" id="password-input" disabled placeholder="Phase 9C-B">
+            </label>
+            <div class="actions">
+              <button type="button" class="btn" id="request-code-btn" disabled title="Available in Phase 9C-B">Request Code</button>
+            </div>
+          </div>
+          <div id="telegram-status" class="status-box"></div>
+        </div>
+      </section>
+
+      <section id="view-channels" class="view">
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Tracked Channels</h3>
+            <button type="button" class="btn" id="import-demo-channels">Import Local Demo Channels</button>
+          </div>
+          <p class="muted">Real Telegram channel sync arrives in Phase 9C-B.</p>
+          <div id="channels-list" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-targets" class="view">
+        <div class="panel">
+          <h3>Add MT5 Target</h3>
+          <p class="muted">Publish disabled in this sprint. Targets remain observer-only.</p>
+          <form id="target-form" class="form-grid two-col">
+            <label>Name<input type="text" name="name" required></label>
+            <label>Terminal Label<input type="text" name="terminal_label" required placeholder="D0E"></label>
+            <label>Broker Label<input type="text" name="broker_label" required placeholder="VantageMarkets-Demo"></label>
+            <label>Account Mode
+              <select name="account_mode" required>
+                <option value="DEMO">DEMO</option>
+                <option value="UNKNOWN">UNKNOWN</option>
+              </select>
+            </label>
+            <label class="full">FILE_COMMON Root<input type="text" name="file_common_root" required placeholder="C:\Users\...\Terminal\Common\Files"></label>
+            <label>Seed Filename<input type="text" name="seed_filename" required value="basket_recovery_fasttrack_seed.txt"></label>
+            <label>Details Filename<input type="text" name="details_filename" required value="basket_recovery_fasttrack_details.txt"></label>
+            <div class="full actions">
+              <span class="badge badge-locked">Observer-only locked</span>
+              <button type="submit" class="btn primary">Add Target</button>
+            </div>
+          </form>
+          <div id="targets-list" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-routes" class="view">
+        <div class="panel">
+          <h3>Add Route</h3>
+          <form id="route-form" class="form-grid two-col">
+            <label>Name<input type="text" name="name" required placeholder="GoldVIP to Vantage Observer"></label>
+            <label>Parser Profile<input type="text" name="parser_profile" value="FASTTRACK_GOLD_NOW" readonly></label>
+            <label>Channel<select name="channel_id" id="route-channel-select" required></select></label>
+            <label>Target<select name="target_id" id="route-target-select" required></select></label>
+            <label>Route Mode<input type="text" value="OBSERVER_ONLY" readonly></label>
+            <div class="full actions">
+              <button type="submit" class="btn primary">Create Observer Route</button>
+            </div>
+          </form>
+          <div id="routes-list" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="view-audit" class="view">
+        <div class="panel">
+          <div class="panel-header">
+            <h3>Audit Log</h3>
+            <div class="actions">
+              <select id="audit-severity">
+                <option value="">All severities</option>
+                <option value="INFO">INFO</option>
+                <option value="WARNING">WARNING</option>
+                <option value="ERROR">ERROR</option>
+              </select>
+              <button type="button" class="btn" id="refresh-audit">Refresh</button>
+              <button type="button" class="btn" id="demo-audit">Add Demo Event</button>
+            </div>
+          </div>
+          <div id="audit-list" class="audit-list"></div>
+        </div>
+      </section>
+
+      <section id="view-safety" class="view">
+        <div class="panel">
+          <h3>Safety & Capability Matrix</h3>
+          <p class="warning-text">This panel does not grant broker order authority.</p>
+          <div id="safety-matrix" class="matrix"></div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
