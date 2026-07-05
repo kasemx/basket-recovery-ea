@@ -10,6 +10,8 @@
 #include <BasketRecovery/Domain/Execution/TradeExecutionStatus.mqh>
 #include <BasketRecovery/Domain/Execution/LiveSubmissionSafetyRejectionReason.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionAuthorizationResult.mqh>
+#include <BasketRecovery/Application/Strategy/FastTrack/FastTrackManualTestOrchestrator.mqh>
+#include <BasketRecovery/Application/Strategy/FastTrack/FastTrackAuditFileSource.mqh>
 
 input string InpProfileName               = "default";
 input string InpLogFilePath               = "BasketRecovery/logs/basket_recovery.log";
@@ -57,6 +59,19 @@ input string InpManualProfitCloseCandidateId = "";
 input string InpManualProfitCloseSubmissionTriggerToken = "";
 input int    InpManualProfitCloseCandidateExpirySeconds = 30;
 input bool   InpObserverOnlyStartupIsolation = false;
+input bool   InpFastTrackManualTestEnabled = false;
+input string InpFastTrackSeedSignalText = "";
+input string InpFastTrackDetailsSignalText = "";
+input double InpFastTrackSeedLot = 0.01;
+input int    InpFastTrackSeedOrderCount = 1;
+input bool   InpFastTrackAllowDemoSeedExecution = false;
+input bool   InpFastTrackEnableRecovery = false;
+input bool   InpFastTrackEnableRangeAdd = false;
+input bool   InpFastTrackEnableDeRisk = false;
+input bool   InpFastTrackEnableBreakEven = false;
+input bool   InpFastTrackAuditFilePollingEnabled = false;
+input string InpFastTrackAuditSeedFileName = "basket_recovery_fasttrack_seed.txt";
+input string InpFastTrackAuditDetailsFileName = "basket_recovery_fasttrack_details.txt";
 
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
@@ -64,6 +79,79 @@ int g_manualValidationTimerTicks=0;
 int g_manualSubmissionTimerTicks=0;
 bool g_manualRecoverySubmitAttempted=false;
 bool g_manualProfitCloseSubmitAttempted=false;
+CFastTrackManualTestOrchestrator g_fastTrackManualTestOrchestrator;
+bool g_fastTrackManualTestProcessed=false;
+
+SFastTrackManualTestInputs BuildFastTrackManualTestInputs(void)
+  {
+   SFastTrackManualTestInputs inputs;
+   inputs.enabled=InpFastTrackManualTestEnabled;
+   inputs.seed_text=InpFastTrackSeedSignalText;
+   inputs.details_text=InpFastTrackDetailsSignalText;
+   inputs.seed_lot=InpFastTrackSeedLot;
+   inputs.seed_order_count=InpFastTrackSeedOrderCount;
+   inputs.allow_demo_seed_execution=InpFastTrackAllowDemoSeedExecution;
+   inputs.enable_recovery=InpFastTrackEnableRecovery;
+   inputs.enable_range_add=InpFastTrackEnableRangeAdd;
+   inputs.enable_de_risk=InpFastTrackEnableDeRisk;
+   inputs.enable_break_even=InpFastTrackEnableBreakEven;
+   inputs.observer_only_startup_isolation=InpObserverOnlyStartupIsolation;
+   inputs.global_execution_kill_switch=InpGlobalExecutionKillSwitch;
+   inputs.enable_live_demo_execution=InpEnableLiveDemoExecution;
+   inputs.execution_mode=InpExecutionMode;
+   return inputs;
+  }
+
+bool ResolveFastTrackSignalText(string &seedText,string &detailsText)
+  {
+   seedText=InpFastTrackSeedSignalText;
+   detailsText=InpFastTrackDetailsSignalText;
+
+   if(seedText!="")
+      return true;
+
+   if(!InpFastTrackAuditFilePollingEnabled || !InpFastTrackManualTestEnabled)
+      return false;
+
+   string reason="";
+   if(CFastTrackAuditFileSource::TryRead(true,
+                                          InpFastTrackAuditSeedFileName,
+                                          InpFastTrackAuditDetailsFileName,
+                                          seedText,
+                                          detailsText,
+                                          reason))
+     {
+      CFastTrackAuditFileSource::PrintReadAudit(InpFastTrackAuditSeedFileName,
+                                                InpFastTrackAuditDetailsFileName);
+      return true;
+     }
+
+   if(reason!="")
+      CFastTrackAuditFileSource::PrintSkippedAudit(reason);
+   return false;
+  }
+
+void ProcessFastTrackManualTest(void)
+  {
+   if(!InpFastTrackManualTestEnabled || g_fastTrackManualTestProcessed)
+      return;
+
+   string seedText="";
+   string detailsText="";
+   if(!ResolveFastTrackSignalText(seedText,detailsText) || seedText=="")
+      return;
+
+   SFastTrackManualTestInputs inputs=BuildFastTrackManualTestInputs();
+   inputs.seed_text=seedText;
+   inputs.details_text=detailsText;
+   SFastTrackManualTestOutcome outcome=g_fastTrackManualTestOrchestrator.Process(inputs,TimeCurrent());
+   CFastTrackManualTestOrchestrator::PrintAudit(inputs,outcome);
+
+   if(outcome.stage==BRE_FAST_TRACK_MANUAL_STAGE_WAIT_DETAILS)
+      return;
+
+   g_fastTrackManualTestProcessed=true;
+  }
 
 void PrintEaInitFailureDiagnostics(const string stageOverride="",
                                    const string reasonOverride="",
@@ -259,6 +347,7 @@ int OnInit()
 
    ProcessManualRecoverySubmissionChartValidation();
    ProcessManualProfitCloseSubmissionChartValidation();
+   ProcessFastTrackManualTest();
 
    return INIT_SUCCEEDED;
   }
@@ -419,6 +508,9 @@ void OnTimer()
            }
         }
      }
+
+   if(InpFastTrackManualTestEnabled && !g_fastTrackManualTestProcessed)
+      ProcessFastTrackManualTest();
   }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,
