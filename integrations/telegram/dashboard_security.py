@@ -30,6 +30,7 @@ FORBIDDEN_CREDENTIAL_KEYS = frozenset(
         "password",
         "code",
         "phone_code",
+        "phone_code_hash",
         "two_factor_password",
     }
 )
@@ -39,6 +40,8 @@ SECRET_SUBSTRINGS = (
     "session",
     "password",
     "phone_code",
+    "phone_code_hash",
+    "code",
     "two_factor",
     "token",
     "secret",
@@ -64,6 +67,18 @@ class DashboardValidationError(Exception):
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def mask_session_path(path: str) -> str:
+    cleaned = path.strip()
+    if not cleaned:
+        return "[REDACTED]"
+    name = Path(cleaned).name
+    if not name:
+        return "[REDACTED]"
+    if len(name) <= 4:
+        return f"***{name}"
+    return f"***{name[-4:]}"
 
 
 def mask_phone(phone: str) -> str:
@@ -146,9 +161,17 @@ def parse_json_body(raw: bytes) -> dict[str, Any]:
     return payload
 
 
-def reject_literal_credentials(payload: dict[str, Any]) -> None:
+def reject_literal_credentials(
+    payload: dict[str, Any],
+    *,
+    allowed: frozenset[str] | None = None,
+) -> None:
+    allowed_keys = allowed or frozenset()
     for key in payload:
-        if key.lower() in FORBIDDEN_CREDENTIAL_KEYS:
+        lower = key.lower()
+        if lower in allowed_keys:
+            continue
+        if lower in FORBIDDEN_CREDENTIAL_KEYS:
             raise DashboardValidationError(
                 "Use local environment configuration; do not send credentials to dashboard API."
             )

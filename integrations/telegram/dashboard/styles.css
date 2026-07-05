@@ -344,6 +344,31 @@ th {
   display: none;
 }
 
+.badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.badge-success {
+  background: rgba(61, 220, 151, 0.15);
+  color: var(--success);
+  border: 1px solid rgba(61, 220, 151, 0.35);
+}
+
+.badge-muted {
+  background: rgba(147, 161, 179, 0.12);
+  color: var(--muted);
+  border: 1px solid rgba(147, 161, 179, 0.25);
+}
+
 @media (max-width: 960px) {
   .layout {
     grid-template-columns: 1fr;

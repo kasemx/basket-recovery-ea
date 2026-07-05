@@ -1,5 +1,6 @@
 const state = {
   overview: null,
+  telegramStatus: null,
   channels: [],
   targets: [],
   routes: [],
@@ -8,7 +9,7 @@ const state = {
 
 const views = {
   overview: { title: "Overview", subtitle: "System status and counts" },
-  telegram: { title: "Telegram", subtitle: "Local session configuration (no credentials sent to API)" },
+  telegram: { title: "Telegram", subtitle: "Local login and channel sync (127.0.0.1 only)" },
   channels: { title: "Channels", subtitle: "Local channel tracking selections" },
   targets: { title: "MT5 Targets", subtitle: "Observer-only FILE_COMMON targets" },
   routes: { title: "Routes", subtitle: "Channel to target routing (observer-only)" },
@@ -47,7 +48,12 @@ async function api(path, options = {}) {
     payload = null;
   }
   if (!response.ok) {
-    const message = payload && payload.error ? payload.error : `Request failed (${response.status})`;
+    const message =
+      payload && payload.error
+        ? payload.error
+        : payload && payload.error_code
+          ? payload.error_code
+          : `Request failed (${response.status})`;
     throw new Error(message);
   }
   return payload;
@@ -81,12 +87,43 @@ function renderOverview() {
   });
 }
 
+function renderTelegramBadges(statusPayload) {
+  const container = $("#telegram-badges");
+  const configBadge = statusPayload.config_ready
+    ? `<span class="badge badge-success">Environment config ready</span>`
+    : `<span class="badge badge-muted">Environment config missing</span>`;
+  const telethonBadge = statusPayload.telethon_available
+    ? `<span class="badge badge-success">Telethon installed</span>`
+    : `<span class="badge badge-muted">Telethon not installed</span>`;
+  container.innerHTML = configBadge + telethonBadge;
+}
+
+function updateTelegramControls(statusPayload) {
+  const connected = statusPayload.status === "TELEGRAM_CONNECTED" || statusPayload.status === "CONNECTED";
+  const twoFactor = statusPayload.status === "TWO_FACTOR_REQUIRED";
+  const configReady = statusPayload.config_ready;
+  const telethonReady = statusPayload.telethon_available;
+
+  $("#request-code-btn").disabled = !(configReady && telethonReady);
+  $("#verify-code-btn").disabled = !(configReady && telethonReady);
+  $("#sync-channels-btn").disabled = !connected;
+  $("#disconnect-btn").disabled = statusPayload.status === "DISCONNECTED";
+  $("#password-field").classList.toggle("hidden", !twoFactor);
+  $("#verify-password-btn").classList.toggle("hidden", !twoFactor);
+}
+
 function renderTelegramStatus(statusPayload) {
+  state.telegramStatus = statusPayload;
+  renderTelegramBadges(statusPayload);
+  updateTelegramControls(statusPayload);
   const box = $("#telegram-status");
   box.innerHTML = `
     <div><strong>Status:</strong> ${escapeCell(statusPayload.status)}</div>
     <div><strong>Phone:</strong> ${escapeCell(statusPayload.phone_masked || "—")}</div>
+    <div><strong>Session:</strong> ${escapeCell(statusPayload.session_path_masked || "—")}</div>
     <div><strong>Channel count:</strong> ${escapeCell(statusPayload.channel_count)}</div>
+    <div><strong>Telethon:</strong> ${escapeCell(statusPayload.telethon_available ? "available" : "missing")}</div>
+    <div><strong>Config:</strong> ${escapeCell(statusPayload.config_ready ? "ready" : "missing")}</div>
   `;
 }
 
@@ -106,11 +143,12 @@ function renderChannels() {
     escapeCell(channel.title),
     escapeCell(channel.channel_type),
     escapeCell(channel.username || "—"),
+    escapeCell(channel.source || "—"),
     `<label class="checkbox"><input type="checkbox" data-channel-id="${channel.id}" class="track-toggle" ${channel.is_tracking ? "checked" : ""}> Track</label>`,
     escapeCell(channel.route_count),
     `<button type="button" class="btn" data-delete-channel="${channel.id}">Delete</button>`,
   ]);
-  renderTable(container, ["Title", "Type", "Username", "Tracking", "Routes", "Actions"], rows);
+  renderTable(container, ["Title", "Type", "Username", "Source", "Tracking", "Routes", "Actions"], rows);
   container.querySelectorAll(".track-toggle").forEach((input) => {
     input.addEventListener("change", async (event) => {
       const channelId = event.target.getAttribute("data-channel-id");
@@ -232,12 +270,13 @@ function renderAudit() {
 }
 
 function renderSafetyMatrix() {
+  const safety = state.overview ? state.overview.safety : {};
   const rows = [
-    ["Telegram login", "NOT_IMPLEMENTED"],
-    ["Channel live sync", "NOT_IMPLEMENTED"],
-    ["FILE_COMMON publish", "NOT_IMPLEMENTED"],
-    ["EA attach", "NOT_IMPLEMENTED"],
-    ["Broker submit", "DISABLED_BY_DESIGN"],
+    ["Telegram login", safety.telegram_login || "IMPLEMENTED_LOCAL_ONLY"],
+    ["Channel live sync", safety.channel_live_sync || "IMPLEMENTED_ON_DEMAND"],
+    ["FILE_COMMON publish", safety.file_common_write || "NOT_IMPLEMENTED_IN_DASHBOARD"],
+    ["EA attach", safety.ea_control || "NOT_IMPLEMENTED"],
+    ["Broker submit", safety.broker_execution || "DISABLED_BY_DESIGN"],
     ["Token issue", "NOT_IMPLEMENTED"],
   ];
   const container = $("#safety-matrix");
@@ -309,14 +348,77 @@ function bindEvents() {
     try {
       await api("/api/telegram/configure", {
         method: "POST",
-        body: JSON.stringify({
-          api_id_present: $("#api-id-present").checked,
-          api_hash_present: $("#api-hash-present").checked,
-          phone,
-        }),
+        body: JSON.stringify({ phone }),
       });
       await refreshAll();
-      showAlert("Local Telegram configuration saved (masked phone only).", "success");
+      showAlert("Telegram phone configured (masked in database).", "success");
+    } catch (error) {
+      showAlert(error.message);
+    }
+  });
+
+  $("#request-code-btn").addEventListener("click", async () => {
+    hideAlert();
+    try {
+      await api("/api/telegram/request-code", { method: "POST", body: "{}" });
+      await refreshAll();
+      showAlert("Login code requested.", "success");
+    } catch (error) {
+      showAlert(error.message);
+    }
+  });
+
+  $("#verify-code-btn").addEventListener("click", async () => {
+    hideAlert();
+    const code = $("#code-input").value.trim();
+    try {
+      const result = await api("/api/telegram/verify-code", {
+        method: "POST",
+        body: JSON.stringify({ code }),
+      });
+      await refreshAll();
+      if (result.status === "TWO_FACTOR_REQUIRED") {
+        showAlert("2FA password required.", "success");
+      } else {
+        showAlert("Telegram connected.", "success");
+      }
+    } catch (error) {
+      showAlert(error.message);
+    }
+  });
+
+  $("#verify-password-btn").addEventListener("click", async () => {
+    hideAlert();
+    const password = $("#password-input").value;
+    try {
+      await api("/api/telegram/verify-password", {
+        method: "POST",
+        body: JSON.stringify({ password }),
+      });
+      await refreshAll();
+      showAlert("Telegram connected with 2FA.", "success");
+    } catch (error) {
+      showAlert(error.message);
+    }
+  });
+
+  $("#sync-channels-btn").addEventListener("click", async () => {
+    hideAlert();
+    try {
+      const result = await api("/api/telegram/sync-channels", { method: "POST", body: "{}" });
+      await refreshAll();
+      showAlert(`Synced ${result.synced} channels from Telegram.`, "success");
+    } catch (error) {
+      showAlert(error.message);
+    }
+  });
+
+  $("#disconnect-btn").addEventListener("click", async () => {
+    hideAlert();
+    try {
+      await api("/api/telegram/disconnect", { method: "POST", body: "{}" });
+      await refreshAll();
+      showAlert("Telegram disconnected (session file retained).", "success");
     } catch (error) {
       showAlert(error.message);
     }

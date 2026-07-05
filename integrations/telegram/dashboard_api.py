@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 from dashboard_security import (
@@ -16,12 +16,26 @@ from dashboard_security import (
     DashboardValidationError,
     json_response,
     mask_phone,
+    mask_session_path,
     parse_json_body,
     reject_literal_credentials,
     resolve_static_file,
     security_headers,
 )
 from dashboard_store import DashboardDatabase
+from telegram_adapter import (
+    TELEGRAM_2FA_REQUIRED,
+    TELEGRAM_AUTH_FAILED,
+    TELEGRAM_CONFIG_MISSING,
+    TELEGRAM_CONNECTED,
+    TELEGRAM_SYNC_FAILED,
+    TELETHON_NOT_INSTALLED,
+    TelegramAdapter,
+    build_adapter_from_env,
+    is_telethon_available,
+    load_telegram_env_config,
+    run_telegram_async,
+)
 
 logger = logging.getLogger("telegram_dashboard")
 
@@ -33,11 +47,162 @@ class DashboardContext:
     data_dir: Path
     dashboard_dir: Path
     database: DashboardDatabase
+    telegram_service: TelegramService | None = None
+
+
+@dataclass
+class TelegramService:
+    adapter_factory: Callable[[], TelegramAdapter | None] = field(
+        default_factory=lambda: build_adapter_from_env
+    )
+    _auth_phone: str | None = field(default=None, init=False, repr=False)
+
+    def telethon_available(self) -> bool:
+        return is_telethon_available()
+
+    def config_ready(self) -> bool:
+        return load_telegram_env_config() is not None
+
+    def status_payload(self, db: DashboardDatabase) -> dict[str, Any]:
+        return db.public_telegram_status(
+            telethon_available=self.telethon_available(),
+            config_ready=self.config_ready(),
+        )
+
+    def configure(self, db: DashboardDatabase, phone: str) -> dict[str, Any]:
+        if not self.config_ready():
+            db.set_telegram_config_error(TELEGRAM_CONFIG_MISSING)
+            return {"status": "ERROR", "error_code": TELEGRAM_CONFIG_MISSING}
+        if not phone.startswith("+") or len(re.sub(r"\D", "", phone)) < 8:
+            raise DashboardValidationError(
+                "Phone must be in international format, e.g. +905xxxxxxxxx"
+            )
+        env_config = load_telegram_env_config()
+        if env_config is None:
+            db.set_telegram_config_error(TELEGRAM_CONFIG_MISSING)
+            return {"status": "ERROR", "error_code": TELEGRAM_CONFIG_MISSING}
+        phone_masked = mask_phone(phone)
+        session_path_masked = mask_session_path(str(env_config.session_path))
+        self._auth_phone = phone
+        db.configure_telegram(phone_masked, session_path_masked)
+        return {
+            "status": "API_CONFIGURED",
+            "phone_masked": phone_masked,
+            "session_path_masked": session_path_masked,
+        }
+
+    def request_code(self, db: DashboardDatabase, phone: str) -> dict[str, Any]:
+        if not self.config_ready():
+            raise DashboardValidationError("Telegram environment configuration is missing")
+        if not self.telethon_available():
+            return {
+                "status": "ERROR",
+                "error_code": TELETHON_NOT_INSTALLED,
+            }
+        self._auth_phone = phone
+        adapter = self._require_adapter()
+        result = run_telegram_async(adapter.send_code(phone))
+        if result.status != "CODE_SENT" or not result.phone_code_hash:
+            error_code = result.error_code or TELEGRAM_AUTH_FAILED
+            db.set_telegram_auth_error(error_code)
+            return {"status": "ERROR", "error_code": error_code}
+        db.set_telegram_code_sent(result.phone_code_hash)
+        row = db.get_telegram_status()
+        return {
+            "status": "CODE_SENT",
+            "phone_masked": row.get("phone_masked"),
+        }
+
+    def verify_code(self, db: DashboardDatabase, code: str) -> dict[str, Any]:
+        if not self.telethon_available():
+            return {"status": "ERROR", "error_code": TELETHON_NOT_INSTALLED}
+        phone_code_hash = db.get_phone_code_hash()
+        if not phone_code_hash:
+            raise DashboardValidationError("Request a login code before verification")
+        phone = self._auth_phone
+        if not phone:
+            raise DashboardValidationError("Configure phone number before verification")
+        adapter = self._require_adapter()
+        result = run_telegram_async(
+            adapter.sign_in_code(phone, code, phone_code_hash)
+        )
+        if result.status == TELEGRAM_CONNECTED:
+            db.set_telegram_connected()
+            self._auth_phone = None
+            return {"status": TELEGRAM_CONNECTED}
+        if result.status == "TWO_FACTOR_REQUIRED":
+            db.set_telegram_two_factor_required()
+            return {"status": "TWO_FACTOR_REQUIRED", "error_code": TELEGRAM_2FA_REQUIRED}
+        error_code = result.error_code or TELEGRAM_AUTH_FAILED
+        db.set_telegram_auth_error(error_code)
+        return {"status": "ERROR", "error_code": error_code}
+
+    def verify_password(self, db: DashboardDatabase, password: str) -> dict[str, Any]:
+        if not self.telethon_available():
+            return {"status": "ERROR", "error_code": TELETHON_NOT_INSTALLED}
+        adapter = self._require_adapter()
+        result = run_telegram_async(adapter.sign_in_password(password))
+        if result.status == TELEGRAM_CONNECTED:
+            db.set_telegram_connected()
+            self._auth_phone = None
+            return {"status": TELEGRAM_CONNECTED}
+        error_code = result.error_code or TELEGRAM_AUTH_FAILED
+        db.set_telegram_auth_error(error_code)
+        return {"status": "ERROR", "error_code": error_code}
+
+    def sync_channels(self, db: DashboardDatabase) -> dict[str, Any]:
+        row = db.get_telegram_status()
+        if row.get("status") != "CONNECTED":
+            raise DashboardValidationError("Telegram must be connected before channel sync")
+        if not self.telethon_available():
+            return {"status": "ERROR", "error_code": TELETHON_NOT_INSTALLED}
+        adapter = self._require_adapter()
+        try:
+            dialogs = run_telegram_async(adapter.list_dialogs(limit=200))
+        except Exception as exc:  # noqa: BLE001
+            db.set_telegram_auth_error(TELEGRAM_SYNC_FAILED)
+            logger.error("dashboard_event=TELEGRAM_SYNC_FAILED reason=%s", exc)
+            return {"status": "ERROR", "error_code": TELEGRAM_SYNC_FAILED}
+        payload = [
+            {
+                "telegram_channel_id": item.telegram_channel_id,
+                "title": item.title,
+                "channel_type": item.channel_type,
+                "username": item.username,
+                "last_message_at_utc": item.last_message_at_utc,
+            }
+            for item in dialogs
+        ]
+        synced = db.sync_telegram_channels(payload)
+        return {"synced": synced, "source": "TELEGRAM"}
+
+    def disconnect(self, db: DashboardDatabase) -> dict[str, Any]:
+        adapter = self.adapter_factory()
+        if adapter is not None and self.telethon_available():
+            run_telegram_async(adapter.disconnect())
+        self._auth_phone = None
+        db.set_telegram_disconnected()
+        row = db.get_telegram_status()
+        return {
+            "status": "DISCONNECTED",
+            "session_path_masked": row.get("session_path_masked"),
+        }
+
+    def _require_adapter(self) -> TelegramAdapter:
+        adapter = self.adapter_factory()
+        if adapter is None:
+            raise DashboardValidationError("Telegram environment configuration is missing")
+        return adapter
 
 
 class DashboardRequestHandler(BaseHTTPRequestHandler):
-    server_version = "TelegramRouteDashboard/0.1"
+    server_version = "TelegramRouteDashboard/0.2"
     context: DashboardContext
+
+    def _telegram_service(self) -> TelegramService:
+        if self.context.telegram_service is None:
+            self.context.telegram_service = TelegramService()
+        return self.context.telegram_service
 
     def log_message(self, format: str, *args: object) -> None:
         logger.info("%s - %s", self.address_string(), format % args)
@@ -87,15 +252,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(self.context.database.overview())
                 return
             if path == "/api/telegram/status":
-                row = self.context.database.get_telegram_status()
                 self._send_json(
-                    {
-                        "status": row["status"],
-                        "phone_masked": row.get("phone_masked"),
-                        "channel_count": row.get("channel_count", 0),
-                        "last_error_code": row.get("last_error_code"),
-                        "updated_at_utc": row.get("updated_at_utc"),
-                    }
+                    self._telegram_service().status_payload(self.context.database)
                 )
                 return
             if path == "/api/channels":
@@ -126,44 +284,129 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             body = self._read_body()
             payload = parse_json_body(body)
             db = self.context.database
+            telegram = self._telegram_service()
 
             if path == "/api/telegram/configure":
                 reject_literal_credentials(payload)
-                if not payload.get("api_id_present") or not payload.get("api_hash_present"):
-                    raise DashboardValidationError("api_id_present and api_hash_present must be true")
                 phone = str(payload.get("phone", "")).strip()
-                if not phone.startswith("+") or len(re.sub(r"\D", "", phone)) < 8:
-                    raise DashboardValidationError("Phone must be in international format, e.g. +905xxxxxxxxx")
-                phone_masked = mask_phone(phone)
-                db.configure_telegram(phone_masked)
+                result = telegram.configure(db, phone)
+                if result.get("status") == "ERROR":
+                    db.add_audit(
+                        "TELEGRAM_CONFIGURE",
+                        "ERROR",
+                        "Telegram configuration failed",
+                        {"error_code": result.get("error_code")},
+                    )
+                    self._send_json(result, HTTPStatus.BAD_REQUEST)
+                    return
                 db.add_audit(
                     "TELEGRAM_CONFIGURE",
                     "INFO",
                     "Telegram local configuration saved (masked phone only)",
-                    {"phone_masked": phone_masked},
+                    {
+                        "phone_masked": result["phone_masked"],
+                        "session_path_masked": result.get("session_path_masked"),
+                    },
                 )
-                self._send_json({"status": "API_CONFIGURED", "phone_masked": phone_masked})
+                self._send_json(result)
                 return
 
             if path == "/api/telegram/request-code":
-                self._send_json(
-                    {"status": "NOT_IMPLEMENTED", "next_phase": "Telethon adapter"},
-                    HTTPStatus.NOT_IMPLEMENTED,
+                reject_literal_credentials(payload)
+                phone = str(payload.get("phone", "")).strip()
+                if not phone:
+                    phone = telegram._auth_phone or ""
+                    if not phone:
+                        raise DashboardValidationError("Configure phone number first")
+                result = telegram.request_code(db, phone)
+                if result.get("status") == "ERROR":
+                    status = (
+                        HTTPStatus.INTERNAL_SERVER_ERROR
+                        if result.get("error_code") == TELETHON_NOT_INSTALLED
+                        else HTTPStatus.BAD_REQUEST
+                    )
+                    db.add_audit(
+                        "TELEGRAM_REQUEST_CODE",
+                        "ERROR",
+                        "Telegram code request failed",
+                        {"error_code": result.get("error_code")},
+                    )
+                    self._send_json(result, status)
+                    return
+                db.add_audit(
+                    "TELEGRAM_REQUEST_CODE",
+                    "INFO",
+                    "Telegram login code requested",
+                    {"phone_masked": result.get("phone_masked")},
                 )
+                self._send_json(result)
                 return
 
             if path == "/api/telegram/verify-code":
-                self._send_error_json(
-                    HTTPStatus.NOT_IMPLEMENTED,
-                    "Telegram login is not enabled in dashboard foundation.",
+                reject_literal_credentials(payload, allowed=frozenset({"code"}))
+                code = str(payload.get("code", "")).strip()
+                if not code:
+                    raise DashboardValidationError("Verification code is required")
+                result = telegram.verify_code(db, code)
+                db.add_audit(
+                    "TELEGRAM_VERIFY_CODE",
+                    "INFO" if result.get("status") == TELEGRAM_CONNECTED else "ERROR",
+                    "Telegram code verification processed",
+                    {"status": result.get("status"), "error_code": result.get("error_code")},
                 )
+                status = HTTPStatus.OK
+                if result.get("status") == "ERROR":
+                    status = HTTPStatus.BAD_REQUEST
+                self._send_json(result, status)
                 return
 
             if path == "/api/telegram/verify-password":
-                self._send_error_json(
-                    HTTPStatus.NOT_IMPLEMENTED,
-                    "Telegram login is not enabled in dashboard foundation.",
+                reject_literal_credentials(payload, allowed=frozenset({"password"}))
+                password = str(payload.get("password", "")).strip()
+                if not password:
+                    raise DashboardValidationError("2FA password is required")
+                result = telegram.verify_password(db, password)
+                db.add_audit(
+                    "TELEGRAM_VERIFY_PASSWORD",
+                    "INFO" if result.get("status") == TELEGRAM_CONNECTED else "ERROR",
+                    "Telegram 2FA verification processed",
+                    {"status": result.get("status"), "error_code": result.get("error_code")},
                 )
+                status = HTTPStatus.OK
+                if result.get("status") == "ERROR":
+                    status = HTTPStatus.BAD_REQUEST
+                self._send_json(result, status)
+                return
+
+            if path == "/api/telegram/sync-channels":
+                result = telegram.sync_channels(db)
+                if result.get("status") == "ERROR":
+                    db.add_audit(
+                        "TELEGRAM_SYNC_CHANNELS",
+                        "ERROR",
+                        "Telegram channel sync failed",
+                        {"error_code": result.get("error_code")},
+                    )
+                    self._send_json(result, HTTPStatus.BAD_REQUEST)
+                    return
+                db.add_audit(
+                    "TELEGRAM_SYNC_CHANNELS",
+                    "INFO",
+                    "Telegram channels synced",
+                    {"synced": result.get("synced"), "source": result.get("source")},
+                )
+                self._send_json(result)
+                return
+
+            if path == "/api/telegram/disconnect":
+                result = telegram.disconnect(db)
+                db.add_audit(
+                    "TELEGRAM_DISCONNECT",
+                    "INFO",
+                    "Telegram client disconnected (session file retained)",
+                    {"status": result.get("status")},
+                )
+                self._send_json(result)
                 return
 
             if path == "/api/channels/import-demo":

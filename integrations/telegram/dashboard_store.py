@@ -10,6 +10,7 @@ from typing import Any
 from dashboard_security import (
     ACCOUNT_MODES,
     DashboardValidationError,
+    mask_session_path,
     redact_metadata,
     redact_text,
     utc_now_iso,
@@ -123,6 +124,9 @@ class DashboardDatabase:
                 );
                 """
             )
+            self._ensure_column(conn, "telegram_connection", "phone_code_hash", "TEXT NULL")
+            self._ensure_column(conn, "telegram_connection", "session_path_masked", "TEXT NULL")
+            self._ensure_column(conn, "tracked_channels", "source", "TEXT NULL")
             row = conn.execute("SELECT id FROM telegram_connection WHERE id = 1").fetchone()
             if row is None:
                 now = utc_now_iso()
@@ -134,6 +138,19 @@ class DashboardDatabase:
                     """,
                     (now,),
                 )
+
+    def _ensure_column(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def add_audit(
         self,
@@ -160,7 +177,25 @@ class DashboardDatabase:
             row = conn.execute("SELECT * FROM telegram_connection WHERE id = 1").fetchone()
         return dict(row) if row else {"status": "DISCONNECTED"}
 
-    def configure_telegram(self, phone_masked: str) -> None:
+    def public_telegram_status(
+        self,
+        *,
+        telethon_available: bool,
+        config_ready: bool,
+    ) -> dict[str, Any]:
+        row = self.get_telegram_status()
+        return {
+            "status": row.get("status", "DISCONNECTED"),
+            "phone_masked": row.get("phone_masked"),
+            "channel_count": row.get("channel_count", 0),
+            "last_error_code": row.get("last_error_code"),
+            "updated_at_utc": row.get("updated_at_utc"),
+            "telethon_available": telethon_available,
+            "config_ready": config_ready,
+            "session_path_masked": row.get("session_path_masked"),
+        }
+
+    def configure_telegram(self, phone_masked: str, session_path_masked: str) -> None:
         now = utc_now_iso()
         with self._connect() as conn:
             conn.execute(
@@ -168,11 +203,174 @@ class DashboardDatabase:
                 UPDATE telegram_connection
                 SET status = 'API_CONFIGURED',
                     phone_masked = ?,
+                    session_path_masked = ?,
+                    last_error_code = NULL,
                     updated_at_utc = ?
                 WHERE id = 1
                 """,
-                (phone_masked, now),
+                (phone_masked, session_path_masked, now),
             )
+
+    def set_telegram_config_error(self, error_code: str) -> None:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE telegram_connection
+                SET status = 'ERROR',
+                    last_error_code = ?,
+                    updated_at_utc = ?
+                WHERE id = 1
+                """,
+                (error_code, now),
+            )
+
+    def set_telegram_code_sent(self, phone_code_hash: str) -> None:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE telegram_connection
+                SET status = 'CODE_SENT',
+                    phone_code_hash = ?,
+                    last_error_code = NULL,
+                    updated_at_utc = ?
+                WHERE id = 1
+                """,
+                (phone_code_hash, now),
+            )
+
+    def get_phone_code_hash(self) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT phone_code_hash FROM telegram_connection WHERE id = 1"
+            ).fetchone()
+        if row is None:
+            return None
+        return row["phone_code_hash"]
+
+    def set_telegram_connected(self) -> None:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE telegram_connection
+                SET status = 'CONNECTED',
+                    phone_code_hash = NULL,
+                    last_error_code = NULL,
+                    updated_at_utc = ?
+                WHERE id = 1
+                """,
+                (now,),
+            )
+
+    def set_telegram_two_factor_required(self) -> None:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE telegram_connection
+                SET status = 'TWO_FACTOR_REQUIRED',
+                    last_error_code = NULL,
+                    updated_at_utc = ?
+                WHERE id = 1
+                """,
+                (now,),
+            )
+
+    def set_telegram_auth_error(self, error_code: str) -> None:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE telegram_connection
+                SET status = 'ERROR',
+                    last_error_code = ?,
+                    updated_at_utc = ?
+                WHERE id = 1
+                """,
+                (error_code, now),
+            )
+
+    def set_telegram_disconnected(self) -> None:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE telegram_connection
+                SET status = 'DISCONNECTED',
+                    phone_code_hash = NULL,
+                    last_error_code = NULL,
+                    updated_at_utc = ?
+                WHERE id = 1
+                """,
+                (now,),
+            )
+
+    def sync_telegram_channels(self, channels: list[dict[str, Any]]) -> int:
+        now = utc_now_iso()
+        synced = 0
+        with self._connect() as conn:
+            for channel in channels:
+                existing = conn.execute(
+                    """
+                    SELECT id, is_tracking FROM tracked_channels
+                    WHERE telegram_channel_id = ?
+                    """,
+                    (channel["telegram_channel_id"],),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        """
+                        UPDATE tracked_channels
+                        SET title = ?,
+                            channel_type = ?,
+                            username = ?,
+                            last_message_at_utc = ?,
+                            source = ?,
+                            updated_at_utc = ?
+                        WHERE telegram_channel_id = ?
+                        """,
+                        (
+                            channel["title"],
+                            channel["channel_type"],
+                            channel.get("username"),
+                            channel.get("last_message_at_utc"),
+                            "TELEGRAM",
+                            now,
+                            channel["telegram_channel_id"],
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO tracked_channels
+                        (telegram_channel_id, title, channel_type, username, is_tracking,
+                         last_message_at_utc, source, created_at_utc, updated_at_utc)
+                        VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?)
+                        """,
+                        (
+                            channel["telegram_channel_id"],
+                            channel["title"],
+                            channel["channel_type"],
+                            channel.get("username"),
+                            channel.get("last_message_at_utc"),
+                            "TELEGRAM",
+                            now,
+                            now,
+                        ),
+                    )
+                synced += 1
+            conn.execute(
+                """
+                UPDATE telegram_connection
+                SET channel_count = (SELECT COUNT(*) FROM tracked_channels),
+                    updated_at_utc = ?
+                WHERE id = 1
+                """,
+                (now,),
+            )
+        return synced
 
     def list_channels(self) -> list[dict[str, Any]]:
         with self._connect() as conn:
@@ -195,8 +393,8 @@ class DashboardDatabase:
                     """
                     INSERT OR IGNORE INTO tracked_channels
                     (telegram_channel_id, title, channel_type, username, is_tracking,
-                     last_message_at_utc, created_at_utc, updated_at_utc)
-                    VALUES (?, ?, ?, ?, 0, NULL, ?, ?)
+                     last_message_at_utc, source, created_at_utc, updated_at_utc)
+                    VALUES (?, ?, ?, ?, 0, NULL, 'LOCAL_DEMO_DATA', ?, ?)
                     """,
                     (
                         spec["telegram_channel_id"],
@@ -479,7 +677,9 @@ class DashboardDatabase:
             },
             "safety": {
                 "broker_execution": "DISABLED_BY_DESIGN",
-                "file_common_write": "NOT_IMPLEMENTED",
+                "file_common_write": "NOT_IMPLEMENTED_IN_DASHBOARD",
                 "ea_control": "NOT_IMPLEMENTED",
+                "telegram_login": "IMPLEMENTED_LOCAL_ONLY",
+                "channel_live_sync": "IMPLEMENTED_ON_DEMAND",
             },
         }
