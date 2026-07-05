@@ -16,11 +16,12 @@ if str(_INTEGRATIONS_TELEGRAM_DIR) not in sys.path:
 from dashboard_api import DashboardContext, DashboardRequestHandler
 from dashboard_security import (
     ALLOWED_HOST,
-    DEFAULT_DATA_DIR,
     DEFAULT_PORT,
     DashboardSecurityError,
+    resolve_default_data_dir,
     validate_host,
 )
+from dashboard_vault import DashboardCredentialVault
 from dashboard_store import DashboardDatabase
 
 logger = logging.getLogger("telegram_dashboard")
@@ -37,6 +38,11 @@ def create_server(context: DashboardContext) -> ThreadingHTTPServer:
 
 def run_server(context: DashboardContext) -> None:
     server = create_server(context)
+    vault = DashboardCredentialVault(context.data_dir)
+    logger.info(
+        "dashboard_event=DATA_DIR_READY vault_file_present=%s",
+        vault.vault_file_present(),
+    )
     logger.info(
         "dashboard_event=SERVER_READY host=%s port=%s",
         context.host,
@@ -70,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Local Telegram Route Dashboard")
     parser.add_argument("--host", default=ALLOWED_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
-    parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR))
+    parser.add_argument("--data-dir", default=str(resolve_default_data_dir()))
     parser.add_argument("--dashboard-dir", default="integrations/telegram/dashboard")
     args = parser.parse_args(argv)
 

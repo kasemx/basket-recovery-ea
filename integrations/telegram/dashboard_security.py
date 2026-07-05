@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from datetime import datetime, timezone
@@ -19,7 +20,22 @@ from fasttrack_file_bridge import validate_basename
 
 ALLOWED_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
-DEFAULT_DATA_DIR = Path("integrations/telegram/local-data")
+_PACKAGE_DIR = Path(__file__).resolve().parent
+_PACKAGE_LOCAL_DATA_DIR = _PACKAGE_DIR / "local-data"
+
+
+def resolve_default_data_dir() -> Path:
+    """Return an absolute, CWD-independent dashboard data directory."""
+    env_override = os.environ.get("DASHBOARD_DATA_DIR", "").strip()
+    if env_override:
+        return Path(env_override).expanduser().resolve()
+    local_app = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app:
+        return (Path(local_app) / "BasketRecoveryEA" / "TelegramDashboard").resolve()
+    return _PACKAGE_LOCAL_DATA_DIR.resolve()
+
+
+DEFAULT_DATA_DIR = resolve_default_data_dir()
 
 FORBIDDEN_CREDENTIAL_KEYS = frozenset(
     {

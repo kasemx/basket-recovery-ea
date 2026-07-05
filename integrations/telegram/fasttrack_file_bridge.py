@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Offline FastTrack FILE_COMMON bridge — stdin simulator and atomic publish."""
+"""FastTrack FILE_COMMON bridge — stdin simulator, atomic publish, Telethon listener."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import hashlib
 import json
 import os
@@ -13,13 +14,18 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, TextIO
+from typing import IO, Literal
 
 MAX_BYTES = 8192
 SEED_PATTERN = re.compile(
     r"^(?P<symbol>\S+)\s+(?P<direction>buy|sell)\s+now$",
     re.IGNORECASE,
 )
+DETAILS_HEADER_PATTERN = re.compile(
+    r"^(?P<symbol>\S+)\s+(?P<direction>buy|sell)\s+now\b",
+    re.IGNORECASE,
+)
+DETAILS_RANGE_HINT = re.compile(r"now\s+\d", re.IGNORECASE)
 SUPPORTED_SYMBOLS = {"gold"}
 
 
@@ -121,6 +127,11 @@ def pair_fingerprint(seed_text: str, details_text: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def raw_message_hash(text: str) -> str:
+    normalized = normalize_line_endings(text).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def short_fingerprint(full_hash: str) -> str:
     return full_hash[:12]
 
@@ -129,8 +140,50 @@ def build_correlation_key(
     symbol: str,
     direction: str,
     seed_message_id: str,
+    channel_id: str = "",
 ) -> str:
+    if channel_id:
+        return f"{symbol}|{direction}|{utc_date()}|{channel_id}|{seed_message_id}"
     return f"{symbol}|{direction}|{utc_date()}|{seed_message_id}"
+
+
+def parse_details_header_symbol_direction(text: str) -> tuple[str, str] | None:
+    normalized = normalize_line_endings(text).strip()
+    if not normalized:
+        return None
+    first_line = normalized.split("\n", 1)[0].strip()
+    match = DETAILS_HEADER_PATTERN.match(first_line)
+    if not match:
+        return None
+    symbol = match.group("symbol").lower()
+    direction = match.group("direction").lower()
+    if symbol not in SUPPORTED_SYMBOLS:
+        return None
+    return symbol, direction
+
+
+def classify_telegram_text(text: str) -> Literal["empty", "non_ascii", "seed", "details", "unrecognized"]:
+    normalized = normalize_line_endings(text).strip()
+    if not normalized:
+        return "empty"
+    try:
+        validate_ascii(normalized, "Message")
+    except BridgeValidationError:
+        return "non_ascii"
+
+    lines = [line.strip() for line in normalized.split("\n") if line.strip()]
+    if not lines:
+        return "empty"
+    first_line = lines[0]
+    if len(lines) == 1 and SEED_PATTERN.match(first_line):
+        return "seed"
+    if DETAILS_HEADER_PATTERN.match(first_line) and (
+        DETAILS_RANGE_HINT.search(first_line) or "SL:" in normalized.upper()
+    ):
+        return "details"
+    if "SL:" in normalized.upper() and DETAILS_HEADER_PATTERN.match(first_line):
+        return "details"
+    return "unrecognized"
 
 
 class BridgeLogger:
@@ -349,6 +402,9 @@ class PendingSeed:
     symbol: str
     direction: str
     received_at: float
+    channel_id: str = ""
+    grouped_id: str | None = None
+    telegram_message_id: int | None = None
 
 
 @dataclass
@@ -362,7 +418,6 @@ class PairMatcher:
     mode: str
     dry_run: bool = False
     pending_seed: PendingSeed | None = None
-    _dedup_fingerprints: set[str] = field(default_factory=set)
 
     def _now(self) -> float:
         import time
@@ -381,10 +436,15 @@ class PairMatcher:
                     self.pending_seed.symbol,
                     self.pending_seed.direction,
                     self.pending_seed.message_id,
+                    self.pending_seed.channel_id,
                 ),
                 mode=self.mode,
                 timestamp_utc=utc_now_iso(),
             )
+            self._clear_pending_seed(self.pending_seed)
+
+    def _clear_pending_seed(self, seed: PendingSeed) -> None:
+        if self.pending_seed is seed:
             self.pending_seed = None
 
     def ingest_seed(self, text: str, message_id: str) -> None:
@@ -398,6 +458,7 @@ class PairMatcher:
                     self.pending_seed.symbol,
                     self.pending_seed.direction,
                     self.pending_seed.message_id,
+                    self.pending_seed.channel_id,
                 ),
                 mode=self.mode,
                 timestamp_utc=utc_now_iso(),
@@ -428,6 +489,7 @@ class PairMatcher:
             seed.symbol,
             seed.direction,
             seed.message_id,
+            seed.channel_id,
         )
         self.publisher.publish_pair(
             root=self.root,
@@ -440,6 +502,338 @@ class PairMatcher:
             dry_run=self.dry_run,
         )
         self.pending_seed = None
+
+    def publish_matched_pair(self, seed: PendingSeed, details_text: str, details_message_id: str) -> None:
+        details = validate_details_text(details_text)
+        correlation_key = build_correlation_key(
+            seed.symbol,
+            seed.direction,
+            seed.message_id,
+            seed.channel_id,
+        )
+        self.publisher.publish_pair(
+            root=self.root,
+            seed_filename=self.seed_filename,
+            details_filename=self.details_filename,
+            seed_text=seed.text,
+            details_text=details,
+            correlation_key=correlation_key,
+            mode=self.mode,
+            dry_run=self.dry_run,
+        )
+        if self.pending_seed is seed:
+            self.pending_seed = None
+
+
+@dataclass
+class TelegramPairMatcher(PairMatcher):
+    _seed_by_grouped_id: dict[str, PendingSeed] = field(default_factory=dict)
+
+    def _unregister_seed(self, seed: PendingSeed) -> None:
+        if seed.grouped_id is not None:
+            key = str(seed.grouped_id)
+            if self._seed_by_grouped_id.get(key) is seed:
+                del self._seed_by_grouped_id[key]
+
+    def _clear_pending_seed(self, seed: PendingSeed) -> None:
+        self._unregister_seed(seed)
+        super()._clear_pending_seed(seed)
+
+    def ingest_telegram_seed(
+        self,
+        text: str,
+        *,
+        message_id: str,
+        channel_id: str,
+        grouped_id: int | None,
+        telegram_message_id: int,
+    ) -> None:
+        self._expire_pending_seed_if_needed()
+        symbol, direction = validate_seed_format(text)
+        if self.pending_seed is not None:
+            self.logger.log(
+                "SKIPPED",
+                reason="stale_seed_replaced",
+                correlation_key=build_correlation_key(
+                    self.pending_seed.symbol,
+                    self.pending_seed.direction,
+                    self.pending_seed.message_id,
+                    self.pending_seed.channel_id,
+                ),
+                mode=self.mode,
+                timestamp_utc=utc_now_iso(),
+            )
+            self._unregister_seed(self.pending_seed)
+
+        seed = PendingSeed(
+            text=text.strip(),
+            message_id=message_id,
+            symbol=symbol,
+            direction=direction,
+            received_at=self._now(),
+            channel_id=channel_id,
+            grouped_id=str(grouped_id) if grouped_id is not None else None,
+            telegram_message_id=telegram_message_id,
+        )
+        self.pending_seed = seed
+        if seed.grouped_id is not None:
+            self._seed_by_grouped_id[seed.grouped_id] = seed
+
+    def find_seed_for_details(
+        self,
+        details_text: str,
+        *,
+        grouped_id: int | None,
+        reply_to_msg_id: int | None,
+    ) -> PendingSeed | None:
+        header = parse_details_header_symbol_direction(details_text)
+
+        if grouped_id is not None:
+            grouped_seed = self._seed_by_grouped_id.get(str(grouped_id))
+            if grouped_seed is not None:
+                if header is None or (
+                    grouped_seed.symbol == header[0] and grouped_seed.direction == header[1]
+                ):
+                    return grouped_seed
+
+        if reply_to_msg_id is not None and self.pending_seed is not None:
+            if self.pending_seed.telegram_message_id == reply_to_msg_id:
+                return self.pending_seed
+
+        if self.pending_seed is not None and header is not None:
+            if (
+                self.pending_seed.symbol == header[0]
+                and self.pending_seed.direction == header[1]
+            ):
+                return self.pending_seed
+
+        return None
+
+    def ingest_telegram_details(
+        self,
+        text: str,
+        *,
+        message_id: str,
+        channel_id: str,
+        grouped_id: int | None,
+        reply_to_msg_id: int | None,
+    ) -> None:
+        self._expire_pending_seed_if_needed()
+        details = validate_details_text(text)
+        seed = self.find_seed_for_details(
+            details,
+            grouped_id=grouped_id,
+            reply_to_msg_id=reply_to_msg_id,
+        )
+        if seed is None:
+            self.logger.log(
+                "SKIPPED",
+                reason="details_without_seed",
+                message_id=message_id,
+                channel_id=channel_id,
+                mode=self.mode,
+                timestamp_utc=utc_now_iso(),
+            )
+            return
+
+        self.publish_matched_pair(seed, details, message_id)
+        self._unregister_seed(seed)
+
+
+@dataclass
+class TelegramInboundMessage:
+    text: str
+    message_id: int
+    channel_id: int
+    grouped_id: int | None = None
+    reply_to_msg_id: int | None = None
+
+
+def normalize_telegram_message(
+    *,
+    text: str,
+    message_id: int,
+    channel_id: int,
+    grouped_id: int | None = None,
+    reply_to_msg_id: int | None = None,
+) -> TelegramInboundMessage:
+    return TelegramInboundMessage(
+        text=text,
+        message_id=message_id,
+        channel_id=channel_id,
+        grouped_id=grouped_id,
+        reply_to_msg_id=reply_to_msg_id,
+    )
+
+
+def normalize_telegram_event(event: object) -> TelegramInboundMessage:
+    message = getattr(event, "message", event)
+    text = getattr(message, "message", None) or getattr(message, "text", "") or ""
+    message_id = int(getattr(message, "id"))
+    channel_id = int(getattr(event, "chat_id"))
+    grouped_id = getattr(message, "grouped_id", None)
+    reply_to = getattr(message, "reply_to", None)
+    reply_to_msg_id = None
+    if reply_to is not None:
+        reply_to_msg_id = getattr(reply_to, "reply_to_msg_id", None)
+    return normalize_telegram_message(
+        text=text,
+        message_id=message_id,
+        channel_id=channel_id,
+        grouped_id=grouped_id,
+        reply_to_msg_id=reply_to_msg_id,
+    )
+
+
+class TelegramMessageHandler:
+    def __init__(self, matcher: TelegramPairMatcher, logger: BridgeLogger) -> None:
+        self.matcher = matcher
+        self.logger = logger
+        self._seen_message_keys: set[str] = set()
+        self._seen_raw_hashes: set[str] = set()
+
+    def handle(self, message: TelegramInboundMessage) -> None:
+        message_key = f"{message.channel_id}:{message.message_id}"
+        if message_key in self._seen_message_keys:
+            self.logger.log(
+                "SKIPPED",
+                reason="telegram_dedup",
+                message_id=message.message_id,
+                channel_id=message.channel_id,
+                mode=self.matcher.mode,
+                timestamp_utc=utc_now_iso(),
+            )
+            return
+
+        classification = classify_telegram_text(message.text)
+        if classification == "empty":
+            self.logger.log(
+                "SKIPPED",
+                reason="empty_message",
+                message_id=message.message_id,
+                channel_id=message.channel_id,
+                mode=self.matcher.mode,
+                timestamp_utc=utc_now_iso(),
+            )
+            return
+        if classification == "non_ascii":
+            self.logger.log(
+                "SKIPPED",
+                reason="non_ascii_message",
+                message_id=message.message_id,
+                channel_id=message.channel_id,
+                mode=self.matcher.mode,
+                timestamp_utc=utc_now_iso(),
+            )
+            return
+
+        content_hash = raw_message_hash(message.text)
+        if content_hash in self._seen_raw_hashes:
+            self.logger.log(
+                "SKIPPED",
+                reason="telegram_dedup",
+                message_id=message.message_id,
+                channel_id=message.channel_id,
+                mode=self.matcher.mode,
+                timestamp_utc=utc_now_iso(),
+            )
+            return
+
+        self._seen_message_keys.add(message_key)
+        self._seen_raw_hashes.add(content_hash)
+
+        if classification == "seed":
+            self.matcher.ingest_telegram_seed(
+                message.text,
+                message_id=str(message.message_id),
+                channel_id=str(message.channel_id),
+                grouped_id=message.grouped_id,
+                telegram_message_id=message.message_id,
+            )
+            return
+
+        if classification == "details":
+            self.matcher.ingest_telegram_details(
+                message.text,
+                message_id=str(message.message_id),
+                channel_id=str(message.channel_id),
+                grouped_id=message.grouped_id,
+                reply_to_msg_id=message.reply_to_msg_id,
+            )
+            return
+
+        self.logger.log(
+            "SKIPPED",
+            reason="unrecognized_message",
+            message_id=message.message_id,
+            channel_id=message.channel_id,
+            mode=self.matcher.mode,
+            timestamp_utc=utc_now_iso(),
+        )
+
+
+@dataclass
+class TelegramConfig:
+    api_id: int
+    api_hash: str
+    session_path: Path
+    channel: str
+    pair_timeout_seconds: int
+
+
+def validate_telegram_channel(channel: str) -> str:
+    trimmed = channel.strip()
+    if not trimmed:
+        raise BridgeValidationError("Missing --telegram-channel")
+    if trimmed.startswith("http://") or trimmed.startswith("https://"):
+        raise BridgeValidationError("Channel invite links are not supported; use numeric ID or @username")
+    return trimmed
+
+
+def validate_telegram_config(args: argparse.Namespace) -> TelegramConfig:
+    if not args.telegram_api_id:
+        raise BridgeValidationError("Missing --telegram-api-id")
+    if not args.telegram_api_hash:
+        raise BridgeValidationError("Missing --telegram-api-hash")
+    if not args.telegram_session_path:
+        raise BridgeValidationError("Missing --telegram-session-path")
+    if not args.telegram_channel:
+        raise BridgeValidationError("Missing --telegram-channel")
+
+    try:
+        api_id = int(str(args.telegram_api_id).strip())
+    except ValueError as exc:
+        raise BridgeValidationError("--telegram-api-id must be an integer") from exc
+
+    api_hash = str(args.telegram_api_hash).strip()
+    if not api_hash:
+        raise BridgeValidationError("Missing --telegram-api-hash")
+
+    session_path = Path(str(args.telegram_session_path).strip()).expanduser()
+    session_parent = session_path.parent
+    if not session_parent.exists():
+        raise BridgeValidationError(f"Session parent directory does not exist: {session_parent}")
+
+    channel = validate_telegram_channel(str(args.telegram_channel))
+    timeout = int(args.telegram_pair_timeout_seconds or args.pair_timeout_seconds)
+    if timeout <= 0:
+        raise BridgeValidationError("Pair timeout must be positive")
+
+    return TelegramConfig(
+        api_id=api_id,
+        api_hash=api_hash,
+        session_path=session_path,
+        channel=channel,
+        pair_timeout_seconds=timeout,
+    )
+
+
+def is_telethon_available() -> bool:
+    try:
+        import telethon  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def read_json_lines(stream: IO[str]) -> list[dict[str, object]]:
@@ -490,7 +884,7 @@ def load_text_arg(text: str | None, file_path: str | None, label: str) -> str:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Offline FastTrack FILE_COMMON bridge (no Telegram/network)."
+        description="FastTrack FILE_COMMON bridge with optional Telethon listener."
     )
     parser.add_argument("--file-common-root", required=True)
     parser.add_argument(
@@ -504,12 +898,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--pair-timeout-seconds", type=int, default=900)
     parser.add_argument("--simulate-stdin", action="store_true")
     parser.add_argument("--publish-pair", action="store_true")
+    parser.add_argument("--telegram-listen", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--log-file", default="")
     parser.add_argument("--seed-text", default=None)
     parser.add_argument("--details-text", default=None)
     parser.add_argument("--seed-file", default=None)
     parser.add_argument("--details-file", default=None)
+    parser.add_argument("--telegram-api-id", default=None)
+    parser.add_argument("--telegram-api-hash", default=None)
+    parser.add_argument("--telegram-session-path", default=None)
+    parser.add_argument("--telegram-channel", default=None)
+    parser.add_argument("--telegram-pair-timeout-seconds", type=int, default=None)
     return parser
 
 
@@ -554,19 +954,95 @@ def run_publish_pair(args: argparse.Namespace) -> int:
     return 0
 
 
+async def _telegram_listen_loop(
+    config: TelegramConfig,
+    handler: TelegramMessageHandler,
+    logger: BridgeLogger,
+) -> None:
+    from telethon import TelegramClient, events
+
+    client = TelegramClient(
+        str(config.session_path),
+        config.api_id,
+        config.api_hash,
+    )
+
+    @client.on(events.NewMessage(chats=config.channel))
+    async def on_new_message(event: object) -> None:
+        inbound = normalize_telegram_event(event)
+        handler.handle(inbound)
+
+    await client.start()
+    logger.log(
+        "TELEGRAM_LISTENER_READY",
+        mode="telegram-listen",
+        channel=config.channel,
+        timestamp_utc=utc_now_iso(),
+    )
+    await client.run_until_disconnected()
+
+
+def run_telegram_listen(args: argparse.Namespace) -> int:
+    logger = BridgeLogger(args.log_file or None)
+    if not is_telethon_available():
+        logger.log(
+            "ERROR",
+            reason="telethon_not_installed",
+            detail="Install with: pip install telethon",
+            timestamp_utc=utc_now_iso(),
+        )
+        return 1
+
+    try:
+        config = validate_telegram_config(args)
+        root = resolve_root(args.file_common_root)
+    except BridgeValidationError as exc:
+        logger.log(
+            "ERROR",
+            reason="validation_failed",
+            detail=str(exc),
+            timestamp_utc=utc_now_iso(),
+        )
+        return 2
+
+    publisher = AtomicPublisher(logger)
+    matcher = TelegramPairMatcher(
+        publisher=publisher,
+        root=root,
+        seed_filename=args.seed_filename,
+        details_filename=args.details_filename,
+        pair_timeout_seconds=config.pair_timeout_seconds,
+        logger=logger,
+        mode="telegram-listen",
+        dry_run=args.dry_run,
+    )
+    handler = TelegramMessageHandler(matcher, logger)
+    asyncio.run(_telegram_listen_loop(config, handler, logger))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    if args.simulate_stdin and args.publish_pair:
-        parser.error("Use either --simulate-stdin or --publish-pair, not both")
-    if not args.simulate_stdin and not args.publish_pair:
-        parser.error("One of --simulate-stdin or --publish-pair is required")
+    mode_count = sum(
+        [
+            bool(args.simulate_stdin),
+            bool(args.publish_pair),
+            bool(args.telegram_listen),
+        ]
+    )
+    if mode_count != 1:
+        parser.error(
+            "Exactly one of --simulate-stdin, --publish-pair, or --telegram-listen is required"
+        )
 
     try:
         if args.simulate_stdin:
             return run_simulate_stdin(args)
-        return run_publish_pair(args)
+        if args.publish_pair:
+            return run_publish_pair(args)
+        return run_telegram_listen(args)
     except BridgeValidationError as exc:
         BridgeLogger(args.log_file or None).log(
             "ERROR",

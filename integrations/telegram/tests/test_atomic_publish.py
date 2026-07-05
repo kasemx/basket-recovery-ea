@@ -221,5 +221,237 @@ class ValidationHelperTests(unittest.TestCase):
             bridge.validate_seed_format("Gold sell later")
 
 
+class TelegramListenerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import tempfile
+
+        self.temp_dir = tempfile.mkdtemp(prefix="fasttrack_telegram_test_")
+        self.root = Path(self.temp_dir)
+        self.logger = bridge.BridgeLogger()
+        self.publisher = bridge.AtomicPublisher(self.logger)
+        self.matcher = bridge.TelegramPairMatcher(
+            publisher=self.publisher,
+            root=self.root,
+            seed_filename=SEED_NAME,
+            details_filename=DETAILS_NAME,
+            pair_timeout_seconds=900,
+            logger=self.logger,
+            mode="telegram-listen",
+            dry_run=True,
+        )
+        self.handler = bridge.TelegramMessageHandler(self.matcher, self.logger)
+
+    def tearDown(self) -> None:
+        import shutil
+
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def msg(
+        self,
+        text: str,
+        message_id: int = 1,
+        channel_id: int = -100123,
+        grouped_id: int | None = None,
+        reply_to_msg_id: int | None = None,
+    ) -> bridge.TelegramInboundMessage:
+        return bridge.normalize_telegram_message(
+            text=text,
+            message_id=message_id,
+            channel_id=channel_id,
+            grouped_id=grouped_id,
+            reply_to_msg_id=reply_to_msg_id,
+        )
+
+    def test_telethon_missing_returns_error_exit_code(self) -> None:
+        parser = bridge.build_parser()
+        args = parser.parse_args(
+            [
+                "--telegram-listen",
+                "--file-common-root",
+                str(self.root),
+                "--telegram-api-id",
+                "12345",
+                "--telegram-api-hash",
+                "hash",
+                "--telegram-session-path",
+                str(self.root / "session"),
+                "--telegram-channel",
+                "@channel",
+            ]
+        )
+        with mock.patch.object(bridge, "is_telethon_available", return_value=False):
+            with mock.patch.object(bridge.BridgeLogger, "log") as log_mock:
+                exit_code = bridge.run_telegram_listen(args)
+        self.assertEqual(exit_code, 1)
+        log_mock.assert_any_call(
+            "ERROR",
+            reason="telethon_not_installed",
+            detail="Install with: pip install telethon",
+            timestamp_utc=mock.ANY,
+        )
+
+    def test_credential_validation_missing_api_id(self) -> None:
+        parser = bridge.build_parser()
+        args = parser.parse_args(
+            [
+                "--telegram-listen",
+                "--file-common-root",
+                str(self.root),
+                "--telegram-api-hash",
+                "hash",
+                "--telegram-session-path",
+                str(self.root / "session"),
+                "--telegram-channel",
+                "@channel",
+            ]
+        )
+        with self.assertRaises(bridge.BridgeValidationError):
+            bridge.validate_telegram_config(args)
+
+    def test_normalize_telegram_event_metadata(self) -> None:
+        class FakeReply:
+            reply_to_msg_id = 42
+
+        class FakeMessage:
+            id = 99
+            message = VALID_SEED
+            grouped_id = 777
+            reply_to = FakeReply()
+
+        class FakeEvent:
+            message = FakeMessage()
+            chat_id = -100555
+
+        inbound = bridge.normalize_telegram_event(FakeEvent())
+        self.assertEqual(inbound.message_id, 99)
+        self.assertEqual(inbound.channel_id, -100555)
+        self.assertEqual(inbound.grouped_id, 777)
+        self.assertEqual(inbound.reply_to_msg_id, 42)
+        self.assertEqual(inbound.text, VALID_SEED)
+
+    def test_empty_message_skipped(self) -> None:
+        with mock.patch.object(self.logger, "log") as log_mock:
+            self.handler.handle(self.msg("   ", message_id=10))
+        log_mock.assert_any_call(
+            "SKIPPED",
+            reason="empty_message",
+            message_id=10,
+            channel_id=-100123,
+            mode="telegram-listen",
+            timestamp_utc=mock.ANY,
+        )
+
+    def test_non_ascii_message_skipped(self) -> None:
+        with mock.patch.object(self.logger, "log") as log_mock:
+            self.handler.handle(self.msg("Gold sell now €", message_id=11))
+        log_mock.assert_any_call(
+            "SKIPPED",
+            reason="non_ascii_message",
+            message_id=11,
+            channel_id=-100123,
+            mode="telegram-listen",
+            timestamp_utc=mock.ANY,
+        )
+
+    def test_duplicate_message_id_skipped(self) -> None:
+        first = self.msg(VALID_SEED, message_id=12)
+        second = self.msg("Gold buy now", message_id=12)
+        self.handler.handle(first)
+        with mock.patch.object(self.logger, "log") as log_mock:
+            self.handler.handle(second)
+        log_mock.assert_any_call(
+            "SKIPPED",
+            reason="telegram_dedup",
+            message_id=12,
+            channel_id=-100123,
+            mode="telegram-listen",
+            timestamp_utc=mock.ANY,
+        )
+
+    def test_duplicate_raw_hash_skipped(self) -> None:
+        self.handler.handle(self.msg(VALID_SEED, message_id=20))
+        with mock.patch.object(self.logger, "log") as log_mock:
+            self.handler.handle(self.msg(VALID_SEED, message_id=21))
+        log_mock.assert_any_call(
+            "SKIPPED",
+            reason="telegram_dedup",
+            message_id=21,
+            channel_id=-100123,
+            mode="telegram-listen",
+            timestamp_utc=mock.ANY,
+        )
+
+    def test_seed_details_fallback_match(self) -> None:
+        self.handler.handle(self.msg(VALID_SEED, message_id=30))
+        with mock.patch.object(self.logger, "log") as log_mock:
+            self.handler.handle(self.msg(VALID_DETAILS, message_id=31))
+        log_mock.assert_any_call(
+            "PUBLISH_READY",
+            correlation_key=mock.ANY,
+            pair_fingerprint=mock.ANY,
+            seed_file=SEED_NAME,
+            details_file=DETAILS_NAME,
+            seed_bytes=mock.ANY,
+            details_bytes=mock.ANY,
+            mode="telegram-listen",
+            timestamp_utc=mock.ANY,
+            dry_run="true",
+        )
+
+    def test_grouped_id_priority(self) -> None:
+        grouped = 9001
+        self.handler.handle(
+            self.msg(VALID_SEED, message_id=40, grouped_id=grouped)
+        )
+        self.matcher.pending_seed = None
+        with mock.patch.object(self.logger, "log") as log_mock:
+            self.handler.handle(
+                self.msg(VALID_DETAILS, message_id=41, grouped_id=grouped)
+            )
+        log_mock.assert_any_call(
+            "PUBLISH_READY",
+            correlation_key=mock.ANY,
+            pair_fingerprint=mock.ANY,
+            seed_file=SEED_NAME,
+            details_file=DETAILS_NAME,
+            seed_bytes=mock.ANY,
+            details_bytes=mock.ANY,
+            mode="telegram-listen",
+            timestamp_utc=mock.ANY,
+            dry_run="true",
+        )
+
+    def test_reply_to_priority(self) -> None:
+        self.handler.handle(self.msg(VALID_SEED, message_id=50))
+        with mock.patch.object(self.logger, "log") as log_mock:
+            self.handler.handle(
+                self.msg(VALID_DETAILS, message_id=51, reply_to_msg_id=50)
+            )
+        log_mock.assert_any_call(
+            "PUBLISH_READY",
+            correlation_key=mock.ANY,
+            pair_fingerprint=mock.ANY,
+            seed_file=SEED_NAME,
+            details_file=DETAILS_NAME,
+            seed_bytes=mock.ANY,
+            details_bytes=mock.ANY,
+            mode="telegram-listen",
+            timestamp_utc=mock.ANY,
+            dry_run="true",
+        )
+
+    def test_unrecognized_message_skipped(self) -> None:
+        with mock.patch.object(self.logger, "log") as log_mock:
+            self.handler.handle(self.msg("hello world", message_id=60))
+        log_mock.assert_any_call(
+            "SKIPPED",
+            reason="unrecognized_message",
+            message_id=60,
+            channel_id=-100123,
+            mode="telegram-listen",
+            timestamp_utc=mock.ANY,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

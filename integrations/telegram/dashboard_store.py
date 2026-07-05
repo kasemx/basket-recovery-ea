@@ -122,6 +122,31 @@ class DashboardDatabase:
                     metadata_json TEXT NULL,
                     created_at_utc TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS route_listener_state (
+                    route_id INTEGER PRIMARY KEY,
+                    listener_status TEXT NOT NULL DEFAULT 'LISTENER_STOPPED',
+                    last_signal_status TEXT NULL,
+                    last_error_code TEXT NULL,
+                    last_publish_at_utc TEXT NULL,
+                    started_at_utc TEXT NULL,
+                    updated_at_utc TEXT NOT NULL,
+                    FOREIGN KEY(route_id) REFERENCES routes(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS route_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    route_id INTEGER NOT NULL,
+                    event_type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    target_id INTEGER NULL,
+                    fingerprint_short TEXT NULL,
+                    seed_bytes INTEGER NULL,
+                    details_bytes INTEGER NULL,
+                    safe_summary TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    FOREIGN KEY(route_id) REFERENCES routes(id) ON DELETE CASCADE
+                );
                 """
             )
             self._ensure_column(conn, "telegram_connection", "phone_code_hash", "TEXT NULL")
@@ -182,6 +207,7 @@ class DashboardDatabase:
         *,
         telethon_available: bool,
         config_ready: bool,
+        session_pending: bool = False,
     ) -> dict[str, Any]:
         row = self.get_telegram_status()
         return {
@@ -193,6 +219,7 @@ class DashboardDatabase:
             "telethon_available": telethon_available,
             "config_ready": config_ready,
             "session_path_masked": row.get("session_path_masked"),
+            "session_pending": session_pending,
         }
 
     def configure_telegram(self, phone_masked: str, session_path_masked: str) -> None:
@@ -547,10 +574,22 @@ class DashboardDatabase:
         with self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT r.*, c.title AS channel_title, t.name AS target_name
+                SELECT r.*,
+                       c.title AS channel_title,
+                       c.telegram_channel_id,
+                       c.is_tracking AS channel_is_tracking,
+                       t.name AS target_name,
+                       t.observer_only AS target_observer_only,
+                       t.is_enabled AS target_is_enabled,
+                       ls.listener_status,
+                       ls.last_signal_status,
+                       ls.last_error_code AS listener_last_error_code,
+                       ls.last_publish_at_utc AS listener_last_publish_at_utc,
+                       ls.started_at_utc AS listener_started_at_utc
                 FROM routes r
                 JOIN tracked_channels c ON c.id = r.channel_id
                 JOIN mt5_targets t ON t.id = r.target_id
+                LEFT JOIN route_listener_state ls ON ls.route_id = r.id
                 ORDER BY r.name
                 """
             ).fetchall()
@@ -625,6 +664,164 @@ class DashboardDatabase:
             cursor = conn.execute("DELETE FROM routes WHERE id = ?", (route_id,))
             if cursor.rowcount == 0:
                 raise DashboardValidationError("Route not found")
+
+    def get_route_start_context(self, route_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT r.id AS route_id,
+                       r.name AS route_name,
+                       r.channel_id,
+                       r.target_id,
+                       r.mode AS route_mode,
+                       r.is_enabled AS route_enabled,
+                       c.telegram_channel_id,
+                       c.title AS channel_title,
+                       c.is_tracking,
+                       t.name AS target_name,
+                       t.file_common_root,
+                       t.seed_filename,
+                       t.details_filename,
+                       t.observer_only,
+                       t.is_enabled AS target_enabled
+                FROM routes r
+                JOIN tracked_channels c ON c.id = r.channel_id
+                JOIN mt5_targets t ON t.id = r.target_id
+                WHERE r.id = ?
+                """,
+                (route_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def get_route_listener_state(self, route_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM route_listener_state WHERE route_id = ?",
+                (route_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def upsert_route_listener_state(
+        self,
+        route_id: int,
+        *,
+        listener_status: str,
+        last_signal_status: str | None = None,
+        last_error_code: str | None = None,
+        last_publish_at_utc: str | None = None,
+        started_at_utc: str | None = None,
+    ) -> None:
+        now = utc_now_iso()
+        existing = self.get_route_listener_state(route_id)
+        with self._connect() as conn:
+            if existing is None:
+                conn.execute(
+                    """
+                    INSERT INTO route_listener_state
+                    (route_id, listener_status, last_signal_status, last_error_code,
+                     last_publish_at_utc, started_at_utc, updated_at_utc)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        route_id,
+                        listener_status,
+                        last_signal_status,
+                        last_error_code,
+                        last_publish_at_utc,
+                        started_at_utc,
+                        now,
+                    ),
+                )
+                return
+            conn.execute(
+                """
+                UPDATE route_listener_state
+                SET listener_status = ?,
+                    last_signal_status = COALESCE(?, last_signal_status),
+                    last_error_code = ?,
+                    last_publish_at_utc = COALESCE(?, last_publish_at_utc),
+                    started_at_utc = COALESCE(?, started_at_utc),
+                    updated_at_utc = ?
+                WHERE route_id = ?
+                """,
+                (
+                    listener_status,
+                    last_signal_status,
+                    last_error_code,
+                    last_publish_at_utc,
+                    started_at_utc,
+                    now,
+                    route_id,
+                ),
+            )
+
+    def update_route_publish_status(
+        self,
+        route_id: int,
+        publish_status: str,
+        publish_at_utc: str,
+    ) -> None:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE routes
+                SET last_publish_status = ?,
+                    last_publish_at_utc = ?,
+                    updated_at_utc = ?
+                WHERE id = ?
+                """,
+                (publish_status, publish_at_utc, now, route_id),
+            )
+
+    def add_route_event(
+        self,
+        route_id: int,
+        *,
+        event_type: str,
+        status: str,
+        target_id: int | None,
+        safe_summary: str,
+        fingerprint_short: str | None = None,
+        seed_bytes: int | None = None,
+        details_bytes: int | None = None,
+    ) -> None:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO route_events
+                (route_id, event_type, status, target_id, fingerprint_short,
+                 seed_bytes, details_bytes, safe_summary, created_at_utc)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    route_id,
+                    event_type,
+                    status,
+                    target_id,
+                    fingerprint_short,
+                    seed_bytes,
+                    details_bytes,
+                    safe_summary,
+                    now,
+                ),
+            )
+
+    def list_route_events(self, route_id: int, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, route_id, event_type, status, target_id, fingerprint_short,
+                       seed_bytes, details_bytes, safe_summary, created_at_utc
+                FROM route_events
+                WHERE route_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (route_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def list_audit(self, limit: int) -> list[dict[str, Any]]:
         with self._connect() as conn:

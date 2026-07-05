@@ -23,21 +23,51 @@ from dashboard_security import (
     security_headers,
 )
 from dashboard_store import DashboardDatabase
+from route_listener_service import RouteListenerManager, build_default_listener_manager
+from dashboard_vault import (
+    CREDENTIAL_VAULT_UNSUPPORTED_PLATFORM,
+    CredentialVaultError,
+    DashboardCredentialVault,
+)
 from telegram_adapter import (
     TELEGRAM_2FA_REQUIRED,
     TELEGRAM_AUTH_FAILED,
     TELEGRAM_CONFIG_MISSING,
     TELEGRAM_CONNECTED,
+    TELEGRAM_FLOOD_WAIT,
     TELEGRAM_SYNC_FAILED,
     TELETHON_NOT_INSTALLED,
     TelegramAdapter,
-    build_adapter_from_env,
+    build_adapter_from_data_dir,
+    ensure_session_path_ready,
     is_telethon_available,
-    load_telegram_env_config,
+    load_telegram_config,
+    resolve_credential_source,
     run_telegram_async,
 )
 
 logger = logging.getLogger("telegram_dashboard")
+
+USER_ERROR_MESSAGES = {
+    TELEGRAM_CONFIG_MISSING: "Telegram API credentials are missing. Save credentials to the DPAPI vault or set environment fallback.",
+    TELETHON_NOT_INSTALLED: "Telethon is not installed on this machine.",
+    TELEGRAM_FLOOD_WAIT: "Telegram rate limit reached. Wait before trying again.",
+    "TELEGRAM_API_ID_INVALID": "Telegram rejected the API ID. Check vault credentials.",
+    "TELEGRAM_PHONE_INVALID": "Phone number format is invalid for Telegram.",
+    "TELEGRAM_NETWORK_ERROR": "Network error while contacting Telegram.",
+    "TELEGRAM_CODE_REQUEST_FAILED": "Telegram code request failed.",
+    "TELEGRAM_SESSION_PATH_ERROR": "Session directory could not be prepared.",
+    "TELEGRAM_INTERNAL_ERROR": "Unexpected dashboard error during Telegram login.",
+    TELEGRAM_AUTH_FAILED: "Telegram authentication failed.",
+}
+
+
+def user_message_for_error(error_code: str | None, flood_wait_seconds: int | None = None) -> str:
+    if error_code == TELEGRAM_FLOOD_WAIT and flood_wait_seconds:
+        return f"Telegram rate limit reached. Wait {flood_wait_seconds} seconds."
+    if error_code and error_code in USER_ERROR_MESSAGES:
+        return USER_ERROR_MESSAGES[error_code]
+    return "Telegram request failed."
 
 
 @dataclass
@@ -48,41 +78,140 @@ class DashboardContext:
     dashboard_dir: Path
     database: DashboardDatabase
     telegram_service: TelegramService | None = None
+    route_listener_manager: RouteListenerManager | None = None
 
 
 @dataclass
 class TelegramService:
-    adapter_factory: Callable[[], TelegramAdapter | None] = field(
-        default_factory=lambda: build_adapter_from_env
-    )
+    data_dir: Path = field(default_factory=Path.cwd)
+    adapter_factory: Callable[[], TelegramAdapter | None] | None = field(default=None)
     _auth_phone: str | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "data_dir", self.data_dir.expanduser().resolve())
+        if self.adapter_factory is None:
+            data_dir = self.data_dir
+
+            def _factory() -> TelegramAdapter | None:
+                return build_adapter_from_data_dir(data_dir)
+
+            self.adapter_factory = _factory
+
+    def _vault(self) -> DashboardCredentialVault:
+        return DashboardCredentialVault(self.data_dir)
 
     def telethon_available(self) -> bool:
         return is_telethon_available()
 
     def config_ready(self) -> bool:
-        return load_telegram_env_config() is not None
+        return load_telegram_config(self.data_dir) is not None
+
+    def credentials_status(self) -> dict[str, Any]:
+        status = self._vault().status_payload()
+        status["config_ready"] = self.config_ready()
+        return status
+
+    def save_credentials(self, api_id: str, api_hash: str) -> dict[str, Any]:
+        vault = self._vault()
+        try:
+            vault.save_telegram_credentials(api_id, api_hash)
+        except CredentialVaultError as exc:
+            return {"status": "ERROR", "error_code": exc.error_code}
+        return {
+            "status": "CREDENTIALS_SAVED",
+            "vault_supported": True,
+            "credentials_saved": True,
+            "config_ready": self.config_ready(),
+        }
+
+    def clear_credentials(self) -> dict[str, Any]:
+        self._vault().clear_telegram_credentials()
+        return {
+            "status": "CREDENTIALS_CLEARED",
+            "credentials_saved": False,
+            "config_ready": self.config_ready(),
+        }
 
     def status_payload(self, db: DashboardDatabase) -> dict[str, Any]:
-        return db.public_telegram_status(
+        config = load_telegram_config(self.data_dir)
+        config_ready = config is not None
+        payload = db.public_telegram_status(
             telethon_available=self.telethon_available(),
-            config_ready=self.config_ready(),
+            config_ready=config_ready,
+            session_pending=config is not None and not config.session_path.exists(),
+        )
+        payload.update(self._vault().status_payload())
+        payload["credential_source"] = resolve_credential_source(self.data_dir)
+        if config is not None:
+            payload["session_file_exists"] = config.session_path.exists()
+        else:
+            payload["session_file_exists"] = False
+        if not config_ready:
+            stored_status = payload.get("status")
+            if stored_status not in (None, "DISCONNECTED", "ERROR"):
+                payload["status"] = "DISCONNECTED"
+                payload["last_error_code"] = payload.get("last_error_code") or TELEGRAM_CONFIG_MISSING
+        return payload
+
+    def diagnostics_payload(self, db: DashboardDatabase) -> dict[str, Any]:
+        vault = self._vault()
+        config = load_telegram_config(self.data_dir)
+        session_path_resolved = config is not None
+        session_parent_exists = False
+        session_file_exists = False
+        if config is not None:
+            session_parent_exists = config.session_path.parent.exists()
+            session_file_exists = config.session_path.exists()
+        row = db.get_telegram_status()
+        return {
+            "vault_supported": vault.status_payload()["vault_supported"],
+            "vault_file_present": vault.vault_file_present(),
+            "vault_credentials_available": vault.has_telegram_credentials(),
+            "credential_source": resolve_credential_source(self.data_dir),
+            "session_path_resolved": session_path_resolved,
+            "session_parent_exists": session_parent_exists,
+            "session_file_exists": session_file_exists,
+            "data_dir_consistent": vault.data_dir == self.data_dir.expanduser().resolve(),
+            "last_safe_error_code": row.get("last_error_code"),
+        }
+
+    def resolve_request_phone(self, phone_from_body: str) -> str:
+        phone = str(phone_from_body or "").strip()
+        if phone:
+            if not phone.startswith("+") or len(re.sub(r"\D", "", phone)) < 8:
+                raise DashboardValidationError(
+                    "Phone must be in international format, e.g. +905xxxxxxxxx"
+                )
+            self._auth_phone = phone
+            return phone
+        if self._auth_phone:
+            return self._auth_phone
+        raise DashboardValidationError(
+            "Enter your phone number in the field above, then click Request Code."
         )
 
     def configure(self, db: DashboardDatabase, phone: str) -> dict[str, Any]:
         if not self.config_ready():
             db.set_telegram_config_error(TELEGRAM_CONFIG_MISSING)
-            return {"status": "ERROR", "error_code": TELEGRAM_CONFIG_MISSING}
+            return {
+                "status": "ERROR",
+                "error_code": TELEGRAM_CONFIG_MISSING,
+                "user_message": user_message_for_error(TELEGRAM_CONFIG_MISSING),
+            }
         if not phone.startswith("+") or len(re.sub(r"\D", "", phone)) < 8:
             raise DashboardValidationError(
                 "Phone must be in international format, e.g. +905xxxxxxxxx"
             )
-        env_config = load_telegram_env_config()
-        if env_config is None:
+        telegram_config = load_telegram_config(self.data_dir)
+        if telegram_config is None:
             db.set_telegram_config_error(TELEGRAM_CONFIG_MISSING)
-            return {"status": "ERROR", "error_code": TELEGRAM_CONFIG_MISSING}
+            return {
+                "status": "ERROR",
+                "error_code": TELEGRAM_CONFIG_MISSING,
+                "user_message": user_message_for_error(TELEGRAM_CONFIG_MISSING),
+            }
         phone_masked = mask_phone(phone)
-        session_path_masked = mask_session_path(str(env_config.session_path))
+        session_path_masked = mask_session_path(str(telegram_config.session_path))
         self._auth_phone = phone
         db.configure_telegram(phone_masked, session_path_masked)
         return {
@@ -98,14 +227,46 @@ class TelegramService:
             return {
                 "status": "ERROR",
                 "error_code": TELETHON_NOT_INSTALLED,
+                "user_message": user_message_for_error(TELETHON_NOT_INSTALLED),
+            }
+        config = load_telegram_config(self.data_dir)
+        if config is None:
+            return {
+                "status": "ERROR",
+                "error_code": TELEGRAM_CONFIG_MISSING,
+                "user_message": user_message_for_error(TELEGRAM_CONFIG_MISSING),
+            }
+        try:
+            ensure_session_path_ready(config.session_path)
+        except OSError:
+            db.set_telegram_auth_error("TELEGRAM_SESSION_PATH_ERROR")
+            return {
+                "status": "ERROR",
+                "error_code": "TELEGRAM_SESSION_PATH_ERROR",
+                "user_message": user_message_for_error("TELEGRAM_SESSION_PATH_ERROR"),
             }
         self._auth_phone = phone
         adapter = self._require_adapter()
-        result = run_telegram_async(adapter.send_code(phone))
+        try:
+            result = run_telegram_async(adapter.send_code(phone))
+        except Exception:  # noqa: BLE001
+            db.set_telegram_auth_error("TELEGRAM_INTERNAL_ERROR")
+            return {
+                "status": "ERROR",
+                "error_code": "TELEGRAM_INTERNAL_ERROR",
+                "user_message": user_message_for_error("TELEGRAM_INTERNAL_ERROR"),
+            }
         if result.status != "CODE_SENT" or not result.phone_code_hash:
-            error_code = result.error_code or TELEGRAM_AUTH_FAILED
+            error_code = result.error_code or "TELEGRAM_CODE_REQUEST_FAILED"
             db.set_telegram_auth_error(error_code)
-            return {"status": "ERROR", "error_code": error_code}
+            response: dict[str, Any] = {
+                "status": "ERROR",
+                "error_code": error_code,
+                "user_message": user_message_for_error(error_code, result.flood_wait_seconds),
+            }
+            if result.flood_wait_seconds:
+                response["flood_wait_seconds"] = result.flood_wait_seconds
+            return response
         db.set_telegram_code_sent(result.phone_code_hash)
         row = db.get_telegram_status()
         return {
@@ -201,8 +362,39 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
     def _telegram_service(self) -> TelegramService:
         if self.context.telegram_service is None:
-            self.context.telegram_service = TelegramService()
+            self.context.telegram_service = TelegramService(data_dir=self.context.data_dir)
         return self.context.telegram_service
+
+    def _listener_manager(self) -> RouteListenerManager:
+        if self.context.route_listener_manager is None:
+            self.context.route_listener_manager = build_default_listener_manager(
+                self.context.database,
+                self.context.data_dir,
+            )
+        return self.context.route_listener_manager
+
+    def _parse_route_listener_path(self, path: str) -> tuple[int | None, str | None]:
+        match = re.match(
+            r"^/api/routes/(\d+)(?:/(listener/start|listener/stop|listener-status|events))?$",
+            path,
+        )
+        if not match:
+            return None, None
+        return int(match.group(1)), match.group(2)
+
+    def _enrich_routes(self, routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        manager = self._listener_manager()
+        enriched: list[dict[str, Any]] = []
+        for route in routes:
+            item = dict(route)
+            status = manager.route_listener_status(int(route["id"]))
+            item["listener"] = status or {
+                "route_id": route["id"],
+                "running": False,
+                "listener_status": "LISTENER_STOPPED",
+            }
+            enriched.append(item)
+        return enriched
 
     def log_message(self, format: str, *args: object) -> None:
         logger.info("%s - %s", self.address_string(), format % args)
@@ -256,14 +448,40 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     self._telegram_service().status_payload(self.context.database)
                 )
                 return
+            if path == "/api/telegram/credentials/status":
+                self._send_json(self._telegram_service().credentials_status())
+                return
+            if path == "/api/telegram/diagnostics":
+                self._send_json(
+                    self._telegram_service().diagnostics_payload(self.context.database)
+                )
+                return
             if path == "/api/channels":
                 self._send_json({"channels": self.context.database.list_channels()})
                 return
             if path == "/api/targets":
                 self._send_json({"targets": self.context.database.list_targets()})
                 return
+            if path == "/api/listener/status":
+                self._send_json(self._listener_manager().status_payload())
+                return
+            route_id, subpath = self._parse_route_listener_path(path)
+            if route_id is not None and subpath == "listener-status":
+                status = self._listener_manager().route_listener_status(route_id)
+                if status is None:
+                    self._send_error_json(HTTPStatus.NOT_FOUND, "Route not found")
+                    return
+                self._send_json(status)
+                return
+            if route_id is not None and subpath == "events":
+                query = parse_qs(urlparse(self.path).query)
+                limit = min(int(query.get("limit", ["50"])[0]), 200)
+                events = self.context.database.list_route_events(route_id, limit)
+                self._send_json({"route_id": route_id, "events": events})
+                return
             if path == "/api/routes":
-                self._send_json({"routes": self.context.database.list_routes()})
+                routes = self._enrich_routes(self.context.database.list_routes())
+                self._send_json({"routes": routes})
                 return
             if path.startswith("/api/audit"):
                 query = parse_qs(urlparse(self.path).query)
@@ -311,13 +529,40 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(result)
                 return
 
+            if path == "/api/telegram/credentials":
+                reject_literal_credentials(
+                    payload,
+                    allowed=frozenset({"api_id", "api_hash"}),
+                )
+                api_id = str(payload.get("api_id", "")).strip()
+                api_hash = str(payload.get("api_hash", "")).strip()
+                if not api_id or not api_hash:
+                    raise DashboardValidationError("api_id and api_hash are required")
+                result = telegram.save_credentials(api_id, api_hash)
+                if result.get("status") == "ERROR":
+                    db.add_audit(
+                        "TELEGRAM_CREDENTIALS_SAVE",
+                        "ERROR",
+                        "Telegram credential vault save failed",
+                        {"error_code": result.get("error_code")},
+                    )
+                    status = HTTPStatus.BAD_REQUEST
+                    if result.get("error_code") == CREDENTIAL_VAULT_UNSUPPORTED_PLATFORM:
+                        status = HTTPStatus.NOT_IMPLEMENTED
+                    self._send_json(result, status)
+                    return
+                db.add_audit(
+                    "TELEGRAM_CREDENTIALS_SAVE",
+                    "INFO",
+                    "Telegram API credentials saved to DPAPI vault",
+                    {"credentials_saved": True},
+                )
+                self._send_json(result)
+                return
+
             if path == "/api/telegram/request-code":
                 reject_literal_credentials(payload)
-                phone = str(payload.get("phone", "")).strip()
-                if not phone:
-                    phone = telegram._auth_phone or ""
-                    if not phone:
-                        raise DashboardValidationError("Configure phone number first")
+                phone = telegram.resolve_request_phone(str(payload.get("phone", "")))
                 result = telegram.request_code(db, phone)
                 if result.get("status") == "ERROR":
                     status = (
@@ -445,6 +690,37 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"route": route}, HTTPStatus.CREATED)
                 return
 
+            route_id, subpath = self._parse_route_listener_path(path)
+            if route_id is not None and subpath == "listener/start":
+                result = self._listener_manager().start_route(route_id)
+                if result.get("status") == "ERROR":
+                    db.add_audit(
+                        "ROUTE_LISTENER_START",
+                        "ERROR",
+                        "Route listener start rejected",
+                        {"route_id": route_id, "error_code": result.get("error_code")},
+                    )
+                    self._send_json(result, HTTPStatus.CONFLICT)
+                    return
+                db.add_audit(
+                    "ROUTE_LISTENER_START",
+                    "INFO",
+                    "Route listener started",
+                    {"route_id": route_id},
+                )
+                self._send_json(result)
+                return
+            if route_id is not None and subpath == "listener/stop":
+                result = self._listener_manager().stop_route(route_id)
+                db.add_audit(
+                    "ROUTE_LISTENER_STOP",
+                    "INFO",
+                    "Route listener stopped",
+                    {"route_id": route_id},
+                )
+                self._send_json(result)
+                return
+
             if path == "/api/audit/demo-event":
                 event = db.add_demo_audit_event()
                 self._send_json({"event": event}, HTTPStatus.CREATED)
@@ -506,6 +782,19 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             db = self.context.database
+            telegram = self._telegram_service()
+
+            if path == "/api/telegram/credentials":
+                result = telegram.clear_credentials()
+                db.add_audit(
+                    "TELEGRAM_CREDENTIALS_CLEAR",
+                    "INFO",
+                    "Telegram API credentials cleared from DPAPI vault",
+                    {"credentials_saved": False},
+                )
+                self._send_json(result)
+                return
+
             channel_id = self._route_id("/api/channels/")
             if channel_id is not None:
                 db.delete_channel(channel_id)

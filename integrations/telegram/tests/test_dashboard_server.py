@@ -23,9 +23,16 @@ import dashboard_api  # noqa: E402
 import dashboard_security  # noqa: E402
 import dashboard_server  # noqa: E402
 import dashboard_store  # noqa: E402
+import dashboard_vault  # noqa: E402
+import fasttrack_file_bridge  # noqa: E402
+import route_listener_service  # noqa: E402
 import telegram_adapter  # noqa: E402
 import telegram_dashboard_server  # noqa: E402
 from telegram_adapter import (  # noqa: E402
+    CREDENTIAL_SOURCE_ENV,
+    CREDENTIAL_SOURCE_NONE,
+    CREDENTIAL_SOURCE_VAULT,
+    SESSION_FILENAME,
     TELEGRAM_2FA_REQUIRED,
     TELEGRAM_AUTH_FAILED,
     TELEGRAM_CONNECTED,
@@ -35,6 +42,20 @@ from telegram_adapter import (  # noqa: E402
     TelegramChannelInfo,
     TelegramCodeResult,
     TelegramSignInResult,
+    load_telegram_config,
+    resolve_credential_source,
+    resolve_session_path,
+)
+
+VALID_SEED = "Gold sell now"
+VALID_DETAILS = (
+    "Gold sell now 4014 - 4017\n"
+    "SL: 4077\n"
+    "TP: 4007\n"
+    "TP: 4005\n"
+    "TP: 4003\n"
+    "TP: 4002\n"
+    "TP: open"
 )
 
 
@@ -49,11 +70,14 @@ class FakeTelegramAdapter:
     sign_in_code_result = TelegramSignInResult(status=TELEGRAM_CONNECTED)
     sign_in_password_result = TelegramSignInResult(status=TELEGRAM_CONNECTED)
     list_dialogs_result: list[TelegramChannelInfo] = []
+    send_code_error: TelegramCodeResult | None = None
 
     async def connect(self):
         return telegram_adapter.TelegramConnectionResult(status=TELEGRAM_CONNECTED)
 
     async def send_code(self, phone: str) -> TelegramCodeResult:
+        if self.send_code_error is not None:
+            return self.send_code_error
         return TelegramCodeResult(
             status="CODE_SENT",
             phone_code_hash=self.phone_code_hash,
@@ -81,21 +105,80 @@ class FakeTelegramAdapter:
         return None
 
 
-def env_config(session_path: Path) -> dict[str, str]:
+def env_config_clear() -> dict[str, str]:
     return {
-        "TELEGRAM_API_ID": "12345",
-        "TELEGRAM_API_HASH": "abc123hash",
-        "TELEGRAM_SESSION_PATH": str(session_path / "dashboard.session"),
+        "TELEGRAM_API_ID": "",
+        "TELEGRAM_API_HASH": "",
+        "TELEGRAM_SESSION_PATH": "",
     }
+
+
+def save_test_vault_credentials(data_dir: Path) -> None:
+    dashboard_vault.DashboardCredentialVault(data_dir).save_telegram_credentials(
+        "12345",
+        "abc123hashvalue",
+    )
+
+
+class DashboardCredentialVaultTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.mkdtemp(prefix="dashboard_vault_")
+        self.data_dir = Path(self.temp_dir)
+
+    def tearDown(self) -> None:
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    @unittest.skipUnless(sys.platform == "win32", "DPAPI vault is Windows-only")
+    def test_vault_roundtrip_and_no_plaintext_on_disk(self) -> None:
+        vault = dashboard_vault.DashboardCredentialVault(self.data_dir)
+        vault.save_telegram_credentials("12345", "abc123hashvalue")
+        self.assertTrue(vault.has_telegram_credentials())
+        loaded = vault.load_telegram_credentials()
+        self.assertEqual(loaded, ("12345", "abc123hashvalue"))
+        raw = vault.vault_path.read_text(encoding="utf-8")
+        self.assertNotIn("abc123hashvalue", raw)
+        self.assertNotIn('"api_hash":"abc123hashvalue"', raw)
+
+    @unittest.skipUnless(sys.platform == "win32", "DPAPI vault is Windows-only")
+    def test_clear_credentials_removes_vault_file(self) -> None:
+        vault = dashboard_vault.DashboardCredentialVault(self.data_dir)
+        vault.save_telegram_credentials("12345", "abc123hashvalue")
+        vault.clear_telegram_credentials()
+        self.assertFalse(vault.vault_path.exists())
+        self.assertFalse(vault.has_telegram_credentials())
+
+    def test_non_windows_fail_closed(self) -> None:
+        with patch.object(dashboard_vault, "is_vault_platform_supported", return_value=False):
+            vault = dashboard_vault.DashboardCredentialVault(self.data_dir)
+            with self.assertRaises(dashboard_vault.CredentialVaultError) as ctx:
+                vault.save_telegram_credentials("12345", "abc123hashvalue")
+            self.assertEqual(
+                ctx.exception.error_code,
+                dashboard_vault.CREDENTIAL_VAULT_UNSUPPORTED_PLATFORM,
+            )
 
 
 class DashboardServerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.mkdtemp(prefix="dashboard_test_")
         self.data_dir = Path(self.temp_dir)
-        self.session_path = self.data_dir / "dashboard.session"
-        self.env_patch = patch.dict(os.environ, env_config(self.data_dir), clear=False)
+        self.session_path = self.data_dir / SESSION_FILENAME
+        self.env_patch = patch.dict(os.environ, env_config_clear(), clear=False)
         self.env_patch.start()
+        if sys.platform == "win32":
+            save_test_vault_credentials(self.data_dir)
+        else:
+            self.env_patch.stop()
+            self.env_patch = patch.dict(
+                os.environ,
+                {
+                    "TELEGRAM_API_ID": "12345",
+                    "TELEGRAM_API_HASH": "abc123hashvalue",
+                    "TELEGRAM_SESSION_PATH": str(self.session_path),
+                },
+                clear=False,
+            )
+            self.env_patch.start()
         self.fake_adapter = FakeTelegramAdapter()
         self.telethon_patch = patch(
             "telegram_adapter.is_telethon_available",
@@ -104,6 +187,7 @@ class DashboardServerTests(unittest.TestCase):
         self.telethon_patch.start()
         self.db = dashboard_store.DashboardDatabase(self.data_dir / "dashboard.sqlite3")
         self.telegram_service = dashboard_api.TelegramService(
+            data_dir=self.data_dir,
             adapter_factory=lambda: self.fake_adapter,
         )
         self.port = free_port()
@@ -189,8 +273,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["counts"]["tracked_channels"], 0)
 
     def test_configure_env_missing_returns_error(self) -> None:
+        dashboard_vault.DashboardCredentialVault(self.data_dir).clear_telegram_credentials()
         self.env_patch.stop()
-        with patch.dict(os.environ, {}, clear=True):
+        with patch.dict(os.environ, env_config_clear(), clear=False):
             status, payload = self.request(
                 "POST",
                 "/api/telegram/configure",
@@ -199,6 +284,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(status, 400)
         self.assertEqual(payload["error_code"], TELEGRAM_CONFIG_MISSING)
         self.env_patch.start()
+        if sys.platform == "win32":
+            save_test_vault_credentials(self.data_dir)
 
     def test_configure_rejects_literal_credentials(self) -> None:
         status, payload = self.request(
@@ -232,14 +319,23 @@ class DashboardServerTests(unittest.TestCase):
         self.telethon_patch.stop()
         with patch("dashboard_api.is_telethon_available", return_value=False):
             self.configure_phone()
-            status, payload = self.request("POST", "/api/telegram/request-code", {})
+            status, payload = self.request(
+                "POST",
+                "/api/telegram/request-code",
+                {"phone": "+905551234567"},
+            )
         self.assertEqual(status, 500)
         self.assertEqual(payload["error_code"], TELETHON_NOT_INSTALLED)
+        self.assertIn("user_message", payload)
         self.telethon_patch.start()
 
     def test_request_code_fake_adapter_stores_hash_not_response(self) -> None:
         self.configure_phone()
-        status, payload = self.request("POST", "/api/telegram/request-code", {})
+        status, payload = self.request(
+            "POST",
+            "/api/telegram/request-code",
+            {"phone": "+905551234567"},
+        )
         self.assertEqual(status, 200)
         self.assertEqual(payload["status"], "CODE_SENT")
         self.assertNotIn("phone_code_hash", payload)
@@ -250,9 +346,96 @@ class DashboardServerTests(unittest.TestCase):
             ).fetchone()
         self.assertEqual(row["phone_code_hash"], FakeTelegramAdapter.phone_code_hash)
 
+    def test_request_code_with_phone_body_after_memory_loss(self) -> None:
+        self.configure_phone()
+        self.telegram_service._auth_phone = None
+        status, payload = self.request(
+            "POST",
+            "/api/telegram/request-code",
+            {"phone": "+905551234567"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "CODE_SENT")
+        self.assertEqual(self.db.get_telegram_status()["status"], "CODE_SENT")
+
+    def test_request_code_without_phone_returns_validation(self) -> None:
+        self.configure_phone()
+        self.telegram_service._auth_phone = None
+        status, payload = self.request("POST", "/api/telegram/request-code", {})
+        self.assertEqual(status, 400)
+        self.assertIn("phone", payload["error"].lower())
+
+    def test_request_code_maps_safe_error_without_secrets(self) -> None:
+        self.configure_phone()
+        self.fake_adapter.send_code_error = TelegramCodeResult(
+            status="ERROR",
+            phone_code_hash="",
+            error_code="TELEGRAM_API_ID_INVALID",
+        )
+        status, payload = self.request(
+            "POST",
+            "/api/telegram/request-code",
+            {"phone": "+905551234567"},
+        )
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error_code"], "TELEGRAM_API_ID_INVALID")
+        self.assertIn("user_message", payload)
+        self.assertNotIn("fake", json.dumps(payload))
+
+    def test_diagnostics_endpoint_safe_fields(self) -> None:
+        self.configure_phone()
+        status, payload = self.request("GET", "/api/telegram/diagnostics")
+        self.assertEqual(status, 200)
+        expected_keys = {
+            "vault_supported",
+            "vault_file_present",
+            "vault_credentials_available",
+            "credential_source",
+            "session_path_resolved",
+            "session_parent_exists",
+            "session_file_exists",
+            "data_dir_consistent",
+            "last_safe_error_code",
+        }
+        self.assertEqual(set(payload.keys()), expected_keys)
+        self.assertTrue(payload["session_path_resolved"])
+        self.assertTrue(payload["data_dir_consistent"])
+        if sys.platform == "win32":
+            self.assertEqual(payload["credential_source"], CREDENTIAL_SOURCE_VAULT)
+        else:
+            self.assertEqual(payload["credential_source"], CREDENTIAL_SOURCE_ENV)
+        blob = json.dumps(payload)
+        self.assertNotIn("api_hash", blob.lower())
+        self.assertNotIn("5551234567", blob)
+        self.assertNotIn(str(self.data_dir), blob)
+        self.assertNotIn(str(self.session_path), blob)
+
+    def test_session_parent_created_before_request_code(self) -> None:
+        nested_dir = self.data_dir / "nested" / "sessions"
+        session_path = nested_dir / "custom.session"
+        self.env_patch.stop()
+        env = env_config_clear()
+        env["TELEGRAM_SESSION_PATH"] = str(session_path)
+        self.env_patch = patch.dict(os.environ, env, clear=False)
+        self.env_patch.start()
+        if sys.platform == "win32":
+            save_test_vault_credentials(self.data_dir)
+        self.configure_phone()
+        self.assertFalse(nested_dir.exists())
+        self.request(
+            "POST",
+            "/api/telegram/request-code",
+            {"phone": "+905551234567"},
+        )
+        self.assertTrue(nested_dir.exists())
+
     def test_verify_code_success_connected(self) -> None:
         self.configure_phone()
-        self.request("POST", "/api/telegram/request-code", {})
+        self.request(
+            "POST",
+            "/api/telegram/request-code",
+            {"phone": "+905551234567"},
+        )
         status, payload = self.request(
             "POST",
             "/api/telegram/verify-code",
@@ -265,7 +448,7 @@ class DashboardServerTests(unittest.TestCase):
 
     def test_verify_code_two_factor_required(self) -> None:
         self.configure_phone()
-        self.request("POST", "/api/telegram/request-code", {})
+        self.request("POST", "/api/telegram/request-code", {"phone": "+905551234567"})
         status, payload = self.request(
             "POST",
             "/api/telegram/verify-code",
@@ -277,7 +460,7 @@ class DashboardServerTests(unittest.TestCase):
 
     def test_verify_password_success_connected(self) -> None:
         self.configure_phone()
-        self.request("POST", "/api/telegram/request-code", {})
+        self.request("POST", "/api/telegram/request-code", {"phone": "+905551234567"})
         self.request("POST", "/api/telegram/verify-code", {"code": "2fa"})
         status, payload = self.request(
             "POST",
@@ -289,7 +472,7 @@ class DashboardServerTests(unittest.TestCase):
 
     def test_wrong_code_and_password_redacted(self) -> None:
         self.configure_phone()
-        self.request("POST", "/api/telegram/request-code", {})
+        self.request("POST", "/api/telegram/request-code", {"phone": "+905551234567"})
         status, payload = self.request(
             "POST",
             "/api/telegram/verify-code",
@@ -320,7 +503,7 @@ class DashboardServerTests(unittest.TestCase):
             TelegramChannelInfo("1003", "Gamma Super", "supergroup", "gamma"),
         ]
         self.configure_phone()
-        self.request("POST", "/api/telegram/request-code", {})
+        self.request("POST", "/api/telegram/request-code", {"phone": "+905551234567"})
         self.request("POST", "/api/telegram/verify-code", {"code": "12345"})
         status, payload = self.request("POST", "/api/telegram/sync-channels", {})
         self.assertEqual(status, 200)
@@ -356,7 +539,7 @@ class DashboardServerTests(unittest.TestCase):
 
     def test_disconnect_does_not_delete_session_path(self) -> None:
         self.configure_phone()
-        self.request("POST", "/api/telegram/request-code", {})
+        self.request("POST", "/api/telegram/request-code", {"phone": "+905551234567"})
         self.request("POST", "/api/telegram/verify-code", {"code": "12345"})
         status, payload = self.request("POST", "/api/telegram/disconnect", {})
         self.assertEqual(status, 200)
@@ -365,18 +548,64 @@ class DashboardServerTests(unittest.TestCase):
         row = self.db.get_telegram_status()
         self.assertIsNotNone(row.get("session_path_masked"))
 
+    def test_save_credentials_via_api(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("DPAPI credential API requires Windows")
+        dashboard_vault.DashboardCredentialVault(self.data_dir).clear_telegram_credentials()
+        status, payload = self.request(
+            "POST",
+            "/api/telegram/credentials",
+            {"api_id": "54321", "api_hash": "vaulthashvalue"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "CREDENTIALS_SAVED")
+        self.assertTrue(payload["credentials_saved"])
+        self.assertTrue(payload["config_ready"])
+        raw = (self.data_dir / "telegram_credentials.dpapi").read_text(encoding="utf-8")
+        self.assertNotIn("vaulthashvalue", raw)
+
+    def test_clear_credentials_via_api(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("DPAPI credential API requires Windows")
+        status, payload = self.request("DELETE", "/api/telegram/credentials")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "CREDENTIALS_CLEARED")
+        self.assertFalse(payload["credentials_saved"])
+        save_test_vault_credentials(self.data_dir)
+
+    def test_credentials_not_written_to_sqlite_or_audit(self) -> None:
+        if sys.platform != "win32":
+            self.skipTest("DPAPI credential API requires Windows")
+        dashboard_vault.DashboardCredentialVault(self.data_dir).clear_telegram_credentials()
+        secret_hash = "supersecrethashvalue"
+        self.request(
+            "POST",
+            "/api/telegram/credentials",
+            {"api_id": "99999", "api_hash": secret_hash},
+        )
+        with self.db._connect() as conn:
+            settings = conn.execute("SELECT key, value FROM settings").fetchall()
+        self.assertEqual(len(settings), 0)
+        audit = self.request("GET", "/api/audit?limit=20")[1]["events"]
+        blob = json.dumps(audit)
+        self.assertNotIn(secret_hash, blob)
+        self.assertNotIn("99999", blob)
+        save_test_vault_credentials(self.data_dir)
+
     def test_telegram_status_masks_phone_and_session(self) -> None:
         self.configure_phone()
         status, payload = self.request("GET", "/api/telegram/status")
         self.assertEqual(status, 200)
         self.assertTrue(payload["config_ready"])
         self.assertTrue(payload["telethon_available"])
+        self.assertIn("vault_supported", payload)
+        self.assertIn("credentials_saved", payload)
         self.assertNotIn("phone_code_hash", payload)
         self.assertNotIn("5551234567", json.dumps(payload))
 
     def test_login_audit_does_not_expose_secrets(self) -> None:
         self.configure_phone()
-        self.request("POST", "/api/telegram/request-code", {})
+        self.request("POST", "/api/telegram/request-code", {"phone": "+905551234567"})
         self.request("POST", "/api/telegram/verify-code", {"code": "12345"})
         self.db.add_audit(
             "SECRET_TEST",
@@ -517,6 +746,806 @@ class DashboardServerTests(unittest.TestCase):
                 self.assertIsInstance(body, (bytes, str))
                 self.assertGreater(len(body), 10)
 
+    @unittest.skipUnless(sys.platform == "win32", "DPAPI vault is Windows-only")
+    def test_vault_saved_configure_returns_api_configured(self) -> None:
+        dashboard_vault.DashboardCredentialVault(self.data_dir).clear_telegram_credentials()
+        save_test_vault_credentials(self.data_dir)
+        status, payload = self.request(
+            "POST",
+            "/api/telegram/configure",
+            {"phone": "+905551234567"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["status"], "API_CONFIGURED")
+
+    def test_vault_saved_no_session_file_config_ready(self) -> None:
+        session_path = resolve_session_path(self.data_dir)
+        if session_path.exists():
+            session_path.unlink()
+        self.assertFalse(session_path.exists())
+        self.assertTrue(self.telegram_service.config_ready())
+
+    def test_default_session_path_deterministic(self) -> None:
+        first = resolve_session_path(self.data_dir)
+        second = resolve_session_path(self.data_dir)
+        self.assertEqual(first, second)
+        self.assertEqual(first.name, SESSION_FILENAME)
+        self.assertEqual(first.parent, self.data_dir.resolve())
+
+    @unittest.skipUnless(sys.platform == "win32", "DPAPI vault is Windows-only")
+    def test_restart_same_data_dir_finds_vault(self) -> None:
+        save_test_vault_credentials(self.data_dir)
+        restarted = dashboard_api.TelegramService(data_dir=self.data_dir)
+        self.assertTrue(restarted.config_ready())
+        self.assertTrue(restarted._vault().has_telegram_credentials())
+
+    @unittest.skipUnless(sys.platform == "win32", "DPAPI vault is Windows-only")
+    def test_different_data_dir_missing_config(self) -> None:
+        other_dir = Path(tempfile.mkdtemp(prefix="dashboard_other_"))
+        try:
+            save_test_vault_credentials(self.data_dir)
+            other_service = dashboard_api.TelegramService(data_dir=other_dir)
+            self.assertFalse(other_service.config_ready())
+            result = other_service.configure(self.db, "+905551234567")
+            self.assertEqual(result["status"], "ERROR")
+            self.assertEqual(result["error_code"], TELEGRAM_CONFIG_MISSING)
+        finally:
+            shutil.rmtree(other_dir, ignore_errors=True)
+
+    @unittest.skipUnless(sys.platform == "win32", "DPAPI vault is Windows-only")
+    def test_env_session_path_with_vault_credentials(self) -> None:
+        custom_session = self.data_dir / "env_custom.session"
+        self.env_patch.stop()
+        env = env_config_clear()
+        env["TELEGRAM_SESSION_PATH"] = str(custom_session)
+        self.env_patch = patch.dict(os.environ, env, clear=False)
+        self.env_patch.start()
+        save_test_vault_credentials(self.data_dir)
+        config = load_telegram_config(self.data_dir)
+        self.assertIsNotNone(config)
+        self.assertEqual(config.session_path, custom_session)
+
+    def test_status_logic_session_missing_not_config_missing(self) -> None:
+        session_path = resolve_session_path(self.data_dir)
+        if session_path.exists():
+            session_path.unlink()
+        status, payload = self.request("GET", "/api/telegram/status")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["config_ready"])
+        self.assertTrue(payload.get("session_pending"))
+
+
+class RouteListenerDashboardTests(DashboardServerTests):
+    def _connect_telegram(self) -> None:
+        self.configure_phone()
+        self.request("POST", "/api/telegram/request-code", {"phone": "+905551234567"})
+        self.request("POST", "/api/telegram/verify-code", {"code": "12345"})
+
+    def _create_tracked_channel(self, telegram_id: str = "9001") -> dict:
+        self.fake_adapter.list_dialogs_result = [
+            TelegramChannelInfo(telegram_id, "Listener Test Channel", "channel", "listener_test"),
+        ]
+        self._connect_telegram()
+        self.request("POST", "/api/telegram/sync-channels", {})
+        channels = self.request("GET", "/api/channels")[1]["channels"]
+        channel = next(ch for ch in channels if ch["telegram_channel_id"] == telegram_id)
+        self.request("PATCH", f"/api/channels/{channel['id']}", {"is_tracking": 1})
+        return self.request("GET", "/api/channels")[1]["channels"][0]
+
+    def _create_target(
+        self,
+        *,
+        name: str,
+        seed_filename: str,
+        details_filename: str,
+        root_suffix: str = "common",
+    ) -> dict:
+        _status, payload = self.request(
+            "POST",
+            "/api/targets",
+            {
+                "name": name,
+                "terminal_label": "D0E",
+                "broker_label": "VantageMarkets-Demo",
+                "account_mode": "DEMO",
+                "file_common_root": str(self.data_dir / root_suffix),
+                "seed_filename": seed_filename,
+                "details_filename": details_filename,
+            },
+        )
+        return payload["target"]
+
+    def _create_route(self, channel_id: int, target_id: int, name: str) -> dict:
+        _status, payload = self.request(
+            "POST",
+            "/api/routes",
+            {
+                "name": name,
+                "channel_id": channel_id,
+                "target_id": target_id,
+                "parser_profile": "FASTTRACK_GOLD_NOW",
+            },
+        )
+        return payload["route"]
+
+    def _listener_manager(self) -> route_listener_service.RouteListenerManager:
+        self.request("GET", "/api/listener/status")
+        manager = self.context.route_listener_manager
+        self.assertIsNotNone(manager)
+        return manager
+
+    def _start_listener(self, route_id: int) -> tuple[int, dict]:
+        return self.request(
+            "POST",
+            f"/api/routes/{route_id}/listener/start",
+            {},
+        )
+
+    def test_listener_start_rejects_when_telegram_not_connected(self) -> None:
+        self.request("POST", "/api/channels/import-demo", {})
+        channel_id = self.request("GET", "/api/channels")[1]["channels"][0]["id"]
+        self.request("PATCH", f"/api/channels/{channel_id}", {"is_tracking": 1})
+        target = self._create_target(
+            name="Reject Target",
+            seed_filename="seed_reject.txt",
+            details_filename="details_reject.txt",
+        )
+        route = self._create_route(channel_id, target["id"], "Reject Route")
+        status, payload = self._start_listener(route["id"])
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error_code"], route_listener_service.START_ERROR_NOT_CONNECTED)
+        self.assertEqual(payload["user_message"], "Telegram bağlantısı gerekli.")
+
+    def test_listener_start_rejects_when_tracking_off(self) -> None:
+        channel = self._create_tracked_channel("9010")
+        self.request("PATCH", f"/api/channels/{channel['id']}", {"is_tracking": 0})
+        target = self._create_target(
+            name="Tracking Off Target",
+            seed_filename="seed_track_off.txt",
+            details_filename="details_track_off.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Tracking Off Route")
+        status, payload = self._start_listener(route["id"])
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error_code"], route_listener_service.START_ERROR_TRACKING_OFF)
+        self.assertIn("Kanal takibi kapalı", payload["user_message"])
+
+    def test_listener_start_rejects_when_route_disabled(self) -> None:
+        channel = self._create_tracked_channel("9011")
+        target = self._create_target(
+            name="Disabled Route Target",
+            seed_filename="seed_disabled.txt",
+            details_filename="details_disabled.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Disabled Route")
+        self.request("PATCH", f"/api/routes/{route['id']}", {"is_enabled": 0})
+        status, payload = self._start_listener(route["id"])
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error_code"], route_listener_service.START_ERROR_ROUTE_DISABLED)
+
+    def test_listener_start_rejects_non_observer_target(self) -> None:
+        channel = self._create_tracked_channel("9012")
+        target = self._create_target(
+            name="Non Observer Target",
+            seed_filename="seed_non_obs.txt",
+            details_filename="details_non_obs.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Non Observer Route")
+        with self.db._connect() as conn:
+            conn.execute(
+                "UPDATE mt5_targets SET observer_only = 0 WHERE id = ?",
+                (target["id"],),
+            )
+        status, payload = self._start_listener(route["id"])
+        self.assertEqual(status, 409)
+        self.assertEqual(payload["error_code"], route_listener_service.START_ERROR_NOT_OBSERVER)
+        self.assertIn("yalnız izleme", payload["user_message"])
+
+    def test_listener_start_stop_idempotent(self) -> None:
+        channel = self._create_tracked_channel("9013")
+        target = self._create_target(
+            name="Idempotent Target",
+            seed_filename="seed_idem.txt",
+            details_filename="details_idem.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Idempotent Route")
+        first_status, first_payload = self._start_listener(route["id"])
+        second_status, second_payload = self._start_listener(route["id"])
+        self.assertEqual(first_status, 200)
+        self.assertEqual(second_status, 200)
+        self.assertTrue(second_payload.get("already_running"))
+        stop_status, stop_payload = self.request(
+            "POST",
+            f"/api/routes/{route['id']}/listener/stop",
+            {},
+        )
+        again_status, again_payload = self.request(
+            "POST",
+            f"/api/routes/{route['id']}/listener/stop",
+            {},
+        )
+        self.assertEqual(stop_status, 200)
+        self.assertEqual(again_status, 200)
+        self.assertTrue(again_payload.get("already_stopped"))
+
+    def test_listener_publish_single_target_dry_run(self) -> None:
+        channel = self._create_tracked_channel("9014")
+        target = self._create_target(
+            name="Single Publish Target",
+            seed_filename="seed_single.txt",
+            details_filename="details_single.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Single Publish Route")
+        self._start_listener(route["id"])
+        manager = self._listener_manager()
+        telegram_id = int(channel["telegram_channel_id"])
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text=VALID_SEED,
+                message_id=101,
+                channel_id=telegram_id,
+            )
+        )
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text=VALID_DETAILS,
+                message_id=102,
+                channel_id=telegram_id,
+            )
+        )
+        status, payload = self.request("GET", f"/api/routes/{route['id']}/listener-status")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["listener_status"], route_listener_service.LISTENER_PUBLISH_READY)
+        self.assertTrue(payload["last_publish_at_utc"])
+
+    def test_listener_publish_two_targets_same_channel(self) -> None:
+        channel = self._create_tracked_channel("9015")
+        target_a = self._create_target(
+            name="Target A",
+            seed_filename="seed_a.txt",
+            details_filename="details_a.txt",
+            root_suffix="common_a",
+        )
+        target_b = self._create_target(
+            name="Target B",
+            seed_filename="seed_b.txt",
+            details_filename="details_b.txt",
+            root_suffix="common_b",
+        )
+        route_a = self._create_route(channel["id"], target_a["id"], "Route A")
+        route_b = self._create_route(channel["id"], target_b["id"], "Route B")
+        self._start_listener(route_a["id"])
+        self._start_listener(route_b["id"])
+        manager = self._listener_manager()
+        telegram_id = int(channel["telegram_channel_id"])
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text=VALID_SEED,
+                message_id=201,
+                channel_id=telegram_id,
+            )
+        )
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text=VALID_DETAILS,
+                message_id=202,
+                channel_id=telegram_id,
+            )
+        )
+        status_a, payload_a = self.request("GET", f"/api/routes/{route_a['id']}/listener-status")
+        status_b, payload_b = self.request("GET", f"/api/routes/{route_b['id']}/listener-status")
+        self.assertEqual(status_a, 200)
+        self.assertEqual(status_b, 200)
+        self.assertEqual(payload_a["listener_status"], route_listener_service.LISTENER_PUBLISH_READY)
+        self.assertEqual(payload_b["listener_status"], route_listener_service.LISTENER_PUBLISH_READY)
+        events_a = self.request("GET", f"/api/routes/{route_a['id']}/events?limit=20")[1]["events"]
+        events_b = self.request("GET", f"/api/routes/{route_b['id']}/events?limit=20")[1]["events"]
+        self.assertTrue(any(e["target_id"] == target_a["id"] for e in events_a))
+        self.assertTrue(any(e["target_id"] == target_b["id"] for e in events_b))
+
+    def test_listener_one_target_fail_other_success(self) -> None:
+        channel = self._create_tracked_channel("9016")
+        target_ok = self._create_target(
+            name="Target OK",
+            seed_filename="seed_ok.txt",
+            details_filename="details_ok.txt",
+            root_suffix="common_ok",
+        )
+        target_fail = self._create_target(
+            name="Target Fail",
+            seed_filename="seed_fail.txt",
+            details_filename="details_fail.txt",
+            root_suffix="common_fail",
+        )
+        route_ok = self._create_route(channel["id"], target_ok["id"], "Route OK")
+        route_fail = self._create_route(channel["id"], target_fail["id"], "Route Fail")
+        self._start_listener(route_ok["id"])
+        self._start_listener(route_fail["id"])
+        manager = self._listener_manager()
+        original_publish = fasttrack_file_bridge.AtomicPublisher.publish_pair
+
+        def selective_publish(self, **kwargs):
+            if kwargs.get("seed_filename") == "seed_fail.txt":
+                raise fasttrack_file_bridge.BridgeValidationError("simulated publish failure")
+            return original_publish(self, **kwargs)
+
+        telegram_id = int(channel["telegram_channel_id"])
+        with patch.object(
+            fasttrack_file_bridge.AtomicPublisher,
+            "publish_pair",
+            selective_publish,
+        ):
+            manager.inject_message(
+                fasttrack_file_bridge.TelegramInboundMessage(
+                    text=VALID_SEED,
+                    message_id=301,
+                    channel_id=telegram_id,
+                )
+            )
+            manager.inject_message(
+                fasttrack_file_bridge.TelegramInboundMessage(
+                    text=VALID_DETAILS,
+                    message_id=302,
+                    channel_id=telegram_id,
+                )
+            )
+        ok_status, ok_payload = self.request("GET", f"/api/routes/{route_ok['id']}/listener-status")
+        fail_status, fail_payload = self.request(
+            "GET",
+            f"/api/routes/{route_fail['id']}/listener-status",
+        )
+        self.assertEqual(ok_payload["listener_status"], route_listener_service.LISTENER_PUBLISH_READY)
+        self.assertEqual(fail_payload["listener_status"], route_listener_service.LISTENER_PUBLISH_FAILED)
+
+    def test_listener_duplicate_message_not_republished(self) -> None:
+        channel = self._create_tracked_channel("9017")
+        target = self._create_target(
+            name="Dedup Target",
+            seed_filename="seed_dedup.txt",
+            details_filename="details_dedup.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Dedup Route")
+        self._start_listener(route["id"])
+        manager = self._listener_manager()
+        telegram_id = int(channel["telegram_channel_id"])
+        details_message = fasttrack_file_bridge.TelegramInboundMessage(
+            text=VALID_DETAILS,
+            message_id=401,
+            channel_id=telegram_id,
+        )
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text=VALID_SEED,
+                message_id=400,
+                channel_id=telegram_id,
+            )
+        )
+        manager.inject_message(details_message)
+        manager.inject_message(details_message)
+        events = self.request("GET", f"/api/routes/{route['id']}/events?limit=50")[1]["events"]
+        publish_ready = [
+            event for event in events if event["status"] == route_listener_service.LISTENER_PUBLISH_READY
+        ]
+        skipped = [
+            event for event in events if event["status"] == route_listener_service.LISTENER_PUBLISH_SKIPPED
+        ]
+        self.assertEqual(len(publish_ready), 1)
+        self.assertTrue(skipped)
+
+    def test_route_events_exclude_raw_telegram_text(self) -> None:
+        channel = self._create_tracked_channel("9018")
+        target = self._create_target(
+            name="Safe Events Target",
+            seed_filename="seed_safe.txt",
+            details_filename="details_safe.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Safe Events Route")
+        self._start_listener(route["id"])
+        manager = self._listener_manager()
+        telegram_id = int(channel["telegram_channel_id"])
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text=VALID_SEED,
+                message_id=501,
+                channel_id=telegram_id,
+            )
+        )
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text=VALID_DETAILS,
+                message_id=502,
+                channel_id=telegram_id,
+            )
+        )
+        status, payload = self.request("GET", f"/api/routes/{route['id']}/events?limit=20")
+        self.assertEqual(status, 200)
+        blob = json.dumps(payload)
+        self.assertNotIn(VALID_SEED, blob)
+        self.assertNotIn("4014 - 4017", blob)
+        for event in payload["events"]:
+            self.assertIn("safe_summary", event)
+            self.assertNotIn("text", event)
+
+    def test_listener_status_endpoints(self) -> None:
+        status, payload = self.request("GET", "/api/listener/status")
+        self.assertEqual(status, 200)
+        self.assertIn("active_route_count", payload)
+        self.assertTrue(payload["dry_run"])
+        channel = self._create_tracked_channel("9019")
+        target = self._create_target(
+            name="Status Target",
+            seed_filename="seed_status.txt",
+            details_filename="details_status.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Status Route")
+        self._start_listener(route["id"])
+        routes_status, routes_payload = self.request("GET", "/api/routes")
+        self.assertEqual(routes_status, 200)
+        enriched = next(item for item in routes_payload["routes"] if item["id"] == route["id"])
+        self.assertIn("listener", enriched)
+        self.assertTrue(enriched["listener"]["running"])
+
+
+class TelegramCanonicalChannelKeyTests(unittest.TestCase):
+    def test_entity_id_and_event_chat_id_same_key(self) -> None:
+        entity = type("Channel", (), {"id": 1234567890})()
+        event = type("Event", (), {"chat_id": -1001234567890})()
+        self.assertEqual(
+            telegram_adapter.canonical_channel_key_from_entity(entity),
+            "1234567890",
+        )
+        self.assertEqual(
+            telegram_adapter.canonical_channel_key_from_event(event),
+            "1234567890",
+        )
+        self.assertEqual(
+            telegram_adapter.canonical_channel_key_from_value("1234567890"),
+            "1234567890",
+        )
+        self.assertEqual(
+            telegram_adapter.canonical_channel_key_from_value(-1001234567890),
+            "1234567890",
+        )
+
+    def test_positive_negative_string_inputs(self) -> None:
+        self.assertEqual(telegram_adapter.canonical_channel_key_from_value("9001"), "9001")
+        self.assertEqual(telegram_adapter.canonical_channel_key_from_value(9001), "9001")
+        self.assertEqual(
+            telegram_adapter.canonical_channel_key_from_value("-1000000009001"),
+            "9001",
+        )
+
+    def test_legacy_positive_db_id_matches_event_format(self) -> None:
+        legacy = telegram_adapter.canonical_channel_key_from_value("1234567890")
+        live = telegram_adapter.canonical_channel_key_from_value(-1001234567890)
+        self.assertEqual(legacy, live)
+
+
+class FakeTelethonMessage:
+    def __init__(self, text: str, message_id: int) -> None:
+        self.message = text
+        self.id = message_id
+        self.grouped_id = None
+        self.reply_to = None
+
+
+class FakeTelethonEvent:
+    def __init__(self, chat_id: int, text: str, message_id: int = 1) -> None:
+        self.chat_id = chat_id
+        self.message = FakeTelethonMessage(text, message_id)
+
+
+class FakeTelethonClient:
+    instances: list[FakeTelethonClient] = []
+
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.connected = False
+        self.disconnected = False
+        self.authorized = True
+        self.handlers: list = []
+        self.removed_handlers: list = []
+        FakeTelethonClient.instances.append(self)
+
+    async def connect(self) -> None:
+        self.connected = True
+
+    async def disconnect(self) -> None:
+        self.disconnected = True
+        self.connected = False
+
+    async def is_user_authorized(self) -> bool:
+        return self.authorized
+
+    def on(self, _event: object):
+        def decorator(fn):
+            self.handlers.append(fn)
+            return fn
+
+        return decorator
+
+    def remove_event_handler(self, handler: object) -> None:
+        self.removed_handlers.append(handler)
+        if handler in self.handlers:
+            self.handlers.remove(handler)
+
+    async def dispatch(self, event: FakeTelethonEvent) -> None:
+        for handler in list(self.handlers):
+            await handler(event)
+
+
+class TelethonRouteListenerWiringTests(unittest.TestCase):
+    def setUp(self) -> None:
+        FakeTelethonClient.instances = []
+        self.temp_dir = tempfile.mkdtemp(prefix="telethon_wiring_")
+        self.data_dir = Path(self.temp_dir)
+        self.db = dashboard_store.DashboardDatabase(self.data_dir / "dashboard.sqlite3")
+        self.db.set_telegram_connected()
+        self.session_path = self.data_dir / "telegram_dashboard.session"
+        self.session_path.write_text("fake-session", encoding="ascii")
+        self.env_patch = patch.dict(
+            os.environ,
+            {
+                "TELEGRAM_API_ID": "12345",
+                "TELEGRAM_API_HASH": "abc123hashvalue",
+                "TELEGRAM_SESSION_PATH": str(self.session_path),
+            },
+            clear=False,
+        )
+        self.env_patch.start()
+
+    def tearDown(self) -> None:
+        self.env_patch.stop()
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _manager(self, *, telethon_enabled: bool = True) -> route_listener_service.RouteListenerManager:
+        return route_listener_service.RouteListenerManager(
+            database=self.db,
+            data_dir=self.data_dir,
+            dry_run=True,
+            telethon_enabled=telethon_enabled,
+            telethon_client_factory=lambda _config: FakeTelethonClient(),
+            normalize_stale_states=True,
+        )
+
+    def _seed_channel_route(
+        self,
+        *,
+        telegram_channel_id: str = "1234567890",
+        channel_key: str = "1234567890",
+    ) -> tuple[dict, dict]:
+        now = dashboard_security.utc_now_iso()
+        with self.db._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tracked_channels
+                (telegram_channel_id, title, channel_type, username, is_tracking,
+                 last_message_at_utc, source, created_at_utc, updated_at_utc)
+                VALUES (?, 'Wiring Channel', 'channel', 'wire', 1, NULL, 'TEST', ?, ?)
+                """,
+                (telegram_channel_id, now, now),
+            )
+            channel_row = conn.execute(
+                "SELECT * FROM tracked_channels WHERE telegram_channel_id = ?",
+                (telegram_channel_id,),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO mt5_targets
+                (name, terminal_label, broker_label, account_mode, file_common_root,
+                 seed_filename, details_filename, observer_only, is_enabled, created_at_utc, updated_at_utc)
+                VALUES ('Wire Target', 'D0E', 'Demo', 'DEMO', ?, 'seed_wire.txt', 'details_wire.txt', 1, 1, ?, ?)
+                """,
+                (str(self.data_dir / "common"), now, now),
+            )
+            target_row = conn.execute("SELECT * FROM mt5_targets WHERE name = 'Wire Target'").fetchone()
+            conn.execute(
+                """
+                INSERT INTO routes
+                (name, channel_id, target_id, parser_profile, mode, is_enabled,
+                 last_publish_status, last_publish_at_utc, created_at_utc, updated_at_utc)
+                VALUES ('Wire Route', ?, ?, 'FASTTRACK_GOLD_NOW', 'OBSERVER_ONLY', 1, NULL, NULL, ?, ?)
+                """,
+                (channel_row["id"], target_row["id"], now, now),
+            )
+            route_row = conn.execute("SELECT * FROM routes WHERE name = 'Wire Route'").fetchone()
+        return dict(channel_row), dict(route_row)
+
+    def test_telethon_disabled_does_not_create_client(self) -> None:
+        _channel, route = self._seed_channel_route()
+        manager = self._manager(telethon_enabled=False)
+        result = manager.start_route(route["id"])
+        self.assertEqual(result["status"], "LISTENER_STARTED")
+        self.assertIsNone(manager._telethon_bridge)
+        self.assertEqual(FakeTelethonClient.instances, [])
+
+    def test_telethon_enabled_missing_config_returns_controlled_error(self) -> None:
+        empty_dir = Path(tempfile.mkdtemp(prefix="telethon_no_config_"))
+        try:
+            db = dashboard_store.DashboardDatabase(empty_dir / "dashboard.sqlite3")
+            db.set_telegram_connected()
+            now = dashboard_security.utc_now_iso()
+            with db._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO tracked_channels
+                    (telegram_channel_id, title, channel_type, username, is_tracking,
+                     last_message_at_utc, source, created_at_utc, updated_at_utc)
+                    VALUES ('1234567890', 'Wiring Channel', 'channel', 'wire', 1, NULL, 'TEST', ?, ?)
+                    """,
+                    (now, now),
+                )
+                ch = conn.execute("SELECT id FROM tracked_channels LIMIT 1").fetchone()
+                conn.execute(
+                    """
+                    INSERT INTO mt5_targets
+                    (name, terminal_label, broker_label, account_mode, file_common_root,
+                     seed_filename, details_filename, observer_only, is_enabled, created_at_utc, updated_at_utc)
+                    VALUES ('Wire Target', 'D0E', 'Demo', 'DEMO', ?, 'seed_wire.txt', 'details_wire.txt', 1, 1, ?, ?)
+                    """,
+                    (str(empty_dir / "common"), now, now),
+                )
+                tg = conn.execute("SELECT id FROM mt5_targets LIMIT 1").fetchone()
+                conn.execute(
+                    """
+                    INSERT INTO routes
+                    (name, channel_id, target_id, parser_profile, mode, is_enabled,
+                     last_publish_status, last_publish_at_utc, created_at_utc, updated_at_utc)
+                    VALUES ('Wire Route', ?, ?, 'FASTTRACK_GOLD_NOW', 'OBSERVER_ONLY', 1, NULL, NULL, ?, ?)
+                    """,
+                    (ch["id"], tg["id"], now, now),
+                )
+                rt = conn.execute("SELECT id FROM routes LIMIT 1").fetchone()
+            with patch.dict(
+                os.environ,
+                {
+                    "TELEGRAM_API_ID": "",
+                    "TELEGRAM_API_HASH": "",
+                    "TELEGRAM_SESSION_PATH": "",
+                },
+                clear=False,
+            ):
+                manager = route_listener_service.RouteListenerManager(
+                    database=db,
+                    data_dir=empty_dir,
+                    dry_run=True,
+                    telethon_enabled=True,
+                    telethon_client_factory=lambda _config: FakeTelethonClient(),
+                    normalize_stale_states=False,
+                )
+                result = manager.start_route(rt["id"])
+            self.assertEqual(result["status"], "ERROR")
+            self.assertEqual(result["error_code"], route_listener_service.START_ERROR_TELETHON_CONFIG)
+        finally:
+            shutil.rmtree(empty_dir, ignore_errors=True)
+
+    def test_fake_client_registers_single_handler(self) -> None:
+        _channel, route = self._seed_channel_route()
+        manager = self._manager()
+        manager.start_route(route["id"])
+        manager.start_route(route["id"])
+        client = FakeTelethonClient.instances[0]
+        self.assertEqual(len(client.handlers), 1)
+
+    def test_fake_new_message_reaches_matching_route(self) -> None:
+        _channel, route = self._seed_channel_route()
+        manager = self._manager()
+        manager.start_route(route["id"])
+        client = FakeTelethonClient.instances[0]
+        import asyncio
+
+        asyncio.run(
+            client.dispatch(
+                FakeTelethonEvent(-1001234567890, VALID_SEED, message_id=501),
+            )
+        )
+        asyncio.run(
+            client.dispatch(
+                FakeTelethonEvent(-1001234567890, VALID_DETAILS, message_id=502),
+            )
+        )
+        status = manager.route_listener_status(route["id"])
+        assert status is not None
+        self.assertEqual(status["listener_status"], route_listener_service.LISTENER_PUBLISH_READY)
+
+    def test_fake_new_message_other_channel_is_ignored(self) -> None:
+        _channel, route = self._seed_channel_route()
+        manager = self._manager()
+        manager.start_route(route["id"])
+        client = FakeTelethonClient.instances[0]
+        import asyncio
+
+        asyncio.run(
+            client.dispatch(
+                FakeTelethonEvent(-1009999999999, VALID_SEED, message_id=601),
+            )
+        )
+        status = manager.route_listener_status(route["id"])
+        assert status is not None
+        self.assertEqual(status["listener_status"], route_listener_service.LISTENER_WAITING)
+
+    def test_route_events_exclude_raw_message_text(self) -> None:
+        _channel, route = self._seed_channel_route()
+        manager = self._manager()
+        manager.start_route(route["id"])
+        client = FakeTelethonClient.instances[0]
+        import asyncio
+
+        asyncio.run(
+            client.dispatch(
+                FakeTelethonEvent(-1001234567890, VALID_SEED, message_id=701),
+            )
+        )
+        asyncio.run(
+            client.dispatch(
+                FakeTelethonEvent(-1001234567890, VALID_DETAILS, message_id=702),
+            )
+        )
+        events = self.db.list_route_events(route["id"], 20)
+        blob = json.dumps(events)
+        self.assertNotIn(VALID_SEED, blob)
+        self.assertNotIn("4014 - 4017", blob)
+
+    def test_last_route_stop_disconnects_client(self) -> None:
+        _channel, route = self._seed_channel_route()
+        manager = self._manager()
+        manager.start_route(route["id"])
+        client = FakeTelethonClient.instances[0]
+        manager.stop_route(route["id"])
+        self.assertTrue(client.disconnected)
+        self.assertEqual(len(client.removed_handlers), 1)
+        self.assertFalse(manager.status_payload()["telethon_connected"])
+
+    def test_telethon_connected_reflects_real_client_state(self) -> None:
+        manager = self._manager()
+        self.assertFalse(manager.status_payload()["telethon_connected"])
+        _channel, route = self._seed_channel_route()
+        manager.start_route(route["id"])
+        self.assertTrue(manager.status_payload()["telethon_connected"])
+
+    def test_stale_listener_db_state_normalized_on_manager_init(self) -> None:
+        _channel, route = self._seed_channel_route()
+        self.db.upsert_route_listener_state(
+            route["id"],
+            listener_status=route_listener_service.LISTENER_WAITING,
+            last_signal_status="Sinyal bekleniyor.",
+        )
+        manager = self._manager()
+        _ = manager
+        row = self.db.get_route_listener_state(route["id"])
+        assert row is not None
+        self.assertEqual(row["listener_status"], route_listener_service.LISTENER_STOPPED)
+        self.assertIn("yeniden başlatıldı", row["last_signal_status"])
+
+
+class DashboardDataDirTests(unittest.TestCase):
+    def test_resolve_default_data_dir_absolute(self) -> None:
+        fixed = Path(tempfile.mkdtemp(prefix="dashboard_default_dir_"))
+        other = Path(tempfile.mkdtemp(prefix="dashboard_cwd_"))
+        try:
+            with patch.dict(
+                os.environ,
+                {"DASHBOARD_DATA_DIR": str(fixed), "LOCALAPPDATA": ""},
+                clear=False,
+            ):
+                first = dashboard_security.resolve_default_data_dir()
+            original_cwd = Path.cwd()
+            try:
+                os.chdir(other)
+                with patch.dict(
+                    os.environ,
+                    {"DASHBOARD_DATA_DIR": str(fixed), "LOCALAPPDATA": ""},
+                    clear=False,
+                ):
+                    second = dashboard_security.resolve_default_data_dir()
+            finally:
+                os.chdir(original_cwd)
+            self.assertEqual(first, fixed.resolve())
+            self.assertEqual(second, fixed.resolve())
+            self.assertTrue(first.is_absolute())
+        finally:
+            shutil.rmtree(fixed, ignore_errors=True)
+            shutil.rmtree(other, ignore_errors=True)
+
 
 class DashboardModularizationTests(unittest.TestCase):
     def test_legacy_wrapper_importable(self) -> None:
@@ -528,6 +1557,8 @@ class DashboardModularizationTests(unittest.TestCase):
             "dashboard_store",
             "dashboard_api",
             "dashboard_server",
+            "dashboard_vault",
+            "route_listener_service",
             "telegram_adapter",
             "telegram_dashboard_server",
         ):
