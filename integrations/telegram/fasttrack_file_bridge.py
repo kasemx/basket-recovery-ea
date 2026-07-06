@@ -14,9 +14,27 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import IO, Literal
+from typing import IO, Any, Literal
 
 MAX_BYTES = 8192
+SIGNAL_META_MARKER = "|signal_meta="
+SIGNAL_META_ALLOWLIST_KEYS = frozenset(
+    {
+        "symbol",
+        "side",
+        "entry_low",
+        "entry_high",
+        "stop_loss",
+        "take_profits",
+    }
+)
+SYMBOL_ALIASES = {"gold": "XAUUSD"}
+DETAILS_ENTRY_RANGE_PATTERN = re.compile(
+    r"now\s+(?P<low>\d+(?:\.\d+)?)\s*-\s*(?P<high>\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+SL_LINE_PATTERN = re.compile(r"^SL:\s*(?P<value>.+)\s*$", re.IGNORECASE)
+TP_LINE_PATTERN = re.compile(r"^TP:\s*(?P<value>.+)\s*$", re.IGNORECASE)
 SEED_PATTERN = re.compile(
     r"^(?P<symbol>\S+)\s+(?P<direction>buy|sell)\s+now$",
     re.IGNORECASE,
@@ -162,6 +180,106 @@ def parse_details_header_symbol_direction(text: str) -> tuple[str, str] | None:
     return symbol, direction
 
 
+def _normalize_price_number(token: str) -> int | None:
+    trimmed = token.strip()
+    if not trimmed:
+        return None
+    try:
+        value = float(trimmed)
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    if value.is_integer():
+        return int(value)
+    return int(value)
+
+
+def _canonical_symbol(symbol_alias: str) -> str | None:
+    return SYMBOL_ALIASES.get(symbol_alias.strip().lower())
+
+
+def _canonical_side(direction: str) -> str | None:
+    normalized = direction.strip().upper()
+    if normalized in ("BUY", "SELL"):
+        return normalized
+    return None
+
+
+def build_signal_meta(seed_text: str, details_text: str) -> dict[str, Any]:
+    """Build dashboard-safe signal metadata from validated parser output only."""
+    meta: dict[str, Any] = {
+        "symbol": None,
+        "side": None,
+        "entry_low": None,
+        "entry_high": None,
+        "stop_loss": None,
+        "take_profits": [],
+    }
+    try:
+        _seed, details, symbol_alias, direction = validate_pair_payload(seed_text, details_text)
+    except BridgeValidationError:
+        return _finalize_signal_meta(meta)
+
+    meta["symbol"] = _canonical_symbol(symbol_alias)
+    meta["side"] = _canonical_side(direction)
+
+    lines = [line.strip() for line in details.split("\n") if line.strip()]
+    if lines:
+        range_match = DETAILS_ENTRY_RANGE_PATTERN.search(lines[0])
+        if range_match:
+            meta["entry_low"] = _normalize_price_number(range_match.group("low"))
+            meta["entry_high"] = _normalize_price_number(range_match.group("high"))
+
+        take_profits: list[str] = []
+        for line in lines[1:]:
+            sl_match = SL_LINE_PATTERN.match(line)
+            if sl_match:
+                meta["stop_loss"] = _normalize_price_number(sl_match.group("value"))
+                continue
+            tp_match = TP_LINE_PATTERN.match(line)
+            if tp_match:
+                tp_value = tp_match.group("value").strip()
+                if tp_value.lower() == "open":
+                    take_profits.append("OPEN")
+                else:
+                    parsed_tp = _normalize_price_number(tp_value)
+                    if parsed_tp is not None:
+                        take_profits.append(str(parsed_tp))
+        meta["take_profits"] = take_profits
+
+    return _finalize_signal_meta(meta)
+
+
+def _finalize_signal_meta(meta: dict[str, Any]) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    for key in SIGNAL_META_ALLOWLIST_KEYS:
+        if key not in meta:
+            continue
+        value = meta[key]
+        if key == "take_profits":
+            cleaned[key] = [str(item) for item in value] if isinstance(value, list) else []
+            continue
+        if key in ("entry_low", "entry_high", "stop_loss"):
+            cleaned[key] = value if isinstance(value, int) else None
+            continue
+        if value is not None:
+            cleaned[key] = str(value)
+    return cleaned
+
+
+def append_signal_meta_to_safe_summary(base_summary: str, seed_text: str, details_text: str) -> str:
+    return format_safe_summary_with_signal_meta(base_summary, build_signal_meta(seed_text, details_text))
+
+
+def format_safe_summary_with_signal_meta(base_summary: str, meta: dict[str, Any] | None) -> str:
+    if not meta or not meta.get("symbol") or not meta.get("side"):
+        return base_summary
+    cleaned = _finalize_signal_meta(meta)
+    payload = json.dumps(cleaned, separators=(",", ":"))
+    return f"{base_summary}{SIGNAL_META_MARKER}{payload}"
+
+
 def classify_telegram_text(text: str) -> Literal["empty", "non_ascii", "seed", "details", "unrecognized"]:
     normalized = normalize_line_endings(text).strip()
     if not normalized:
@@ -234,12 +352,28 @@ class PublishResult:
     fingerprint: str
     seed_bytes: int
     details_bytes: int
+    signal_meta: dict[str, Any] | None = None
 
 
 class AtomicPublisher:
     def __init__(self, logger: BridgeLogger) -> None:
         self._logger = logger
         self._published_fingerprints: set[str] = set()
+        self._last_signal_meta: dict[str, Any] | None = None
+        self._last_seed_bytes: int | None = None
+        self._last_details_bytes: int | None = None
+
+    @property
+    def last_signal_meta(self) -> dict[str, Any] | None:
+        return self._last_signal_meta
+
+    @property
+    def last_seed_bytes(self) -> int | None:
+        return self._last_seed_bytes
+
+    @property
+    def last_details_bytes(self) -> int | None:
+        return self._last_details_bytes
 
     def publish_pair(
         self,
@@ -257,6 +391,7 @@ class AtomicPublisher:
         details_name = validate_basename(details_filename)
         seed, details, _symbol, _direction = validate_pair_payload(seed_text, details_text)
         fingerprint = pair_fingerprint(seed, details)
+        signal_meta = build_signal_meta(seed, details)
 
         if fingerprint in self._published_fingerprints:
             self._logger.log(
@@ -281,6 +416,9 @@ class AtomicPublisher:
 
         seed_bytes = len(seed.encode("utf-8"))
         details_bytes = len(details.encode("utf-8"))
+        self._last_signal_meta = signal_meta
+        self._last_seed_bytes = seed_bytes
+        self._last_details_bytes = details_bytes
 
         if dry_run:
             self._logger.log(
@@ -301,6 +439,7 @@ class AtomicPublisher:
                 fingerprint=fingerprint,
                 seed_bytes=seed_bytes,
                 details_bytes=details_bytes,
+                signal_meta=signal_meta,
             )
 
         seed_hold: Path | None = None
@@ -354,6 +493,7 @@ class AtomicPublisher:
                 fingerprint=fingerprint,
                 seed_bytes=seed_bytes,
                 details_bytes=details_bytes,
+                signal_meta=signal_meta,
             )
         except Exception as exc:
             if details_staging is not None:

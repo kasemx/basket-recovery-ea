@@ -70,6 +70,8 @@ STATIC_ASSET_MAP = {
     "/index.html": "index.html",
     "/app.js": "app.js",
     "/styles.css": "styles.css",
+    "/favicon.svg": "favicon.svg",
+    "/favicon.ico": "favicon.svg",
 }
 
 
@@ -227,4 +229,6 @@ def resolve_static_file(dashboard_dir: Path, path: str) -> tuple[Path, str]:
         content_type = "application/javascript; charset=utf-8"
     elif file_path.suffix == ".css":
         content_type = "text/css; charset=utf-8"
+    elif file_path.suffix == ".svg":
+        content_type = "image/svg+xml"
     return file_path, content_type

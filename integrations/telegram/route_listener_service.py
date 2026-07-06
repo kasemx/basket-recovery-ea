@@ -19,6 +19,7 @@ from fasttrack_file_bridge import (
     TelegramMessageHandler,
     TelegramPairMatcher,
     classify_telegram_text,
+    format_safe_summary_with_signal_meta,
     normalize_telegram_event,
     raw_message_hash,
     resolve_root,
@@ -615,15 +616,20 @@ class RouteListenerManager:
         )
         self._database.update_route_publish_status(route_id, LISTENER_PUBLISH_READY, now)
         fingerprint = next(iter(runtime.publisher._published_fingerprints), "")
+        signal_meta = runtime.publisher.last_signal_meta
+        safe_summary = format_safe_summary_with_signal_meta(
+            "Observer-only publish plan completed.",
+            signal_meta,
+        )
         self._database.add_route_event(
             route_id,
             event_type="PUBLISH_READY",
             status=LISTENER_PUBLISH_READY,
             target_id=target_id,
             fingerprint_short=short_fingerprint(fingerprint) if fingerprint else None,
-            seed_bytes=None,
-            details_bytes=None,
-            safe_summary="Observer-only publish plan completed.",
+            seed_bytes=runtime.publisher.last_seed_bytes,
+            details_bytes=runtime.publisher.last_details_bytes,
+            safe_summary=safe_summary,
         )
 
     def _record_publish_failure(self, route_id: int, target_id: int) -> None:

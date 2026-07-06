@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Telegram → MT5 Sinyal Paneli</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -19,6 +20,7 @@
         <button type="button" class="nav-item" data-view="channels">Kanallarım</button>
         <button type="button" class="nav-item" data-view="targets">MT5 Hesaplarım</button>
         <button type="button" class="nav-item" data-view="routes">Sinyal Yönlendirmeleri</button>
+        <button type="button" class="nav-item" data-view="signal-history">Sinyal Geçmişi</button>
         <button type="button" class="nav-item" data-view="audit">İşlem Geçmişi</button>
         <button type="button" class="nav-item" data-view="safety">Güvenlik</button>
       </nav>
@@ -194,7 +196,72 @@
               <button type="submit" class="btn primary">Yönlendirme Oluştur</button>
             </div>
           </form>
-          <div id="routes-list" class="table-wrap"></div>
+          <div id="routes-list" class="routes-cards"></div>
+        </div>
+      </section>
+
+      <section id="view-signal-history" class="view">
+        <div class="panel">
+          <h3>Sinyal Geçmişi</h3>
+          <p class="muted">Doğrulanmış sinyalleri kart veya liste olarak görüntüle. Son seçtiğin görünüm hatırlanır.</p>
+          <form id="signal-history-filters" class="history-filters form-grid two-col">
+            <label>Başlangıç Tarihi<input type="date" id="history-from"></label>
+            <label>Bitiş Tarihi<input type="date" id="history-to"></label>
+            <label>Kanal<select id="history-channel"><option value="">Tüm kanallar</option></select></label>
+            <label>MT5 Hesabı<select id="history-target"><option value="">Tüm hesaplar</option></select></label>
+            <label>Sembol<input type="text" id="history-symbol" placeholder="XAUUSD"></label>
+            <label>Yön
+              <select id="history-side">
+                <option value="">Tümü</option>
+                <option value="BUY">BUY</option>
+                <option value="SELL">SELL</option>
+              </select>
+            </label>
+            <label>Sinyal Durumu
+              <select id="history-signal-status">
+                <option value="">Tümü</option>
+                <option value="PUBLISH_READY">Simülasyon Başarılı</option>
+                <option value="PUBLISH_FAILED">Hedefe Ulaştırılamadı</option>
+              </select>
+            </label>
+            <label>İşlem Sonucu
+              <select id="history-outcome">
+                <option value="">Tümü</option>
+                <option value="NOT_APPLICABLE">İşlem Açılmadı</option>
+                <option value="PENDING">Sonuç Bekleniyor</option>
+                <option value="PROFIT">Kâr</option>
+                <option value="LOSS">Zarar</option>
+                <option value="BREAKEVEN">Başabaş</option>
+              </select>
+            </label>
+            <label>K/Z Durumu
+              <select id="history-pnl-state">
+                <option value="">Tümü</option>
+                <option value="unknown">Belirsiz</option>
+                <option value="profit">Kârlı</option>
+                <option value="loss">Zararlı</option>
+                <option value="breakeven">Başabaş</option>
+              </select>
+            </label>
+            <div class="full actions action-row">
+              <button type="submit" class="btn primary">Filtrele</button>
+              <button type="button" class="btn" id="history-clear-filters">Filtreleri Temizle</button>
+            </div>
+          </form>
+          <div class="history-view-toolbar">
+            <span class="muted">Görünüm</span>
+            <div class="view-toggle" role="tablist" aria-label="Sinyal geçmişi görünümü">
+              <button type="button" class="btn btn-small view-toggle-btn" data-history-view="cards" id="history-view-cards">Kart</button>
+              <button type="button" class="btn btn-small view-toggle-btn" data-history-view="list" id="history-view-list">Liste</button>
+            </div>
+          </div>
+          <div id="signal-history-cards-panel" class="history-view-panel">
+            <div id="signal-history-list" class="history-cards"></div>
+          </div>
+          <div id="signal-history-list-panel" class="history-view-panel hidden">
+            <div id="signal-history-table" class="table-wrap"></div>
+          </div>
+          <div id="signal-history-pagination" class="history-pagination"></div>
         </div>
       </section>
 

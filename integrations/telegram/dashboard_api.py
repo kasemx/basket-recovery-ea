@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -22,8 +24,25 @@ from dashboard_security import (
     resolve_static_file,
     security_headers,
 )
+from dashboard_signal_history import (
+    apply_history_filters,
+    build_history_item,
+    enrich_summary_with_execution,
+    history_response,
+    paginate_items,
+)
 from dashboard_store import DashboardDatabase
-from route_listener_service import RouteListenerManager, build_default_listener_manager
+from route_listener_service import (
+    LISTENER_DETAILS_DETECTED,
+    LISTENER_PUBLISH_FAILED,
+    LISTENER_PUBLISH_READY,
+    LISTENER_PUBLISH_SKIPPED,
+    LISTENER_SEED_DETECTED,
+    LISTENER_STOPPED,
+    LISTENER_WAITING,
+    RouteListenerManager,
+    build_default_listener_manager,
+)
 from dashboard_vault import (
     CREDENTIAL_VAULT_UNSUPPORTED_PLATFORM,
     CredentialVaultError,
@@ -48,7 +67,7 @@ from telegram_adapter import (
 
 logger = logging.getLogger("telegram_dashboard")
 
-USER_ERROR_MESSAGES = {
+USER_ERROR_MESSAGES: dict[str, str] = {
     TELEGRAM_CONFIG_MISSING: "Telegram API credentials are missing. Save credentials to the DPAPI vault or set environment fallback.",
     TELETHON_NOT_INSTALLED: "Telethon is not installed on this machine.",
     TELEGRAM_FLOOD_WAIT: "Telegram rate limit reached. Wait before trying again.",
@@ -68,6 +87,220 @@ def user_message_for_error(error_code: str | None, flood_wait_seconds: int | Non
     if error_code and error_code in USER_ERROR_MESSAGES:
         return USER_ERROR_MESSAGES[error_code]
     return "Telegram request failed."
+
+
+SIGNAL_META_MARKER = "|signal_meta="
+SIGNAL_SUMMARY_ALLOWED_KEYS = frozenset(
+    {
+        "symbol",
+        "side",
+        "entry_low",
+        "entry_high",
+        "stop_loss",
+        "take_profits",
+    }
+)
+SIGNAL_EVENT_STATUSES = (
+    LISTENER_PUBLISH_READY,
+    LISTENER_PUBLISH_SKIPPED,
+    LISTENER_PUBLISH_FAILED,
+    LISTENER_DETAILS_DETECTED,
+    LISTENER_SEED_DETECTED,
+)
+
+
+def _listener_dry_run_enabled() -> bool:
+    return os.environ.get("DASHBOARD_ROUTE_LISTENER_DRY_RUN", "1") == "1"
+
+
+def _extract_signal_meta(safe_summary: str | None) -> dict[str, Any] | None:
+    if not safe_summary or SIGNAL_META_MARKER not in safe_summary:
+        return None
+    payload = safe_summary.split(SIGNAL_META_MARKER, 1)[1].strip()
+    try:
+        parsed = json.loads(payload)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    cleaned: dict[str, Any] = {}
+    for key in SIGNAL_SUMMARY_ALLOWED_KEYS:
+        if key not in parsed:
+            continue
+        value = parsed[key]
+        if key == "take_profits":
+            if isinstance(value, list):
+                cleaned[key] = [str(item) for item in value]
+            continue
+        if key in ("entry_low", "entry_high", "stop_loss"):
+            try:
+                cleaned[key] = int(value)
+            except (TypeError, ValueError):
+                continue
+            continue
+        if value is not None:
+            cleaned[key] = str(value)
+    return cleaned or None
+
+
+def _normalize_symbol(symbol: str | None) -> str | None:
+    if not symbol:
+        return None
+    lowered = symbol.strip().lower()
+    if lowered in ("gold", "xauusd"):
+        return "XAUUSD"
+    return symbol.strip().upper()
+
+
+def _normalize_side(side: str | None) -> str | None:
+    if not side:
+        return None
+    normalized = side.strip().upper()
+    if normalized in ("BUY", "SELL"):
+        return normalized
+    return None
+
+
+def _signal_user_message(status: str, *, dry_run: bool) -> str:
+    if status == LISTENER_WAITING:
+        return "Sinyal bekleniyor."
+    if status == LISTENER_SEED_DETECTED:
+        return "Sinyal eksik, detay bekleniyor."
+    if status == LISTENER_DETAILS_DETECTED:
+        return "Sinyal ayrıntıları alındı."
+    if status == LISTENER_PUBLISH_READY:
+        if dry_run:
+            return "Sinyal başarıyla algılandı. MT5 için simülasyon hazırlandı."
+        return "Sinyal başarıyla algılandı."
+    if status == LISTENER_PUBLISH_SKIPPED:
+        return "Aynı sinyal tekrar geldi, tekrar işlenmedi."
+    if status == LISTENER_PUBLISH_FAILED:
+        return "Gönderim başarısız."
+    if status == LISTENER_STOPPED:
+        return "Takip kapalı. Yeni sinyaller dinlenmiyor."
+    return "Sinyal durumu güncellendi."
+
+
+def _signal_headline(status: str, *, dry_run: bool) -> str:
+    if status == LISTENER_WAITING:
+        return "Sinyal Bekleniyor"
+    if status in (LISTENER_SEED_DETECTED, LISTENER_DETAILS_DETECTED):
+        return "Sinyal Algılandı"
+    if status == LISTENER_PUBLISH_READY:
+        return "Simülasyon Başarılı" if dry_run else "Sinyal Hazır"
+    if status == LISTENER_PUBLISH_SKIPPED:
+        return "Tekrar Sinyal — İşlenmedi"
+    if status == LISTENER_PUBLISH_FAILED:
+        return "Gönderim Sorunu"
+    if status == LISTENER_STOPPED:
+        return "Takip Kapalı"
+    return "Sinyal Durumu"
+
+
+def _resolve_signal_status(events: list[dict[str, Any]], listener_status: str | None) -> str | None:
+    for event in events:
+        status = str(event.get("status", ""))
+        if status in SIGNAL_EVENT_STATUSES:
+            return status
+    if listener_status in SIGNAL_EVENT_STATUSES:
+        return listener_status
+    return None
+
+
+def build_safe_signal_timeline(events: list[dict[str, Any]], *, limit: int = 10) -> list[dict[str, Any]]:
+    timeline: list[dict[str, Any]] = []
+    for event in events[:limit]:
+        timeline.append(
+            {
+                "event_type": event.get("event_type"),
+                "status": event.get("status"),
+                "fingerprint_short": event.get("fingerprint_short"),
+                "seed_bytes": event.get("seed_bytes"),
+                "details_bytes": event.get("details_bytes"),
+                "created_at_utc": event.get("created_at_utc"),
+            }
+        )
+    return timeline
+
+
+def build_last_signal_summary(
+    route: dict[str, Any],
+    events: list[dict[str, Any]],
+    *,
+    listener_status: str | None,
+    dry_run: bool,
+) -> dict[str, Any] | None:
+    signal_status = _resolve_signal_status(events, listener_status)
+    if signal_status is None:
+        return None
+
+    meta: dict[str, Any] | None = None
+    received_at: str | None = None
+    for event in events:
+        if meta is None:
+            meta = _extract_signal_meta(event.get("safe_summary"))
+        event_status = str(event.get("status", ""))
+        if event_status in SIGNAL_EVENT_STATUSES:
+            received_at = str(event.get("created_at_utc") or "") or None
+            if meta is not None:
+                break
+    if received_at is None and events:
+        received_at = str(events[0].get("created_at_utc") or "") or None
+
+    summary: dict[str, Any] = {
+        "status": signal_status,
+        "headline": _signal_headline(signal_status, dry_run=dry_run),
+        "symbol": _normalize_symbol(meta.get("symbol") if meta else None),
+        "side": _normalize_side(meta.get("side") if meta else None),
+        "entry_low": meta.get("entry_low") if meta else None,
+        "entry_high": meta.get("entry_high") if meta else None,
+        "stop_loss": meta.get("stop_loss") if meta else None,
+        "take_profits": meta.get("take_profits") if meta else None,
+        "received_at_utc": received_at,
+        "channel_title": route.get("channel_title"),
+        "target_name": route.get("target_name"),
+        "is_dry_run": dry_run,
+        "user_message": _signal_user_message(signal_status, dry_run=dry_run),
+    }
+    return enrich_summary_with_execution(summary, dry_run=dry_run)
+
+
+def query_signal_history(
+    database: DashboardDatabase,
+    query: dict[str, list[str]],
+    *,
+    dry_run: bool,
+) -> dict[str, Any]:
+    def first(key: str, default: str | None = None) -> str | None:
+        values = query.get(key)
+        if not values or values[0] == "":
+            return default
+        return values[0]
+
+    page = int(first("page", "1") or "1")
+    page_size = int(first("page_size", "20") or "20")
+    channel_raw = first("channel_id")
+    target_raw = first("target_id")
+    channel_id = int(channel_raw) if channel_raw and channel_raw.isdigit() else None
+    target_id = int(target_raw) if target_raw and target_raw.isdigit() else None
+    rows = database.list_signal_history_candidates(
+        date_from=first("from"),
+        date_to=first("to"),
+        channel_id=channel_id,
+        target_id=target_id,
+    )
+    items = [build_history_item(row, dry_run=dry_run) for row in rows]
+    items = apply_history_filters(
+        items,
+        symbol=first("symbol"),
+        side=first("side"),
+        signal_status=first("signal_status"),
+        execution_status=first("execution_status"),
+        outcome=first("outcome"),
+        pnl_state=first("pnl_state"),
+    )
+    page_items, total = paginate_items(items, page=page, page_size=page_size)
+    return history_response(page_items, page=max(page, 1), page_size=min(max(page_size, 1), 100), total=total)
 
 
 @dataclass
@@ -384,6 +617,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
 
     def _enrich_routes(self, routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         manager = self._listener_manager()
+        dry_run = manager.status_payload().get("dry_run", _listener_dry_run_enabled())
         enriched: list[dict[str, Any]] = []
         for route in routes:
             item = dict(route)
@@ -391,8 +625,17 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             item["listener"] = status or {
                 "route_id": route["id"],
                 "running": False,
-                "listener_status": "LISTENER_STOPPED",
+                "listener_status": LISTENER_STOPPED,
             }
+            events = self.context.database.list_route_events(int(route["id"]), 50)
+            listener_status = item["listener"].get("listener_status")
+            item["last_signal_summary"] = build_last_signal_summary(
+                item,
+                events,
+                listener_status=listener_status,
+                dry_run=bool(dry_run),
+            )
+            item["signal_timeline"] = build_safe_signal_timeline(events)
             enriched.append(item)
         return enriched
 
@@ -482,6 +725,15 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/routes":
                 routes = self._enrich_routes(self.context.database.list_routes())
                 self._send_json({"routes": routes})
+                return
+            if path == "/api/signal-history":
+                query = parse_qs(urlparse(self.path).query)
+                payload = query_signal_history(
+                    self.context.database,
+                    query,
+                    dry_run=bool(self._listener_manager().status_payload().get("dry_run", _listener_dry_run_enabled())),
+                )
+                self._send_json(payload)
                 return
             if path.startswith("/api/audit"):
                 query = parse_qs(urlparse(self.path).query)

@@ -6,7 +6,12 @@ const state = {
   targets: [],
   routes: [],
   audit: [],
+  signalHistory: { items: [], page: 1, page_size: 20, total: 0 },
+  signalHistoryFilters: { page: 1, page_size: 20 },
+  signalHistoryView: "cards",
 };
+
+const SIGNAL_HISTORY_VIEW_KEY = "br_dashboard_signal_history_view";
 
 const views = {
   overview: {
@@ -28,6 +33,10 @@ const views = {
   routes: {
     title: "Sinyal Yönlendirmeleri",
     subtitle: "Kanal ile MT5 hesabını eşleştir",
+  },
+  "signal-history": {
+    title: "Sinyal Geçmişi",
+    subtitle: "Doğrulanmış sinyaller · işlem sonucu ayrı gösterilir",
   },
   audit: {
     title: "İşlem Geçmişi",
@@ -539,6 +548,271 @@ function renderTargets() {
   });
 }
 
+function formatLocalDateTime(isoUtc) {
+  if (!isoUtc) return "—";
+  const date = new Date(isoUtc);
+  if (Number.isNaN(date.getTime())) return "—";
+  return date.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatEntryRange(summary) {
+  if (!summary) return "—";
+  const low = summary.entry_low;
+  const high = summary.entry_high;
+  if (low != null && high != null) return `${low} – ${high}`;
+  if (low != null || high != null) return String(low ?? high);
+  return "Piyasa Fiyatından";
+}
+
+function formatTakeProfitsCompact(values) {
+  if (!values || !values.length) return "Belirtilmedi";
+  return values
+    .map((item) => {
+      const text = String(item).toUpperCase();
+      return text === "OPEN" ? "Açık" : text;
+    })
+    .join(" · ");
+}
+
+function signalStatusLabel(status) {
+  const labels = {
+    WAITING: "Sinyal Bekleniyor",
+    SEED_DETECTED: "Detay Bekleniyor",
+    DETAILS_DETECTED: "Algılandı",
+    PUBLISH_READY: "Simülasyon Başarılı",
+    PUBLISH_SKIPPED: "Tekrar Sinyal, İşlenmedi",
+    PUBLISH_FAILED: "Hedefe Ulaştırılamadı",
+    LISTENER_STOPPED: "Takip Kapalı",
+  };
+  return labels[status] || "Sinyal Durumu";
+}
+
+function executionStatusLabel(status) {
+  const labels = {
+    NOT_EXECUTED: "İşlem Açılmadı",
+    PENDING: "Sonuç Bekleniyor",
+    OPEN: "Pozisyon Açık",
+    CLOSED: "Pozisyon Kapalı",
+  };
+  return labels[status] || "—";
+}
+
+function tradeOutcomeLabel(outcome) {
+  const labels = {
+    NOT_APPLICABLE: "İşlem Açılmadı",
+    PENDING: "Sonuç Bekleniyor",
+    PROFIT: "Kâr",
+    LOSS: "Zarar",
+    BREAKEVEN: "Başabaş",
+  };
+  return labels[outcome] || "—";
+}
+
+function formatRealizedPnl(value, currency) {
+  if (value == null || value === "") return "—";
+  const suffix = currency ? ` ${currency}` : "";
+  return `${value}${suffix}`;
+}
+
+function formatTakeProfits(values) {
+  if (!values || !values.length) return "Belirtilmedi";
+  return values
+    .map((item) => {
+      const text = String(item).toUpperCase();
+      return text === "OPEN" ? "Açık" : text;
+    })
+    .join(" / ");
+}
+
+function signalHeadlineClass(status) {
+  if (status === "PUBLISH_READY") return "is-success";
+  if (status === "PUBLISH_SKIPPED") return "is-warn";
+  if (status === "PUBLISH_FAILED") return "is-error";
+  if (status === "LISTENER_STOPPED" || status === "WAITING") return "is-muted";
+  return "";
+}
+
+function signalProgressRank(status) {
+  const ranks = {
+    WAITING: 0,
+    SEED_DETECTED: 1,
+    DETAILS_DETECTED: 2,
+    PUBLISH_READY: 3,
+    PUBLISH_SKIPPED: 3,
+    PUBLISH_FAILED: 3,
+    LISTENER_STOPPED: 0,
+  };
+  return ranks[status] ?? 0;
+}
+
+function buildSignalJourney(summary, listener) {
+  const status = summary?.status || listener?.listener_status || "WAITING";
+  const dryRun = summary?.is_dry_run !== false;
+  const rank = signalProgressRank(status);
+  const failed = status === "PUBLISH_FAILED";
+  const steps = [
+    { label: "Telegram'dan Alındı", minRank: 1 },
+    { label: "Sinyal Tanındı", minRank: 1 },
+    { label: "Kanal Eşleşti", minRank: 1 },
+    { label: "MT5 Hesabı Seçildi", minRank: 2 },
+    { label: "MT5 İçin Hazırlandı", minRank: 3 },
+    { label: "İşlem Açma", minRank: 99, locked: true },
+  ];
+  return steps.map((step, index) => {
+    if (step.locked) {
+      return { ...step, state: "locked", icon: "🔒", note: "Kapalı" };
+    }
+    if (failed && index === 4) {
+      return { ...step, state: "error", icon: "!", note: "Hata" };
+    }
+    if (rank >= step.minRank) {
+      return { ...step, state: "complete", icon: "✓", note: "Tamam" };
+    }
+    if (rank + 1 === step.minRank || (rank === 0 && index === 0 && status === "WAITING")) {
+      return { ...step, state: "waiting", icon: "…", note: "Bekliyor" };
+    }
+    return { ...step, state: "waiting", icon: "…", note: "Bekliyor" };
+  });
+}
+
+function journeyStatusMessage(summary, listener) {
+  const status = summary?.status || listener?.listener_status || "WAITING";
+  const dryRun = summary?.is_dry_run !== false;
+  if (status === "WAITING") return "Sinyal bekleniyor.";
+  if (status === "SEED_DETECTED") return "İlk sinyal alındı, detay bekleniyor.";
+  if (status === "DETAILS_DETECTED") return "Sinyal ayrıntıları alındı.";
+  if (status === "PUBLISH_READY" && dryRun) {
+    return "Simülasyon başarıyla tamamlandı. MT5'e dosya yazılmadı.";
+  }
+  if (status === "PUBLISH_SKIPPED") return "Bu sinyal daha önce işlendi. Tekrar gönderilmedi.";
+  if (status === "PUBLISH_FAILED") return "Sinyal hazırlandı ancak hedefe ulaştırılamadı.";
+  if (status === "LISTENER_STOPPED") return "Takip kapalı. Yeni sinyaller dinlenmiyor.";
+  return summary?.user_message || listener?.last_signal_status || "—";
+}
+
+function renderSignalJourney(summary, listener) {
+  const steps = buildSignalJourney(summary, listener);
+  return `
+    <div class="journey-steps">
+      ${steps
+        .map(
+          (step) => `
+        <div class="journey-step ${step.state}">
+          <div class="journey-icon">${step.icon}</div>
+          <div>
+            <div>${escapeCell(step.label)}</div>
+            <div class="muted">${escapeCell(step.note)}</div>
+          </div>
+        </div>`
+        )
+        .join("")}
+    </div>
+    <p class="muted">${escapeCell(journeyStatusMessage(summary, listener))}</p>
+    <p class="muted">Bu yönlendirme yalnız sinyali izler ve doğrular. İşlem Açma: Kapalı${
+      summary?.is_dry_run !== false ? " · MT5'e henüz dosya gönderilmez." : ""
+    }</p>
+  `;
+}
+
+function renderCompactJourney(summary, listener) {
+  const steps = buildSignalJourney(summary, listener);
+  const labels = [
+    "Telegram",
+    "Tanındı",
+    "Kanal",
+    "MT5 Hedef",
+    "Simülasyon",
+    "İşlem",
+  ];
+  return `
+    <div class="journey-rail">
+      ${steps
+        .map(
+          (step, index) => `
+        <div class="journey-rail-item ${step.state}" title="${escapeCell(step.label)}">
+          <div>${escapeCell(labels[index] || step.label)}</div>
+          <div class="muted">${escapeCell(step.note)}</div>
+        </div>`
+        )
+        .join("")}
+    </div>
+  `;
+}
+
+function renderSignalField(label, valueHtml, options = {}) {
+  const spanClass = options.span2 ? " signal-field-span-2" : "";
+  const valueClass = options.emphasis ? " signal-field-value is-emphasis" : " signal-field-value";
+  return `
+    <div class="${spanClass.trim() || "signal-card-cell"}">
+      <div class="signal-field-label">${escapeCell(label)}</div>
+      <div class="${valueClass.trim()}">${valueHtml}</div>
+    </div>`;
+}
+
+function renderLastSignalCard(route) {
+  const summary = route.last_signal_summary;
+  const listener = route.listener || {};
+  if (!summary) {
+    return `<div class="empty-signal">Henüz bu yönlendirmede bir sinyal algılanmadı. Takibi başlatıp Telegram kanalından yeni bir sinyal bekleyin.</div>`;
+  }
+  const side = summary.side ? summary.side.toUpperCase() : null;
+  const sideClass = side === "BUY" ? "buy" : side === "SELL" ? "sell" : "";
+  const symbol = summary.symbol || "—";
+  const signalHtml = side
+    ? `<span class="side-badge ${sideClass}">${escapeCell(side)}</span> ${escapeCell(symbol)}`
+    : escapeCell(symbol);
+  return `
+    <p class="signal-note">Bu sinyal Telegram'dan alındı ve doğrulandı. MT5'e henüz dosya gönderilmedi. İşlem açma kapalı olduğu için kâr/zarar henüz oluşmadı.</p>
+    <div class="signal-card-grid">
+      ${renderSignalField("Sinyal", signalHtml, { emphasis: true, span2: true })}
+      ${renderSignalField("Kaynak Kanal", escapeCell(summary.channel_title || route.channel_title || "—"))}
+      ${renderSignalField("Alınma Tarihi", escapeCell(formatLocalDateTime(summary.received_at_utc)))}
+      ${renderSignalField("Hedef MT5", escapeCell(summary.target_name || route.target_name || "—"))}
+      ${renderSignalField("Giriş Bölgesi", escapeCell(formatEntryRange(summary)))}
+      ${renderSignalField("Stop Loss", escapeCell(summary.stop_loss != null ? String(summary.stop_loss) : "Belirtilmedi"))}
+      ${renderSignalField("Kar Alma", escapeCell(formatTakeProfitsCompact(summary.take_profits)), { span2: true })}
+      ${renderSignalField("Sinyal Durumu", escapeCell(signalStatusLabel(summary.status)))}
+      ${renderSignalField("İşlem Sonucu", escapeCell(executionStatusLabel(summary.execution_status || "NOT_EXECUTED")))}
+      ${renderSignalField("Gerçekleşen K/Z", escapeCell(formatRealizedPnl(summary.realized_pnl, summary.currency)), { span2: true })}
+    </div>
+    <div class="security-strip">
+      <span class="badge badge-observer">Sadece İzle</span>
+      <span class="badge badge-muted">${summary.is_dry_run !== false ? "MT5'e dosya yazılmadı" : "Canlı dosya modu"}</span>
+      <span class="badge badge-muted">İşlem açılmadı</span>
+    </div>
+  `;
+}
+
+function renderTechnicalTimeline(timeline) {
+  if (!timeline || !timeline.length) {
+    return `<p class="muted">Henüz teknik kayıt yok.</p>`;
+  }
+  return `
+    <div class="tech-timeline">
+      ${timeline
+        .map(
+          (event) => `
+        <div class="tech-event">
+          <div><strong>${escapeCell(event.event_type)}</strong> · ${escapeCell(event.status)}</div>
+          <div class="muted">${escapeCell(formatLocalDateTime(event.created_at_utc))}</div>
+          <div class="muted">
+            ${event.fingerprint_short ? `Fingerprint: ${escapeCell(event.fingerprint_short)} · ` : ""}
+            ${event.seed_bytes != null ? `Seed bytes: ${escapeCell(String(event.seed_bytes))} · ` : ""}
+            ${event.details_bytes != null ? `Details bytes: ${escapeCell(String(event.details_bytes))}` : ""}
+          </div>
+        </div>`
+        )
+        .join("")}
+    </div>
+  `;
+}
+
 function listenerStatusLabel(status) {
   const labels = {
     WAITING: "Sinyal bekleniyor.",
@@ -595,50 +869,53 @@ function renderRoutes() {
   }
 
   const container = $("#routes-list");
-  const rows = state.routes.map((route) => {
-    const listener = route.listener || {};
-    const running = Boolean(listener.running);
-    const startDisabled = running ? "disabled" : "";
-    const stopDisabled = running ? "" : "disabled";
-    return [
-      escapeCell(route.name),
-      escapeCell(route.channel_title),
-      escapeCell(route.target_name),
-      "Altın Al/Sat Sinyali",
-      "Sadece İzle",
-      `<span class="badge badge-observer">Bu yönlendirme işlem açmaz.</span>`,
-      route.is_enabled ? "Açık" : "Kapalı",
-      escapeCell(listenerStatusLabel(listener.listener_status)),
-      escapeCell(listener.last_signal_status || "Sinyal bekleniyor."),
-      escapeCell(formatListenerError(listener.last_error_code)),
-      escapeCell(listener.last_publish_at_utc || "—"),
-      `<div class="route-actions">
-        <button type="button" class="btn btn-small" data-start-listener="${route.id}" ${startDisabled}>Takibi Başlat</button>
-        <button type="button" class="btn btn-small btn-muted" data-stop-listener="${route.id}" ${stopDisabled}>Takibi Durdur</button>
-      </div>`,
-      `<button type="button" class="btn btn-small" data-delete-route="${route.id}">Sil</button>`,
-    ];
-  });
-  renderTable(
-    container,
-    [
-      "Ad",
-      "Telegram Kanalı",
-      "MT5 Hesabı",
-      "Sinyal Türü",
-      "Durum",
-      "Güvenlik",
-      "Aktif",
-      "Dinleme Durumu",
-      "Son Sinyal Durumu",
-      "Son Güvenli Hata",
-      "Son Yayın Zamanı",
-      "Dinleyici",
-      "İşlem",
-    ],
-    rows,
-    "Önce takip edilen bir kanal ve en az bir MT5 hesabı eklemelisin."
-  );
+  if (!state.routes.length) {
+    container.innerHTML = `<p class="muted">Önce takip edilen bir kanal ve en az bir MT5 hesabı eklemelisin.</p>`;
+    return;
+  }
+
+  container.innerHTML = state.routes
+    .map((route) => {
+      const listener = route.listener || {};
+      const running = Boolean(listener.running);
+      const startDisabled = running ? "disabled" : "";
+      const stopDisabled = running ? "" : "disabled";
+      return `
+      <article class="route-card" data-route-id="${route.id}">
+        <div class="route-card-header">
+          <div>
+            <h4 class="route-card-title">${escapeCell(route.name)}</h4>
+            <p class="route-card-route-line">${escapeCell(route.channel_title)} → ${escapeCell(route.target_name)}</p>
+          </div>
+          <span class="badge ${route.is_enabled ? "badge-success" : "badge-muted"}">${route.is_enabled ? "Açık" : "Kapalı"}</span>
+        </div>
+        <div class="route-card-badges">
+          <span class="badge badge-observer">Sadece İzle</span>
+          <span class="badge badge-muted">İşlem Açma Kapalı</span>
+          <span class="badge ${signalHeadlineClass(route.last_signal_summary?.status || listener.listener_status || "WAITING") === "is-success" ? "badge-success" : "badge-muted"}">${escapeCell(route.last_signal_summary?.headline || signalStatusLabel(listener.listener_status || "WAITING"))}</span>
+        </div>
+
+        <h5 class="signal-section-title">Son Algılanan Sinyal</h5>
+        ${renderLastSignalCard(route)}
+
+        <h5 class="signal-section-title journey-section-title">Sinyal Yolculuğu</h5>
+        ${renderCompactJourney(route.last_signal_summary, listener)}
+        <p class="muted">${escapeCell(journeyStatusMessage(route.last_signal_summary, listener))}</p>
+        <p class="muted">Gerçekleşen K/Z, yalnız işlem sonucu geldiğinde gösterilir.</p>
+
+        <details class="tech-details">
+          <summary>Teknik Ayrıntılar</summary>
+          ${renderTechnicalTimeline(route.signal_timeline)}
+        </details>
+
+        <div class="route-card-actions">
+          <button type="button" class="btn btn-small" data-start-listener="${route.id}" ${startDisabled}>Takibi Başlat</button>
+          <button type="button" class="btn btn-small btn-muted" data-stop-listener="${route.id}" ${stopDisabled}>Takibi Durdur</button>
+          <button type="button" class="btn btn-small" data-delete-route="${route.id}">Sil</button>
+        </div>
+      </article>`;
+    })
+    .join("");
   container.querySelectorAll("[data-start-listener]").forEach((button) => {
     button.addEventListener("click", async () => {
       const routeId = button.getAttribute("data-start-listener");
@@ -671,6 +948,216 @@ function renderRoutes() {
       }
     });
   });
+}
+
+function buildSignalHistoryQuery(filters) {
+  const params = new URLSearchParams();
+  Object.entries(filters).forEach(([key, value]) => {
+    if (value != null && String(value).trim() !== "") {
+      params.set(key, String(value));
+    }
+  });
+  return params.toString();
+}
+
+function loadSignalHistoryViewPreference() {
+  try {
+    const saved = localStorage.getItem(SIGNAL_HISTORY_VIEW_KEY);
+    if (saved === "cards" || saved === "list") {
+      state.signalHistoryView = saved;
+    }
+  } catch (_error) {
+    state.signalHistoryView = "cards";
+  }
+}
+
+function setSignalHistoryView(mode) {
+  if (mode !== "cards" && mode !== "list") {
+    return;
+  }
+  state.signalHistoryView = mode;
+  try {
+    localStorage.setItem(SIGNAL_HISTORY_VIEW_KEY, mode);
+  } catch (_error) {
+    /* localStorage unavailable */
+  }
+  applySignalHistoryViewVisibility();
+  renderSignalHistory();
+}
+
+function applySignalHistoryViewVisibility() {
+  const mode = state.signalHistoryView;
+  const cardsPanel = $("#signal-history-cards-panel");
+  const listPanel = $("#signal-history-list-panel");
+  if (cardsPanel) {
+    cardsPanel.classList.toggle("hidden", mode !== "cards");
+  }
+  if (listPanel) {
+    listPanel.classList.toggle("hidden", mode !== "list");
+  }
+  document.querySelectorAll("[data-history-view]").forEach((button) => {
+    button.classList.toggle("active", button.getAttribute("data-history-view") === mode);
+  });
+}
+
+function populateHistoryFilterSelects() {
+  const channelSelect = $("#history-channel");
+  const targetSelect = $("#history-target");
+  if (!channelSelect || !targetSelect) return;
+  channelSelect.innerHTML =
+    `<option value="">Tüm kanallar</option>` +
+    state.channels.map((c) => `<option value="${c.id}">${escapeCell(c.title)}</option>`).join("");
+  targetSelect.innerHTML =
+    `<option value="">Tüm hesaplar</option>` +
+    state.targets.map((t) => `<option value="${t.id}">${escapeCell(t.name)}</option>`).join("");
+}
+
+async function loadSignalHistory(page = 1) {
+  const filters = {
+    page,
+    page_size: state.signalHistoryFilters.page_size || 20,
+    from: $("#history-from")?.value || "",
+    to: $("#history-to")?.value || "",
+    channel_id: $("#history-channel")?.value || "",
+    target_id: $("#history-target")?.value || "",
+    symbol: $("#history-symbol")?.value.trim() || "",
+    side: $("#history-side")?.value || "",
+    signal_status: $("#history-signal-status")?.value || "",
+    outcome: $("#history-outcome")?.value || "",
+    pnl_state: $("#history-pnl-state")?.value || "",
+  };
+  state.signalHistoryFilters = filters;
+  const query = buildSignalHistoryQuery(filters);
+  const payload = await api(`/api/signal-history?${query}`);
+  state.signalHistory = payload;
+  renderSignalHistory();
+}
+
+function renderHistoryCard(item) {
+  const side = item.side ? item.side.toUpperCase() : null;
+  const sideClass = side === "BUY" ? "buy" : side === "SELL" ? "sell" : "";
+  const signalHtml = side
+    ? `<span class="side-badge ${sideClass}">${escapeCell(side)}</span> ${escapeCell(item.symbol || "—")}`
+    : escapeCell(item.symbol || "—");
+  return `
+    <article class="history-card" data-history-id="${item.id}">
+      <div class="history-card-header">
+        <div>
+          <strong>${signalHtml}</strong>
+          <div class="muted">${escapeCell(item.channel_name || "—")} · ${escapeCell(formatLocalDateTime(item.received_at_utc))}</div>
+        </div>
+        <span class="badge badge-observer">${escapeCell(signalStatusLabel(item.signal_status))}</span>
+      </div>
+      <div class="history-card-meta">
+        <span class="badge badge-muted">${escapeCell(item.target_name || "—")}</span>
+        <span class="badge badge-muted">${escapeCell(formatEntryRange(item))}</span>
+        <span class="badge badge-muted">SL: ${escapeCell(item.stop_loss != null ? String(item.stop_loss) : "—")}</span>
+      </div>
+      <div class="signal-card-grid">
+        ${renderSignalField("Kar Alma", escapeCell(formatTakeProfitsCompact(item.take_profits)), { span2: true })}
+        ${renderSignalField("İşlem Sonucu", escapeCell(tradeOutcomeLabel(item.trade_outcome)))}
+        ${renderSignalField("Gerçekleşen K/Z", escapeCell(formatRealizedPnl(item.realized_pnl, item.currency)))}
+      </div>
+      <details class="tech-details">
+        <summary>Detayları Gör</summary>
+        <div class="tech-event">
+          <div class="muted">Kanal: ${escapeCell(item.channel_name || "—")}</div>
+          <div class="muted">Hedef: ${escapeCell(item.target_name || "—")}</div>
+          <div class="muted">Durum: ${escapeCell(signalStatusLabel(item.signal_status))}</div>
+          <div class="muted">İşlem: ${escapeCell(executionStatusLabel(item.execution_status))}</div>
+          ${item.fingerprint_short ? `<div class="muted">Fingerprint: ${escapeCell(item.fingerprint_short)}</div>` : ""}
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function renderSignalHistoryPagination() {
+  const container = $("#signal-history-pagination");
+  if (!container) return;
+  const { page = 1, page_size = 20, total = 0 } = state.signalHistory;
+  const totalPages = Math.max(Math.ceil(total / page_size), 1);
+  container.innerHTML = `
+    <span class="muted">${total} kayıt · Sayfa ${page}/${totalPages}</span>
+    <div class="actions">
+      <button type="button" class="btn btn-small" id="history-prev" ${page <= 1 ? "disabled" : ""}>Önceki</button>
+      <button type="button" class="btn btn-small" id="history-next" ${page >= totalPages ? "disabled" : ""}>Sonraki</button>
+    </div>
+  `;
+  $("#history-prev")?.addEventListener("click", () => loadSignalHistory(page - 1));
+  $("#history-next")?.addEventListener("click", () => loadSignalHistory(page + 1));
+}
+
+function renderHistoryTableRow(item) {
+  const side = item.side ? item.side.toUpperCase() : "—";
+  return `
+    <tr>
+      <td>${escapeCell(formatLocalDateTime(item.received_at_utc))}</td>
+      <td>${escapeCell(item.channel_name || "—")}</td>
+      <td>${escapeCell(item.symbol || "—")} ${side !== "—" ? `<span class="side-badge ${side === "BUY" ? "buy" : "sell"}">${escapeCell(side)}</span>` : ""}</td>
+      <td>${escapeCell(formatEntryRange(item))}</td>
+      <td>${escapeCell(item.stop_loss != null ? String(item.stop_loss) : "—")}</td>
+      <td>${escapeCell(formatTakeProfitsCompact(item.take_profits))}</td>
+      <td>${escapeCell(item.target_name || "—")}</td>
+      <td>${escapeCell(signalStatusLabel(item.signal_status))}</td>
+      <td>${escapeCell(tradeOutcomeLabel(item.trade_outcome))}</td>
+      <td>${escapeCell(formatRealizedPnl(item.realized_pnl, item.currency))}</td>
+    </tr>
+  `;
+}
+
+function renderSignalHistoryTable(items) {
+  const container = $("#signal-history-table");
+  if (!container) return;
+  if (!items.length) {
+    container.innerHTML = `<p class="muted">Liste görünümünde kayıt yok.</p>`;
+    return;
+  }
+  container.innerHTML = `
+    <table class="history-table">
+      <thead>
+        <tr>
+          <th>Tarih</th>
+          <th>Kanal</th>
+          <th>Sembol / Yön</th>
+          <th>Giriş</th>
+          <th>SL</th>
+          <th>TP</th>
+          <th>MT5 Hedef</th>
+          <th>Sinyal Durumu</th>
+          <th>İşlem Sonucu</th>
+          <th>K/Z</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${items.map(renderHistoryTableRow).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function renderSignalHistory() {
+  const cardsContainer = $("#signal-history-list");
+  const tableContainer = $("#signal-history-table");
+  if (!cardsContainer || !tableContainer) return;
+  applySignalHistoryViewVisibility();
+  const items = state.signalHistory.items || [];
+  const emptyMessage = `<p class="muted">Henüz filtreye uygun sinyal bulunamadı.</p>`;
+  if (!items.length) {
+    cardsContainer.innerHTML = emptyMessage;
+    tableContainer.innerHTML = emptyMessage;
+    renderSignalHistoryPagination();
+    return;
+  }
+  if (state.signalHistoryView === "cards") {
+    cardsContainer.innerHTML = items.map(renderHistoryCard).join("");
+    tableContainer.innerHTML = "";
+  } else {
+    tableContainer.innerHTML = "";
+    renderSignalHistoryTable(items);
+    cardsContainer.innerHTML = "";
+  }
+  renderSignalHistoryPagination();
 }
 
 function renderAudit() {
@@ -742,6 +1229,10 @@ async function refreshAll() {
     renderChannels();
     renderTargets();
     renderRoutes();
+    populateHistoryFilterSelects();
+    if (document.querySelector("#view-signal-history.active")) {
+      await loadSignalHistory(state.signalHistory.page || 1);
+    }
     renderAudit();
     renderSafetyMatrix();
   } catch (error) {
@@ -761,6 +1252,12 @@ function activateView(viewName) {
   const meta = views[viewName];
   $("#view-title").textContent = meta.title;
   $("#view-subtitle").textContent = meta.subtitle;
+  if (viewName === "signal-history") {
+    loadSignalHistoryViewPreference();
+    applySignalHistoryViewVisibility();
+    populateHistoryFilterSelects();
+    loadSignalHistory(state.signalHistory.page || 1).catch((error) => showAlert(error.message));
+  }
 }
 
 function bindEvents() {
@@ -970,6 +1467,38 @@ function bindEvents() {
 
   $("#refresh-audit").addEventListener("click", refreshAll);
   $("#audit-severity").addEventListener("change", renderAudit);
+
+  $("#signal-history-filters")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    try {
+      await loadSignalHistory(1);
+    } catch (error) {
+      showAlert(error.message);
+    }
+  });
+
+  $("#history-clear-filters")?.addEventListener("click", async () => {
+    ["history-from", "history-to", "history-symbol"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    ["history-channel", "history-target", "history-side", "history-signal-status", "history-outcome", "history-pnl-state"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.value = "";
+    });
+    try {
+      await loadSignalHistory(1);
+    } catch (error) {
+      showAlert(error.message);
+    }
+  });
+
+  document.querySelectorAll("[data-history-view]").forEach((button) => {
+    button.addEventListener("click", () => {
+      setSignalHistoryView(button.getAttribute("data-history-view"));
+    });
+  });
+
   $("#demo-audit").addEventListener("click", async () => {
     try {
       await api("/api/audit/demo-event", { method: "POST", body: "{}" });

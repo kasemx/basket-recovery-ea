@@ -830,7 +830,8 @@ class RouteListenerDashboardTests(DashboardServerTests):
         channels = self.request("GET", "/api/channels")[1]["channels"]
         channel = next(ch for ch in channels if ch["telegram_channel_id"] == telegram_id)
         self.request("PATCH", f"/api/channels/{channel['id']}", {"is_tracking": 1})
-        return self.request("GET", "/api/channels")[1]["channels"][0]
+        refreshed = self.request("GET", "/api/channels")[1]["channels"]
+        return next(ch for ch in refreshed if ch["id"] == channel["id"])
 
     def _create_target(
         self,
@@ -1517,6 +1518,530 @@ class TelethonRouteListenerWiringTests(unittest.TestCase):
         self.assertIn("yeniden başlatıldı", row["last_signal_status"])
 
 
+class SignalSummaryApiTests(DashboardServerTests):
+    SIGNAL_META = {
+        "symbol": "XAUUSD",
+        "side": "SELL",
+        "entry_low": 4014,
+        "entry_high": 4017,
+        "stop_loss": 4077,
+        "take_profits": ["4007", "4005", "4003", "4002", "OPEN"],
+    }
+
+    def _seed_route(self) -> dict:
+        self.request("POST", "/api/channels/import-demo", {})
+        channel_id = self.request("GET", "/api/channels")[1]["channels"][0]["id"]
+        self.request("PATCH", f"/api/channels/{channel_id}", {"is_tracking": 1})
+        target = self.request(
+            "POST",
+            "/api/targets",
+            {
+                "name": "Vantage Demo Altın",
+                "terminal_label": "D0E",
+                "broker_label": "VantageMarkets-Demo",
+                "account_mode": "DEMO",
+                "file_common_root": str(self.data_dir / "common"),
+                "seed_filename": "br_d0e_justgold_seed.txt",
+                "details_filename": "br_d0e_justgold_details.txt",
+            },
+        )[1]["target"]
+        route = self.request(
+            "POST",
+            "/api/routes",
+            {
+                "name": "justgold",
+                "channel_id": channel_id,
+                "target_id": target["id"],
+            },
+        )[1]["route"]
+        return route
+
+    def _publish_ready_event(self, route_id: int, target_id: int) -> None:
+        meta_json = json.dumps(self.SIGNAL_META, separators=(",", ":"))
+        self.db.add_route_event(
+            route_id,
+            event_type="PUBLISH_READY",
+            status=route_listener_service.LISTENER_PUBLISH_READY,
+            target_id=target_id,
+            safe_summary=f"Observer-only publish plan completed.{dashboard_api.SIGNAL_META_MARKER}{meta_json}",
+            fingerprint_short="98e0205b6e16",
+        )
+        self.db.upsert_route_listener_state(
+            route_id,
+            listener_status=route_listener_service.LISTENER_PUBLISH_READY,
+            last_signal_status="Sinyal yalnız izleme modunda hazırlandı.",
+        )
+
+    def test_publish_ready_builds_last_signal_summary(self) -> None:
+        route = self._seed_route()
+        self._publish_ready_event(route["id"], route["target_id"])
+        _status, payload = self.request("GET", "/api/routes")
+        enriched = payload["routes"][0]
+        summary = enriched["last_signal_summary"]
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["status"], route_listener_service.LISTENER_PUBLISH_READY)
+        self.assertEqual(summary["symbol"], "XAUUSD")
+        self.assertEqual(summary["side"], "SELL")
+        self.assertEqual(summary["entry_low"], 4014)
+        self.assertEqual(summary["entry_high"], 4017)
+        self.assertEqual(summary["stop_loss"], 4077)
+        self.assertEqual(summary["take_profits"], ["4007", "4005", "4003", "4002", "OPEN"])
+        self.assertTrue(summary["is_dry_run"])
+        self.assertIn("simülasyon", summary["user_message"].lower())
+
+    def test_last_signal_summary_excludes_raw_message_fields(self) -> None:
+        route = self._seed_route()
+        self._publish_ready_event(route["id"], route["target_id"])
+        _status, payload = self.request("GET", "/api/routes")
+        blob = json.dumps(payload)
+        self.assertNotIn("Gold sell", blob)
+        self.assertNotIn("4014 - 4017", blob)
+        summary = payload["routes"][0]["last_signal_summary"]
+        self.assertNotIn("raw_message", summary)
+        self.assertNotIn("text", summary)
+
+    def test_no_signal_events_returns_null_summary(self) -> None:
+        self._seed_route()
+        _status, payload = self.request("GET", "/api/routes")
+        self.assertIsNone(payload["routes"][0]["last_signal_summary"])
+
+    def test_publish_skipped_user_message(self) -> None:
+        route = self._seed_route()
+        self.db.add_route_event(
+            route["id"],
+            event_type="LISTENER_DEDUP",
+            status=route_listener_service.LISTENER_PUBLISH_SKIPPED,
+            target_id=route["target_id"],
+            safe_summary="Yinelenen mesaj atlandı.",
+        )
+        _status, payload = self.request("GET", "/api/routes")
+        summary = payload["routes"][0]["last_signal_summary"]
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["status"], route_listener_service.LISTENER_PUBLISH_SKIPPED)
+        self.assertIn("tekrar", summary["user_message"].lower())
+
+    def test_status_user_messages_turkish(self) -> None:
+        route = {
+            "channel_title": "JustGold",
+            "target_name": "Vantage Demo Altın",
+        }
+        cases = [
+            (route_listener_service.LISTENER_SEED_DETECTED, "detay bekleniyor"),
+            (route_listener_service.LISTENER_DETAILS_DETECTED, "ayrıntıları alındı"),
+            (route_listener_service.LISTENER_PUBLISH_FAILED, "başarısız"),
+        ]
+        for status, needle in cases:
+            with self.subTest(status=status):
+                events = [
+                    {
+                        "event_type": status,
+                        "status": status,
+                        "safe_summary": "Safe summary only.",
+                        "created_at_utc": "2026-07-05T23:19:16Z",
+                    }
+                ]
+                summary = dashboard_api.build_last_signal_summary(
+                    route,
+                    events,
+                    listener_status=status,
+                    dry_run=True,
+                )
+                self.assertIsNotNone(summary)
+                self.assertIn(needle, summary["user_message"].lower())
+        waiting_message = dashboard_api._signal_user_message(
+            route_listener_service.LISTENER_WAITING,
+            dry_run=True,
+        )
+        self.assertIn("bekleniyor", waiting_message.lower())
+
+    def test_routes_response_backward_compatible(self) -> None:
+        route = self._seed_route()
+        _status, payload = self.request("GET", "/api/routes")
+        item = payload["routes"][0]
+        for key in ("id", "name", "mode", "channel_title", "target_name", "listener"):
+            self.assertIn(key, item)
+        self.assertIn("last_signal_summary", item)
+        self.assertIn("signal_timeline", item)
+
+    def test_build_last_signal_summary_unit(self) -> None:
+        route = {
+            "channel_title": "JustGold",
+            "target_name": "Vantage Demo Altın",
+        }
+        events = [
+            {
+                "event_type": "PUBLISH_READY",
+                "status": route_listener_service.LISTENER_PUBLISH_READY,
+                "safe_summary": f"Done.{dashboard_api.SIGNAL_META_MARKER}{json.dumps(self.SIGNAL_META)}",
+                "created_at_utc": "2026-07-05T23:19:16Z",
+            }
+        ]
+        summary = dashboard_api.build_last_signal_summary(
+            route,
+            events,
+            listener_status=route_listener_service.LISTENER_PUBLISH_READY,
+            dry_run=True,
+        )
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["symbol"], "XAUUSD")
+
+
+class LiveSignalMetaTests(RouteListenerDashboardTests):
+    VALID_BUY_SEED = "Gold buy now"
+    VALID_BUY_MARKET_DETAILS = "Gold buy now\nSL: 4010\nTP: open"
+    VALID_SELL_MINIMAL_DETAILS = "Gold sell now 4014 - 4017\nSL: 4077"
+    SIGNAL_META_ALLOWLIST = frozenset(
+        {
+            "symbol",
+            "side",
+            "entry_low",
+            "entry_high",
+            "stop_loss",
+            "take_profits",
+        }
+    )
+
+    def _publish_pair(self, route: dict, channel: dict, seed: str, details: str, msg_base: int) -> None:
+        self._start_listener(route["id"])
+        manager = self._listener_manager()
+        telegram_id = int(channel["telegram_channel_id"])
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text=seed,
+                message_id=msg_base,
+                channel_id=telegram_id,
+            )
+        )
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text=details,
+                message_id=msg_base + 1,
+                channel_id=telegram_id,
+            )
+        )
+
+    def _latest_publish_ready_event(self, route_id: int) -> dict:
+        events = self.request("GET", f"/api/routes/{route_id}/events?limit=20")[1]["events"]
+        ready = [
+            event
+            for event in events
+            if event["status"] == route_listener_service.LISTENER_PUBLISH_READY
+        ]
+        self.assertTrue(ready, "Expected PUBLISH_READY event")
+        return ready[-1]
+
+    def _extract_event_signal_meta(self, event: dict) -> dict:
+        summary = event["safe_summary"]
+        marker = fasttrack_file_bridge.SIGNAL_META_MARKER
+        self.assertIn(marker, summary)
+        return json.loads(summary.split(marker, 1)[1])
+
+    def test_build_signal_meta_sell_full(self) -> None:
+        meta = fasttrack_file_bridge.build_signal_meta(VALID_SEED, VALID_DETAILS)
+        self.assertEqual(meta["symbol"], "XAUUSD")
+        self.assertEqual(meta["side"], "SELL")
+        self.assertEqual(meta["entry_low"], 4014)
+        self.assertEqual(meta["entry_high"], 4017)
+        self.assertEqual(meta["stop_loss"], 4077)
+        self.assertEqual(meta["take_profits"], ["4007", "4005", "4003", "4002", "OPEN"])
+
+    def test_build_signal_meta_buy_market_entry(self) -> None:
+        meta = fasttrack_file_bridge.build_signal_meta(
+            self.VALID_BUY_SEED,
+            self.VALID_BUY_MARKET_DETAILS,
+        )
+        self.assertEqual(meta["symbol"], "XAUUSD")
+        self.assertEqual(meta["side"], "BUY")
+        self.assertIsNone(meta["entry_low"])
+        self.assertIsNone(meta["entry_high"])
+        self.assertEqual(meta["stop_loss"], 4010)
+        self.assertEqual(meta["take_profits"], ["OPEN"])
+
+    def test_build_signal_meta_missing_take_profits(self) -> None:
+        meta = fasttrack_file_bridge.build_signal_meta(VALID_SEED, self.VALID_SELL_MINIMAL_DETAILS)
+        self.assertEqual(meta["stop_loss"], 4077)
+        self.assertEqual(meta["take_profits"], [])
+
+    def test_signal_meta_allowlist_only(self) -> None:
+        meta = fasttrack_file_bridge.build_signal_meta(VALID_SEED, VALID_DETAILS)
+        self.assertSetEqual(set(meta.keys()), self.SIGNAL_META_ALLOWLIST)
+
+    def test_listener_publish_ready_includes_signal_meta(self) -> None:
+        channel = self._create_tracked_channel("9020")
+        target = self._create_target(
+            name="Signal Meta Target",
+            seed_filename="seed_meta.txt",
+            details_filename="details_meta.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Signal Meta Route")
+        self._publish_pair(route, channel, VALID_SEED, VALID_DETAILS, 601)
+        event = self._latest_publish_ready_event(route["id"])
+        meta = self._extract_event_signal_meta(event)
+        self.assertEqual(meta["symbol"], "XAUUSD")
+        self.assertEqual(meta["side"], "SELL")
+        self.assertEqual(meta["entry_low"], 4014)
+        self.assertEqual(meta["entry_high"], 4017)
+        self.assertEqual(meta["stop_loss"], 4077)
+        self.assertEqual(meta["take_profits"], ["4007", "4005", "4003", "4002", "OPEN"])
+        self.assertSetEqual(set(meta.keys()), self.SIGNAL_META_ALLOWLIST)
+
+    def test_live_publish_ready_populates_last_signal_summary(self) -> None:
+        channel = self._create_tracked_channel("9021")
+        target = self._create_target(
+            name="Summary Meta Target",
+            seed_filename="seed_summary_meta.txt",
+            details_filename="details_summary_meta.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Summary Meta Route")
+        self._publish_pair(route, channel, VALID_SEED, VALID_DETAILS, 701)
+        _status, payload = self.request("GET", "/api/routes")
+        enriched = next(item for item in payload["routes"] if item["id"] == route["id"])
+        summary = enriched["last_signal_summary"]
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["symbol"], "XAUUSD")
+        self.assertEqual(summary["side"], "SELL")
+        self.assertEqual(summary["entry_low"], 4014)
+        self.assertEqual(summary["entry_high"], 4017)
+        self.assertEqual(summary["stop_loss"], 4077)
+        self.assertEqual(summary["take_profits"], ["4007", "4005", "4003", "4002", "OPEN"])
+
+    def test_live_signal_meta_excludes_raw_telegram_text(self) -> None:
+        channel = self._create_tracked_channel("9022")
+        target = self._create_target(
+            name="Safe Meta Target",
+            seed_filename="seed_safe_meta.txt",
+            details_filename="details_safe_meta.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Safe Meta Route")
+        self._publish_pair(route, channel, VALID_SEED, VALID_DETAILS, 801)
+        events_payload = self.request("GET", f"/api/routes/{route['id']}/events?limit=20")[1]
+        routes_payload = self.request("GET", "/api/routes")[1]
+        for blob in (json.dumps(events_payload), json.dumps(routes_payload)):
+            self.assertNotIn(VALID_SEED, blob)
+            self.assertNotIn("4014 - 4017", blob)
+            self.assertNotIn("SL: 4077", blob)
+        event = self._latest_publish_ready_event(route["id"])
+        meta = self._extract_event_signal_meta(event)
+        self.assertNotIn("raw_message", meta)
+        self.assertNotIn("text", meta)
+
+    def test_publish_skipped_preserves_previous_signal_summary(self) -> None:
+        channel = self._create_tracked_channel("9023")
+        target = self._create_target(
+            name="Skip Preserve Target",
+            seed_filename="seed_skip_meta.txt",
+            details_filename="details_skip_meta.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], "Skip Preserve Route")
+        self._publish_pair(route, channel, VALID_SEED, VALID_DETAILS, 901)
+        details_message = fasttrack_file_bridge.TelegramInboundMessage(
+            text=VALID_DETAILS,
+            message_id=903,
+            channel_id=int(channel["telegram_channel_id"]),
+        )
+        manager = self._listener_manager()
+        manager.inject_message(details_message)
+        _status, payload = self.request("GET", "/api/routes")
+        enriched = next(item for item in payload["routes"] if item["id"] == route["id"])
+        summary = enriched["last_signal_summary"]
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["status"], route_listener_service.LISTENER_PUBLISH_SKIPPED)
+        self.assertEqual(summary["symbol"], "XAUUSD")
+        self.assertEqual(summary["side"], "SELL")
+        self.assertEqual(summary["entry_low"], 4014)
+        self.assertEqual(summary["stop_loss"], 4077)
+        self.assertIn("tekrar", summary["user_message"].lower())
+        events = self.request("GET", f"/api/routes/{route['id']}/events?limit=20")[1]["events"]
+        skipped = [
+            event
+            for event in events
+            if event["status"] == route_listener_service.LISTENER_PUBLISH_SKIPPED
+        ]
+        self.assertTrue(skipped)
+        self.assertNotIn(fasttrack_file_bridge.SIGNAL_META_MARKER, skipped[-1]["safe_summary"])
+
+
+class SignalHistoryApiTests(RouteListenerDashboardTests):
+    META = {
+        "symbol": "XAUUSD",
+        "side": "SELL",
+        "entry_low": 4014,
+        "entry_high": 4017,
+        "stop_loss": 4077,
+        "take_profits": ["4007", "4005", "OPEN"],
+    }
+
+    def _seed_history_event(
+        self,
+        *,
+        route_id: int,
+        target_id: int,
+        channel_id: int,
+        received_at: str = "2026-07-06T02:19:00Z",
+        side: str = "SELL",
+    ) -> None:
+        meta = dict(self.META)
+        meta["side"] = side
+        meta_json = json.dumps(meta, separators=(",", ":"))
+        self.db.add_route_event(
+            route_id,
+            event_type="PUBLISH_READY",
+            status=route_listener_service.LISTENER_PUBLISH_READY,
+            target_id=target_id,
+            safe_summary=f"Observer-only publish plan completed.{fasttrack_file_bridge.SIGNAL_META_MARKER}{meta_json}",
+            fingerprint_short="98e0205b6e16",
+            seed_bytes=13,
+            details_bytes=79,
+        )
+        with self.db._connect() as conn:
+            conn.execute(
+                "UPDATE route_events SET created_at_utc = ? WHERE route_id = ? AND status = ?",
+                (received_at, route_id, route_listener_service.LISTENER_PUBLISH_READY),
+            )
+
+    def _setup_route(self, telegram_id: str = "9030") -> tuple[dict, dict, dict]:
+        channel = self._create_tracked_channel(telegram_id)
+        target = self._create_target(
+            name=f"History Target {telegram_id}",
+            seed_filename=f"seed_hist_{telegram_id}.txt",
+            details_filename=f"details_hist_{telegram_id}.txt",
+        )
+        route = self._create_route(channel["id"], target["id"], f"History Route {telegram_id}")
+        return channel, target, route
+
+    def test_publish_ready_appears_in_signal_history(self) -> None:
+        _channel, target, route = self._setup_route("9030")
+        self._seed_history_event(route_id=route["id"], target_id=target["id"], channel_id=route["channel_id"])
+        status, payload = self.request("GET", "/api/signal-history")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["total"], 1)
+        item = payload["items"][0]
+        self.assertEqual(item["symbol"], "XAUUSD")
+        self.assertEqual(item["side"], "SELL")
+        self.assertEqual(item["entry_low"], 4014)
+        self.assertEqual(item["stop_loss"], 4077)
+
+    def test_signal_history_excludes_raw_telegram(self) -> None:
+        _channel, target, route = self._setup_route("9031")
+        self._seed_history_event(route_id=route["id"], target_id=target["id"], channel_id=route["channel_id"])
+        _status, payload = self.request("GET", "/api/signal-history")
+        blob = json.dumps(payload)
+        self.assertNotIn(VALID_SEED, blob)
+        self.assertNotIn("4014 - 4017", blob)
+        self.assertNotIn("raw_message", blob)
+
+    def test_observer_only_execution_fields(self) -> None:
+        _channel, target, route = self._setup_route("9032")
+        self._seed_history_event(route_id=route["id"], target_id=target["id"], channel_id=route["channel_id"])
+        _status, payload = self.request("GET", "/api/signal-history")
+        item = payload["items"][0]
+        self.assertEqual(item["execution_status"], "NOT_EXECUTED")
+        self.assertEqual(item["trade_outcome"], "NOT_APPLICABLE")
+        self.assertIsNone(item["realized_pnl"])
+        self.assertEqual(item["pnl_state"], "unknown")
+
+    def test_channel_filter(self) -> None:
+        self.fake_adapter.list_dialogs_result = [
+            TelegramChannelInfo("9033", "Channel A", "channel", "channel_a"),
+            TelegramChannelInfo("9034", "Channel B", "channel", "channel_b"),
+        ]
+        self._connect_telegram()
+        self.request("POST", "/api/telegram/sync-channels", {})
+        channels = self.request("GET", "/api/channels")[1]["channels"]
+        channel_a = next(ch for ch in channels if ch["telegram_channel_id"] == "9033")
+        channel_b = next(ch for ch in channels if ch["telegram_channel_id"] == "9034")
+        self.request("PATCH", f"/api/channels/{channel_a['id']}", {"is_tracking": 1})
+        self.request("PATCH", f"/api/channels/{channel_b['id']}", {"is_tracking": 1})
+        target_a = self._create_target(
+            name="History Target A",
+            seed_filename="seed_hist_a.txt",
+            details_filename="details_hist_a.txt",
+        )
+        target_b = self._create_target(
+            name="History Target B",
+            seed_filename="seed_hist_b.txt",
+            details_filename="details_hist_b.txt",
+        )
+        route_a = self._create_route(channel_a["id"], target_a["id"], "History Route A")
+        route_b = self._create_route(channel_b["id"], target_b["id"], "History Route B")
+        self._seed_history_event(route_id=route_a["id"], target_id=target_a["id"], channel_id=channel_a["id"])
+        self._seed_history_event(route_id=route_b["id"], target_id=target_b["id"], channel_id=channel_b["id"])
+        status, payload = self.request("GET", f"/api/signal-history?channel_id={channel_a['id']}")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["channel_id"], channel_a["id"])
+
+    def test_date_filter(self) -> None:
+        _channel, target, route = self._setup_route("9035")
+        self._seed_history_event(
+            route_id=route["id"],
+            target_id=target["id"],
+            channel_id=route["channel_id"],
+            received_at="2026-06-01T10:00:00Z",
+        )
+        status, payload = self.request("GET", "/api/signal-history?from=2026-07-01")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["total"], 0)
+        status_in, payload_in = self.request("GET", "/api/signal-history?from=2026-05-01&to=2026-06-30")
+        self.assertEqual(status_in, 200)
+        self.assertEqual(payload_in["total"], 1)
+
+    def test_side_filter(self) -> None:
+        _channel, target, route = self._setup_route("9036")
+        self._seed_history_event(
+            route_id=route["id"],
+            target_id=target["id"],
+            channel_id=route["channel_id"],
+            side="BUY",
+        )
+        status, payload = self.request("GET", "/api/signal-history?side=BUY")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["items"][0]["side"], "BUY")
+        status_sell, payload_sell = self.request("GET", "/api/signal-history?side=SELL")
+        self.assertEqual(status_sell, 200)
+        self.assertEqual(payload_sell["total"], 0)
+
+    def test_pnl_state_unknown_includes_observer(self) -> None:
+        _channel, target, route = self._setup_route("9037")
+        self._seed_history_event(route_id=route["id"], target_id=target["id"], channel_id=route["channel_id"])
+        _status, payload = self.request("GET", "/api/signal-history?pnl_state=unknown")
+        self.assertEqual(payload["total"], 1)
+
+    def test_pnl_state_profit_excludes_observer(self) -> None:
+        _channel, target, route = self._setup_route("9038")
+        self._seed_history_event(route_id=route["id"], target_id=target["id"], channel_id=route["channel_id"])
+        _status, payload = self.request("GET", "/api/signal-history?pnl_state=profit")
+        self.assertEqual(payload["total"], 0)
+
+    def test_signal_history_pagination(self) -> None:
+        for idx in range(3):
+            _channel, target, route = self._setup_route(str(9040 + idx))
+            self._seed_history_event(
+                route_id=route["id"],
+                target_id=target["id"],
+                channel_id=route["channel_id"],
+                received_at=f"2026-07-06T0{idx}:00:00Z",
+            )
+        status, payload = self.request("GET", "/api/signal-history?page=1&page_size=2")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["total"], 3)
+        self.assertEqual(len(payload["items"]), 2)
+        self.assertEqual(payload["page"], 1)
+        self.assertEqual(payload["page_size"], 2)
+
+    def test_routes_include_execution_fields(self) -> None:
+        _channel, target, route = self._setup_route("9043")
+        self._seed_history_event(route_id=route["id"], target_id=target["id"], channel_id=route["channel_id"])
+        _status, payload = self.request("GET", "/api/routes")
+        item = next(r for r in payload["routes"] if r["id"] == route["id"])
+        summary = item["last_signal_summary"]
+        self.assertIsNotNone(summary)
+        self.assertEqual(summary["execution_status"], "NOT_EXECUTED")
+        self.assertIsNone(summary["realized_pnl"])
+        self.assertEqual(summary["pnl_state"], "unknown")
+
+
 class DashboardDataDirTests(unittest.TestCase):
     def test_resolve_default_data_dir_absolute(self) -> None:
         fixed = Path(tempfile.mkdtemp(prefix="dashboard_default_dir_"))
@@ -1577,7 +2102,7 @@ class DashboardModularizationTests(unittest.TestCase):
 
     def test_static_asset_map_only_three_files(self) -> None:
         allowed = set(dashboard_security.STATIC_ASSET_MAP.values())
-        self.assertEqual(allowed, {"index.html", "app.js", "styles.css"})
+        self.assertEqual(allowed, {"index.html", "app.js", "styles.css", "favicon.svg"})
 
 
 if __name__ == "__main__":

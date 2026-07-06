@@ -823,6 +823,57 @@ class DashboardDatabase:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def list_signal_history_candidates(
+        self,
+        *,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        channel_id: int | None = None,
+        target_id: int | None = None,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        clauses = ["e.status IN ('PUBLISH_READY', 'PUBLISH_FAILED')"]
+        params: list[Any] = []
+        if date_from:
+            clauses.append("e.created_at_utc >= ?")
+            params.append(date_from)
+        if date_to:
+            clauses.append("e.created_at_utc <= ?")
+            params.append(date_to)
+        if channel_id is not None:
+            clauses.append("r.channel_id = ?")
+            params.append(channel_id)
+        if target_id is not None:
+            clauses.append("r.target_id = ?")
+            params.append(target_id)
+        where_sql = " AND ".join(clauses)
+        params.append(min(max(limit, 1), 2000))
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT
+                    e.id,
+                    e.route_id,
+                    e.status,
+                    e.fingerprint_short,
+                    e.safe_summary,
+                    e.created_at_utc,
+                    r.channel_id,
+                    r.target_id,
+                    c.title AS channel_title,
+                    t.name AS target_name
+                FROM route_events e
+                JOIN routes r ON r.id = e.route_id
+                JOIN tracked_channels c ON c.id = r.channel_id
+                JOIN mt5_targets t ON t.id = r.target_id
+                WHERE {where_sql}
+                ORDER BY e.created_at_utc DESC, e.id DESC
+                LIMIT ?
+                """,
+                params,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def list_audit(self, limit: int) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
