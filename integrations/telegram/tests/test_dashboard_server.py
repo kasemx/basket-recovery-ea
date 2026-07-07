@@ -2411,15 +2411,38 @@ class Mt5TargetVerificationTests(DashboardServerTests):
         self.assertEqual(payload["target"]["xauusd_status"], "Bulunamadı")
 
     def test_duplicate_seed_filename_conflict(self) -> None:
-        self._create_target(display_name="Target A", seed_filename="dup_seed.txt", details_filename="details_a.txt")
+        shared_root = str(self.data_dir / "common_pair")
+        self._create_target(
+            display_name="Target A",
+            file_common_root=shared_root,
+            seed_filename="dup_pair_seed.txt",
+            details_filename="dup_pair_details.txt",
+        )
         second = self._create_target(
             display_name="Target B",
-            seed_filename="dup_seed.txt",
-            details_filename="details_b.txt",
+            file_common_root=shared_root,
+            seed_filename="dup_pair_seed.txt",
+            details_filename="dup_pair_details.txt",
             magic_number=91002,
         )
         issues = second["ea_config_match"]["issues"]
-        self.assertTrue(any("Dosya adı" in issue for issue in issues))
+        self.assertTrue(any("seed/details" in issue.lower() or "file_common" in issue.lower() for issue in issues))
+
+    def test_instance_path_user_supplied_when_probe_cannot_verify(self) -> None:
+        target = self._create_target()
+        mt5_account_probe.set_probe_override(
+            self._probe_for_target(target, detected_terminal_data_path=None)
+        )
+        status, payload = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload["verification"]["status"],
+            mt5_target_service.VERIFICATION_INSTANCE_PATH_USER_SUPPLIED,
+        )
+        self.assertEqual(
+            payload["target"]["terminal_instance_status"],
+            mt5_target_service.INSTANCE_STATUS_USER_SUPPLIED,
+        )
 
     def test_duplicate_magic_number_conflict(self) -> None:
         self._create_target(display_name="Magic A", magic_number=424242, seed_filename="seed_m1.txt", details_filename="details_m1.txt")
@@ -2611,6 +2634,23 @@ class Mt5TargetVerificationTests(DashboardServerTests):
         self.assertGreaterEqual(payload["summary"]["demo_accounts"], 1)
         self.assertGreaterEqual(payload["summary"]["real_accounts"], 1)
         self.assertEqual(payload["summary"]["pending_verification"], payload["summary"]["total"])
+        self.assertIn("terminal_instance_conflicts", payload["summary"])
+
+    def test_mt5_targets_pagination(self) -> None:
+        for index in range(3):
+            self._create_target(
+                display_name=f"Paged Target {index}",
+                magic_number=97000 + index,
+                seed_filename=f"seed_page_{index}.txt",
+                details_filename=f"details_page_{index}.txt",
+                instance_suffix=f"page_{index}",
+            )
+        status, payload = self.request("GET", "/api/mt5-targets?page=1&page_size=2")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["targets"]), 2)
+        self.assertGreaterEqual(payload["total"], 3)
+        self.assertEqual(payload["page"], 1)
+        self.assertEqual(payload["page_size"], 2)
 
 
 class DashboardDataDirTests(unittest.TestCase):

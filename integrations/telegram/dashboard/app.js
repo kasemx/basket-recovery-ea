@@ -632,6 +632,7 @@ function renderMt5Summary() {
     ["Terminal Çevrimdışı", summary.terminal_offline || 0],
     ["Doğrulanmayı Bekleyen", summary.pending_verification || 0],
     ["EA Eşleşmesi Bekleyen", summary.pending_ea_match || 0],
+    ["Terminal Instance Çakışması Olan", summary.terminal_instance_conflicts || 0],
   ];
   container.innerHTML = items
     .map(

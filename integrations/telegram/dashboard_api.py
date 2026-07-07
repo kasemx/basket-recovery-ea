@@ -34,7 +34,9 @@ from dashboard_signal_history import (
 from mt5_target_service import (
     build_targets_summary,
     compute_instance_fields,
+    filter_mt5_targets,
     normalize_create_payload,
+    paginate_mt5_targets,
     prepare_target_row_fields,
     project_mt5_target,
     validate_target_registration,
@@ -692,10 +694,41 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return None, None
         return int(match.group(1)), match.group(2)
 
-    def _mt5_targets_response(self) -> dict[str, Any]:
+    def _mt5_targets_response(self, query: dict[str, list[str]] | None = None) -> dict[str, Any]:
         rows = self.context.database.list_targets()
-        targets = [project_mt5_target(row, rows) for row in rows]
-        return {"targets": targets, "summary": build_targets_summary(rows)}
+        summary = build_targets_summary(rows)
+        projected = [project_mt5_target(row, rows) for row in rows]
+        params = query or {}
+
+        def first(key: str, default: str | None = None) -> str | None:
+            values = params.get(key)
+            if not values or values[0] == "":
+                return default
+            return values[0]
+
+        enabled_raw = first("is_enabled")
+        is_enabled = None
+        if enabled_raw in ("0", "1"):
+            is_enabled = enabled_raw == "1"
+        account_type = first("account_type")
+        search = first("search")
+        page = int(first("page", "1") or "1")
+        page_size = int(first("page_size", "20") or "20")
+
+        filtered = filter_mt5_targets(
+            projected,
+            is_enabled=is_enabled,
+            account_type=account_type,
+            search=search,
+        )
+        page_items, total = paginate_mt5_targets(filtered, page=page, page_size=page_size)
+        return {
+            "targets": page_items,
+            "summary": summary,
+            "page": max(page, 1),
+            "page_size": min(max(page_size, 1), 100),
+            "total": total,
+        }
 
     def _mt5_target_verification_response(self, target_id: int) -> dict[str, Any]:
         row = self.context.database.get_target(target_id)
@@ -758,7 +791,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"targets": self.context.database.list_targets()})
                 return
             if path == "/api/mt5-targets":
-                self._send_json(self._mt5_targets_response())
+                query = parse_qs(urlparse(self.path).query)
+                self._send_json(self._mt5_targets_response(query))
                 return
             mt5_target_id, mt5_subpath = self._parse_mt5_target_path(path)
             if mt5_target_id is not None and mt5_subpath == "verification":
