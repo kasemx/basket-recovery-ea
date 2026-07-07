@@ -168,60 +168,190 @@
       </section>
 
       <section id="view-targets" class="view">
-        <div class="panel">
-          <h3>MT5 Hesaplarım</h3>
-          <p class="muted">Buradan her terminalin bağlı olduğu hesabı doğrular, demo/gerçek hesap ayrımını görür ve EA eşleşmesini yönetirsin.</p>
-          <div class="safety-note mt5-safety-note">
-            İşlem açma varsayılan olarak kapalıdır. Hesap doğrulama işlemi emir göndermez.
-          </div>
-
-          <div class="mt5-discovery-panel">
-            <h4>MT5 Terminallerini Tara</h4>
-            <p class="muted">Terminal program yolunu veya klasörünü ekle. Açık terminallerdeki hesap bilgileri otomatik bulunur. Bu işlem emir göndermez.</p>
-            <label class="full">Terminal Yolları (her satıra bir yol)<textarea id="mt5-discovery-paths" rows="4" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe&#10;C:\Program Files\FTMO Global Markets MT5 Terminal"></textarea></label>
-            <div class="mt5-discovery-actions">
-              <button type="button" class="btn primary" id="mt5-discovery-scan-btn">Terminalleri Tara</button>
-              <button type="button" class="btn" id="mt5-discovery-add-line-btn">Yolu Ekle</button>
-              <button type="button" class="btn" id="mt5-discovery-clear-btn">Listeyi Temizle</button>
+        <div class="panel mt5-page">
+          <header class="mt5-page-header">
+            <div>
+              <h3>MT5 Hesaplarım</h3>
+              <p class="muted mt5-page-lead">Terminallerini tara, açık hesaplarını otomatik bul ve hangi hesabın hangi EA ile çalışacağını buradan yönet.</p>
             </div>
-            <div id="mt5-discovery-path-errors" class="mt5-discovery-messages"></div>
-            <div id="mt5-discovery-results" class="mt5-discovery-cards"></div>
-          </div>
+            <span class="badge badge-locked mt5-page-safety">İşlem Açma Kapalı</span>
+          </header>
 
-          <div id="mt5-target-summary" class="mt5-summary-grid"></div>
-          <form id="target-form" class="form-grid two-col mt5-wizard">
-            <h4 class="full signal-section-title">Hesap Ekle</h4>
-            <label>Hedef Adı<input type="text" name="display_name" required placeholder="Vantage Demo Altın"></label>
-            <label>Terminal Etiketi<input type="text" name="terminal_label" required placeholder="D0E"></label>
-            <label class="full">Terminal Program Yolu<input type="text" name="terminal_exe_path" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe"></label>
-            <label class="full">MT5 Terminal Veri Klasörü / Instance Kimliği<input type="text" name="terminal_data_path" required placeholder="C:\Users\...\Terminal\D0E35EE...\MQL5"></label>
-            <p class="muted full">Aynı terminal programı birden fazla hesabı çalıştırabilir. Bu alan, doğru MT5 terminalini ayırt etmek içindir.</p>
-            <label>Broker<input type="text" name="broker_label" required placeholder="VantageMarkets-Demo"></label>
-            <label>Beklenen Sunucu<input type="text" name="expected_server" placeholder="VantageMarkets-Demo"></label>
-            <label>Beklenen Hesap No (isteğe bağlı)<input type="text" name="expected_account_login" placeholder="12345678"></label>
-            <label>Beklenen Hesap Türü
-              <select name="expected_account_type" required>
-                <option value="DEMO">Demo</option>
-                <option value="REAL">Gerçek</option>
-                <option value="UNKNOWN">Bilinmiyor</option>
-              </select>
-            </label>
-            <label class="full">FILE_COMMON Dizini<input type="text" name="file_common_root" required placeholder="C:\Users\...\Terminal\Common\Files"></label>
-            <label>Seed Dosyası<input type="text" name="seed_filename" required value="basket_recovery_fasttrack_seed.txt"></label>
-            <label>Details Dosyası<input type="text" name="details_filename" required value="basket_recovery_fasttrack_details.txt"></label>
-            <label>EA Adı<input type="text" name="ea_name" value="Basket Recovery EA"></label>
-            <label>Chart Sembol<input type="text" name="chart_symbol" value="XAUUSD"></label>
-            <label>Chart Zaman Dilimi<input type="text" name="chart_timeframe" value="M1"></label>
-            <label>Magic Number<input type="number" name="magic_number" min="0" placeholder="123456"></label>
-            <input type="hidden" name="name" value="">
-            <div class="full actions">
-              <span class="badge badge-locked">İşlem Yetkisi Kilitli</span>
-              <button type="submit" class="btn primary" id="target-save-btn">Kaydet ve Doğrula</button>
+          <div id="mt5-server-hint" class="mt5-server-hint hidden" role="status"></div>
+
+          <ol class="mt5-steps" aria-label="Hesap ekleme adımları">
+            <li><span>1</span> Terminal yolunu ekle</li>
+            <li><span>2</span> Terminalleri tara</li>
+            <li><span>3</span> Bulunan hesabı ekle</li>
+          </ol>
+
+          <div id="mt5-target-summary" class="mt5-summary-compact"></div>
+          <details class="mt5-summary-extra" id="mt5-summary-extra">
+            <summary>Diğer Durumlar</summary>
+            <div id="mt5-target-summary-extra" class="mt5-summary-compact extra"></div>
+          </details>
+
+          <section class="mt5-primary-card" aria-labelledby="mt5-scan-title">
+            <div class="mt5-primary-card-body">
+              <h4 id="mt5-scan-title">MT5 Terminallerini Bul</h4>
+              <p class="muted">Terminal yolunu veya klasörünü ekle. Açık terminallerdeki hesap bilgileri otomatik bulunur. Emir gönderilmez.</p>
+              <div id="mt5-quick-paths" class="mt5-quick-paths"></div>
+              <div id="mt5-path-chips" class="mt5-path-chips"></div>
+              <div class="mt5-primary-actions">
+                <button type="button" class="btn" id="mt5-discovery-add-path-btn">+ Terminal Yolu Ekle</button>
+                <button type="button" class="btn primary" id="mt5-discovery-scan-btn" disabled>Terminalleri Tara</button>
+              </div>
+              <p class="muted mt5-scan-hint" id="mt5-scan-hint">Önce en az bir terminal yolu ekle.</p>
+              <div id="mt5-discovery-path-errors" class="mt5-discovery-messages"></div>
             </div>
-          </form>
-          <div id="targets-list" class="mt5-target-cards"></div>
+          </section>
+
+          <section class="mt5-section" aria-labelledby="mt5-discovered-title">
+            <h4 id="mt5-discovered-title" class="mt5-section-title">Keşfedilen Hesaplar</h4>
+            <div id="mt5-discovery-results" class="mt5-table-wrap mt5-discovery-table-wrap"></div>
+          </section>
+
+          <section class="mt5-section" aria-labelledby="mt5-accounts-title">
+            <h4 id="mt5-accounts-title" class="mt5-section-title">Eklenmiş Hesaplarım</h4>
+            <div id="mt5-accounts-toolbar" class="mt5-accounts-toolbar">
+              <div class="mt5-filter-group" role="group" aria-label="Hesap türü filtresi">
+                <button type="button" class="mt5-filter-chip active" data-mt5-type-filter="ALL">Tümü</button>
+                <button type="button" class="mt5-filter-chip" data-mt5-type-filter="DEMO">Demo</button>
+                <button type="button" class="mt5-filter-chip" data-mt5-type-filter="REAL">Gerçek</button>
+                <button type="button" class="mt5-filter-chip" data-mt5-type-filter="CONTEST">Yarışma</button>
+              </div>
+              <div class="mt5-filter-group" role="group" aria-label="Durum filtresi">
+                <button type="button" class="mt5-filter-chip active" data-mt5-status-filter="ALL">Tümü</button>
+                <button type="button" class="mt5-filter-chip" data-mt5-status-filter="VERIFIED">Doğrulandı</button>
+                <button type="button" class="mt5-filter-chip" data-mt5-status-filter="ATTENTION">Kontrol Gerekli</button>
+                <button type="button" class="mt5-filter-chip" data-mt5-status-filter="OFFLINE">Çevrimdışı</button>
+              </div>
+              <label class="mt5-search-field">
+                <span class="visually-hidden">Hesap ara</span>
+                <input type="search" id="mt5-accounts-search" placeholder="Hesap, broker, terminal veya sunucu ara…" autocomplete="off">
+              </label>
+            </div>
+            <div id="targets-list" class="mt5-table-wrap mt5-accounts-table-wrap"></div>
+            <p class="mt5-manual-link-wrap">
+              <button type="button" class="link-btn" id="mt5-manual-add-link">Manuel Hesap Ekle</button>
+            </p>
+          </section>
         </div>
       </section>
+
+      <div id="mt5-target-drawer-overlay" class="mt5-drawer-overlay hidden" aria-hidden="true">
+        <aside id="mt5-target-drawer" class="mt5-drawer" role="dialog" aria-modal="true" aria-labelledby="mt5-drawer-title" tabindex="-1"></aside>
+      </div>
+
+      <div id="mt5-path-modal" class="mt5-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="mt5-path-modal-title">
+        <div class="mt5-modal">
+          <div class="mt5-modal-header">
+            <h4 id="mt5-path-modal-title">Terminal Yolu Ekle</h4>
+            <button type="button" class="icon-btn" data-close-modal="mt5-path-modal" aria-label="Kapat">×</button>
+          </div>
+          <div class="mt5-modal-body">
+            <p class="muted">MT5 kurulum klasörünü veya <code>terminal64.exe</code> dosyasının tam yolunu yapıştır.</p>
+            <label class="full">Klasör veya terminal64.exe yolu<input type="text" id="mt5-path-modal-input" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe"></label>
+          </div>
+          <div class="mt5-modal-footer">
+            <button type="button" class="btn" data-close-modal="mt5-path-modal">Vazgeç</button>
+            <button type="button" class="btn primary" id="mt5-path-modal-add-btn">Ekle</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="mt5-target-modal" class="mt5-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="mt5-target-modal-title">
+        <div class="mt5-modal mt5-modal-wide">
+          <div class="mt5-modal-header">
+            <h4 id="mt5-target-modal-title">Hesap Ayarları</h4>
+            <button type="button" class="icon-btn" data-close-modal="mt5-target-modal" aria-label="Kapat">×</button>
+          </div>
+          <form id="target-form" class="mt5-modal-form">
+            <div class="mt5-modal-tabs" role="tablist">
+              <button type="button" class="mt5-tab active" data-target-tab="general" role="tab">Genel Bilgiler</button>
+              <button type="button" class="mt5-tab" data-target-tab="ea" role="tab">EA Eşleştirmesi</button>
+              <button type="button" class="mt5-tab" data-target-tab="advanced" role="tab">Gelişmiş Teknik Ayarlar</button>
+            </div>
+            <div class="mt5-tab-panel active" data-target-panel="general">
+              <div class="form-grid two-col">
+                <label>Hesap Adı<input type="text" name="display_name" required placeholder="Adem Demo Altın"></label>
+                <label>Terminal Etiketi<input type="text" name="terminal_label" required placeholder="D0E"></label>
+                <label>Broker<input type="text" name="broker_label" required placeholder="VantageMarkets-Demo"></label>
+                <label>Beklenen Hesap Türü
+                  <select name="expected_account_type" required>
+                    <option value="DEMO">Demo</option>
+                    <option value="REAL">Gerçek</option>
+                    <option value="UNKNOWN">Bilinmiyor</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="mt5-tab-panel" data-target-panel="ea">
+              <p class="muted">EA ayarlarını daha sonra ekleyebilirsin.</p>
+              <div class="form-grid two-col">
+                <label>EA Adı<input type="text" name="ea_name" value="Basket Recovery EA"></label>
+                <label>Chart Sembol<input type="text" name="chart_symbol" value="XAUUSD"></label>
+                <label>Chart Zaman Dilimi<input type="text" name="chart_timeframe" value="M1"></label>
+                <label>Magic Number<input type="number" name="magic_number" min="0" placeholder="123456"></label>
+                <label>Seed Dosyası<input type="text" name="seed_filename" value="basket_recovery_fasttrack_seed.txt"></label>
+                <label>Details Dosyası<input type="text" name="details_filename" value="basket_recovery_fasttrack_details.txt"></label>
+              </div>
+            </div>
+            <div class="mt5-tab-panel" data-target-panel="advanced">
+              <div class="form-grid two-col">
+                <label class="full">Terminal Program Yolu<input type="text" name="terminal_exe_path" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe"></label>
+                <label class="full">Terminal Veri Klasörü / Instance<input type="text" name="terminal_data_path" required placeholder="C:\Users\...\Terminal\D0E35EE..."></label>
+                <label class="full">FILE_COMMON Dizini<input type="text" name="file_common_root" required placeholder="C:\Users\...\Terminal\Common\Files"></label>
+                <label>Beklenen Sunucu<input type="text" name="expected_server" placeholder="VantageMarkets-Demo"></label>
+                <label>Beklenen Hesap No (isteğe bağlı)<input type="text" name="expected_account_login" placeholder="12345678"></label>
+              </div>
+            </div>
+            <input type="hidden" name="name" value="">
+            <div class="mt5-modal-footer">
+              <span class="badge badge-locked">İşlem Yetkisi Kilitli</span>
+              <button type="button" class="btn" data-close-modal="mt5-target-modal">Vazgeç</button>
+              <button type="submit" class="btn primary" id="target-save-btn">Kaydet</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <div id="mt5-add-account-modal" class="mt5-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="mt5-add-account-modal-title">
+        <div class="mt5-modal">
+          <div class="mt5-modal-header">
+            <h4 id="mt5-add-account-modal-title">Hesabı Ekle</h4>
+            <button type="button" class="icon-btn" data-close-modal="mt5-add-account-modal" aria-label="Kapat">×</button>
+          </div>
+          <div class="mt5-modal-body">
+            <p class="muted">Bu hesap otomatik olarak bulundu. Listede görünecek adı seç.</p>
+            <label class="full">Hesap Adı<input type="text" id="mt5-add-account-name-input" placeholder="Adem Demo"></label>
+          </div>
+          <div class="mt5-modal-footer">
+            <button type="button" class="btn" data-close-modal="mt5-add-account-modal">Vazgeç</button>
+            <button type="button" class="btn primary" id="mt5-add-account-confirm-btn">Hesap Olarak Ekle</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="mt5-real-account-modal" class="mt5-modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="mt5-real-account-modal-title">
+        <div class="mt5-modal">
+          <div class="mt5-modal-header">
+            <h4 id="mt5-real-account-modal-title">Gerçek Hesap Algılandı</h4>
+            <button type="button" class="icon-btn" data-close-modal="mt5-real-account-modal" aria-label="Kapat">×</button>
+          </div>
+          <div class="mt5-modal-body">
+            <p class="muted">Bu hesap yalnız izleme modunda ve işlem yetkisi kilitli olarak eklenecek.</p>
+          </div>
+          <div class="mt5-modal-footer">
+            <button type="button" class="btn" data-close-modal="mt5-real-account-modal">Vazgeç</button>
+            <button type="button" class="btn primary" id="mt5-real-account-confirm-btn">Yalnız İzleme Olarak Ekle</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="mt5-row-menu-portal" class="mt5-menu-portal hidden" role="presentation"></div>
+
+      <textarea id="mt5-discovery-paths" class="visually-hidden" aria-hidden="true" tabindex="-1"></textarea>
 
       <section id="view-routes" class="view">
         <div class="panel">

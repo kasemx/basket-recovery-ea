@@ -763,6 +763,31 @@ class DashboardServerTests(unittest.TestCase):
                 self.assertIsInstance(body, (bytes, str))
                 self.assertGreater(len(body), 10)
 
+    def test_mt5_accounts_page_ux_markup(self) -> None:
+        status, body = self.request("GET", "/")
+        self.assertEqual(status, 200)
+        html = body.decode("utf-8") if isinstance(body, bytes) else str(body)
+        self.assertIn("MT5 Terminallerini Bul", html)
+        self.assertIn("Keşfedilen Hesaplar", html)
+        self.assertIn("Eklenmiş Hesaplarım", html)
+        self.assertIn("Manuel Hesap Ekle", html)
+        self.assertIn("mt5-target-modal", html)
+        self.assertIn("mt5-add-account-modal", html)
+        self.assertIn("mt5-target-drawer", html)
+        self.assertIn("mt5-real-account-modal", html)
+        self.assertIn("mt5-row-menu-portal", html)
+        self.assertIn("mt5-accounts-toolbar", html)
+        self.assertIn("mt5-accounts-search", html)
+        self.assertIn("mt5-quick-paths", html)
+        self.assertNotIn("mt5-card-grid", html)
+        self.assertNotIn(">Hesap Ekle<", html)
+        self.assertNotIn('rows="4"', html)
+
+    def test_health_includes_mt5_terminal_discovery_feature(self) -> None:
+        status, payload = self.request("GET", "/api/health")
+        self.assertEqual(status, 200)
+        self.assertTrue(payload.get("features", {}).get("mt5_terminal_discovery"))
+
     @unittest.skipUnless(sys.platform == "win32", "DPAPI vault is Windows-only")
     def test_vault_saved_configure_returns_api_configured(self) -> None:
         dashboard_vault.DashboardCredentialVault(self.data_dir).clear_telegram_credentials()

@@ -6,13 +6,26 @@ const state = {
   targets: [],
   mt5Targets: { targets: [], summary: {} },
   mt5Discoveries: { discoveries: [], path_results: [], duplicate_paths: [], scan_id: null },
+  mt5TerminalPaths: [],
   routes: [],
   audit: [],
   signalHistory: { items: [], page: 1, page_size: 20, total: 0 },
   signalHistoryFilters: { page: 1, page_size: 20 },
   signalHistoryView: "cards",
   listenerWorker: null,
+  dashboardHealth: null,
+  pendingDiscoveryAddId: null,
+  mt5AccountFilters: { type: "ALL", status: "ALL", search: "" },
+  mt5Drawer: { open: false, mode: null, targetId: null, discoveryId: null, tab: "overview" },
+  mt5RowMenu: { open: false, targetId: null, trigger: null },
+  pendingRealAccountDiscoveryId: null,
 };
+
+const MT5_QUICK_PATHS = [
+  { label: "MetaTrader 5", path: "C:\\Program Files\\MetaTrader 5\\terminal64.exe" },
+  { label: "FundedNext", path: "C:\\Program Files\\FundedNext MT5 Terminal\\terminal64.exe" },
+  { label: "FTMO", path: "C:\\Program Files\\FTMO Global Markets MT5 Terminal\\terminal64.exe" },
+];
 
 const SIGNAL_HISTORY_VIEW_KEY = "br_dashboard_signal_history_view";
 
@@ -31,7 +44,7 @@ const views = {
   },
   targets: {
     title: "MT5 Hesaplarım",
-    subtitle: "Terminal hesabını doğrula, demo/gerçek ayrımını gör, EA eşleşmesini yönet",
+    subtitle: "Terminallerini tara, hesaplarını otomatik bul ve EA eşleşmesini yönet",
   },
   routes: {
     title: "Sinyal Yönlendirmeleri",
@@ -98,22 +111,6 @@ function $(selector) {
   return document.querySelector(selector);
 }
 
-function formatErrorMessage(payload) {
-  if (payload && payload.user_message) {
-    return localizeBackendMessage(payload.user_message);
-  }
-  if (payload && payload.error) {
-    return localizeBackendMessage(payload.error);
-  }
-  if (payload && payload.error_code) {
-    if (payload.error_code === "TELEGRAM_FLOOD_WAIT" && payload.flood_wait_seconds) {
-      return `Telegram istek sınırına ulaşıldı. ${payload.flood_wait_seconds} saniye bekle.`;
-    }
-    return ERROR_MESSAGES[payload.error_code] || "İşlem tamamlanamadı.";
-  }
-  return "İşlem tamamlanamadı.";
-}
-
 function localizeBackendMessage(message) {
   const text = String(message || "");
   if (text.includes("Telegram API credentials are missing")) {
@@ -175,9 +172,34 @@ async function api(path, options = {}) {
     payload = null;
   }
   if (!response.ok) {
-    throw new Error(formatErrorMessage(payload));
+    const error = new Error(formatErrorMessage(payload, response.status));
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
   return payload;
+}
+
+function formatErrorMessage(payload, statusCode = 0) {
+  if (statusCode === 404) {
+    return "Bu özellik mevcut dashboard sürümünde yok. Terminalde sunucuyu durdurup yeniden başlat, ardından sayfayı Ctrl+Shift+R ile yenile.";
+  }
+  if (payload && payload.user_message) {
+    return localizeBackendMessage(payload.user_message);
+  }
+  if (payload && payload.error) {
+    if (String(payload.error).toLowerCase() === "not found") {
+      return "İstenen işlem bulunamadı. Dashboard sunucusunu yeniden başlatıp tekrar dene.";
+    }
+    return localizeBackendMessage(payload.error);
+  }
+  if (payload && payload.error_code) {
+    if (payload.error_code === "TELEGRAM_FLOOD_WAIT" && payload.flood_wait_seconds) {
+      return `Telegram istek sınırına ulaşıldı. ${payload.flood_wait_seconds} saniye bekle.`;
+    }
+    return ERROR_MESSAGES[payload.error_code] || "İşlem tamamlanamadı.";
+  }
+  return "İşlem tamamlanamadı.";
 }
 
 function escapeCell(value) {
@@ -621,6 +643,579 @@ function accountTypeLabel(type) {
   return labels[type] || "BİLİNMİYOR";
 }
 
+function truncatePath(path, maxLength = 44) {
+  if (!path) return "—";
+  const text = String(path);
+  if (text.length <= maxLength) return text;
+  const normalized = text.replace(/\//g, "\\");
+  const parts = normalized.split("\\").filter(Boolean);
+  if (parts.length < 3) return text;
+  return `${parts[0]}\\...\\${parts[parts.length - 1]}`;
+}
+
+function terminalChipLabel(path) {
+  const lower = String(path || "").toLowerCase();
+  if (lower.includes("ftmo")) return "FTMO";
+  if (lower.includes("fundednext") || lower.includes("funded")) return "FundedNext";
+  if (lower.includes("metatrader")) return "MetaTrader 5";
+  const parts = String(path).replace(/\//g, "\\").split("\\").filter(Boolean);
+  if (parts.length && parts[parts.length - 1].toLowerCase().endsWith(".exe")) {
+    return parts.length > 1 ? parts[parts.length - 2] : parts[parts.length - 1];
+  }
+  return parts[parts.length - 1] || "Terminal";
+}
+
+function syncMt5PathsTextarea() {
+  const textarea = $("#mt5-discovery-paths");
+  if (textarea) {
+    textarea.value = state.mt5TerminalPaths.join("\n");
+  }
+  const scanBtn = $("#mt5-discovery-scan-btn");
+  const hint = $("#mt5-scan-hint");
+  const hasPaths = state.mt5TerminalPaths.length > 0;
+  if (scanBtn) scanBtn.disabled = !hasPaths;
+  if (hint) {
+    hint.textContent = hasPaths
+      ? `${state.mt5TerminalPaths.length} terminal yolu hazır. Taramaya başlayabilirsin.`
+      : "Önce en az bir terminal yolu ekle.";
+  }
+}
+
+function addMt5TerminalPath(path) {
+  const cleaned = String(path || "").trim();
+  if (!cleaned) return false;
+  if (state.mt5TerminalPaths.includes(cleaned)) return false;
+  state.mt5TerminalPaths.push(cleaned);
+  syncMt5PathsTextarea();
+  renderMt5PathChips();
+  renderMt5QuickPaths();
+  return true;
+}
+
+function notifyMt5PathAdded(wasAdded) {
+  if (wasAdded) {
+    showAlert("Terminal yolu eklendi. Taramak için Terminalleri Tara düğmesine bas.", "success");
+  } else {
+    showAlert("Bu terminal yolu zaten listede.", "error");
+  }
+}
+
+async function runMt5TerminalDiscovery(options = {}) {
+  const { busyButton = null, successPrefix = null } = options;
+  hideAlert();
+  if (!isDiscoveryApiReady()) {
+    showAlert(
+      "Terminal tarama API'si hazır değil. Dashboard sunucusunu yeniden başlatıp sayfayı Ctrl+Shift+R ile yenile.",
+      "error"
+    );
+    renderMt5ServerHint();
+    return null;
+  }
+  if (!state.mt5TerminalPaths.length) {
+    showAlert("Önce en az bir terminal yolu ekle.");
+    return null;
+  }
+  setButtonBusy(busyButton, true);
+  try {
+    const payload = await api("/api/mt5-terminals/discover", {
+      method: "POST",
+      body: JSON.stringify({ paths_text: state.mt5TerminalPaths.join("\n") }),
+    });
+    state.mt5Discoveries = payload;
+    renderMt5Discoveries();
+    const count = (payload.discoveries || []).length;
+    const prefix = successPrefix ? `${successPrefix} ` : "";
+    showAlert(
+      count > 0
+        ? `${prefix}${count} hesap bulundu. Eklemek için satıra tıkla veya “Hesap Olarak Ekle” düğmesini kullan.`
+        : "Tarama tamamlandı ancak açık terminal bulunamadı. MT5'yi açıp tekrar tara.",
+      count > 0 ? "success" : "error"
+    );
+    return payload;
+  } catch (error) {
+    showAlert(error.message);
+    renderMt5ServerHint();
+    return null;
+  } finally {
+    setButtonBusy(busyButton, false);
+  }
+}
+
+function handleQuickPathAdd(path) {
+  notifyMt5PathAdded(addMt5TerminalPath(path));
+}
+
+async function handleQuickPathScan(path) {
+  addMt5TerminalPath(path);
+  await runMt5TerminalDiscovery({ successPrefix: "Terminal yolu eklendi ve tarama tamamlandı." });
+}
+
+function renderMt5QuickPaths() {
+  const container = $("#mt5-quick-paths");
+  if (!container) return;
+  container.innerHTML = `
+    <span class="muted mt5-quick-label">Hızlı ekle:</span>
+    ${MT5_QUICK_PATHS.map(
+      (item, index) => `
+        <span class="mt5-quick-path-item">
+          <button type="button" class="mt5-quick-path-btn" data-quick-index="${index}" title="${escapeCell(item.path)}">${escapeCell(item.label)}</button>
+          <button type="button" class="mt5-quick-scan-btn" data-quick-scan-index="${index}" aria-label="${escapeCell(item.label)} ekle ve tara" title="Ekle ve tara">⌕</button>
+        </span>`
+    ).join("")}
+  `;
+  container.querySelectorAll("[data-quick-index]").forEach((button) => {
+    let clickTimer = null;
+    button.addEventListener("click", () => {
+      const index = Number(button.getAttribute("data-quick-index"));
+      const item = MT5_QUICK_PATHS[index];
+      if (!item) return;
+      if (clickTimer) {
+        clearTimeout(clickTimer);
+        clickTimer = null;
+        handleQuickPathScan(item.path);
+        return;
+      }
+      clickTimer = window.setTimeout(() => {
+        clickTimer = null;
+        handleQuickPathAdd(item.path);
+      }, 260);
+    });
+  });
+  container.querySelectorAll("[data-quick-scan-index]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const index = Number(button.getAttribute("data-quick-scan-index"));
+      const item = MT5_QUICK_PATHS[index];
+      if (item) handleQuickPathScan(item.path);
+    });
+  });
+}
+
+function isDiscoveryApiReady() {
+  return Boolean(state.dashboardHealth?.features?.mt5_terminal_discovery);
+}
+
+function renderMt5ServerHint() {
+  const hint = $("#mt5-server-hint");
+  if (!hint) return;
+  if (!state.dashboardHealth) {
+    hint.classList.add("hidden");
+    return;
+  }
+  if (isDiscoveryApiReady()) {
+    hint.classList.add("hidden");
+    return;
+  }
+  hint.className = "mt5-server-hint warn";
+  hint.innerHTML = `
+    <strong>Terminal tarama henüz kullanılamıyor.</strong>
+    Dashboard sunucusu eski sürümle çalışıyor olabilir.
+    PowerShell'de sunucuyu durdur (Ctrl+C), sonra şunu çalıştır:
+    <code>python integrations/telegram/dashboard_server.py</code>
+    Ardından bu sayfayı Ctrl+Shift+R ile yenile.
+  `;
+}
+
+function openAddAccountModal(discoveryId, defaultName) {
+  state.pendingDiscoveryAddId = discoveryId;
+  const input = $("#mt5-add-account-name-input");
+  if (input) input.value = defaultName || "";
+  openMt5Modal("mt5-add-account-modal");
+  input?.focus();
+}
+
+function isDiscoveryAlreadyAdded(discovery) {
+  if (discovery.can_add_as_target || isDiscoveryOffline(discovery)) {
+    return false;
+  }
+  const reason = String(discovery.blocking_reason || "").toLowerCase();
+  return (
+    reason.includes("zaten")
+    || reason.includes("başka aktif hedefte")
+    || reason.includes("kombinasyonu")
+  );
+}
+
+function canAddDiscoveryAsTarget(discovery) {
+  return Boolean(
+    discovery
+    && discovery.can_add_as_target
+    && !isDiscoveryOffline(discovery)
+    && !isDiscoveryAlreadyAdded(discovery)
+  );
+}
+
+async function submitDiscoveryAsTarget(discoveryId, displayName) {
+  await api(`/api/mt5-terminals/discoveries/${discoveryId}/add-target`, {
+    method: "POST",
+    body: JSON.stringify({ display_name: displayName || undefined }),
+  });
+  await refreshAll();
+}
+
+function discoveryAddSuccessMessage(tradeType) {
+  if (tradeType === "REAL") {
+    return "Gerçek hesap yalnız izleme modunda eklendi. İşlem yetkisi kilitli.";
+  }
+  if (tradeType === "DEMO") {
+    return "Demo hesap eklendi. EA ayarlarını daha sonra tamamlayabilirsin.";
+  }
+  return "Hesap eklendi. EA ayarlarını daha sonra Ayarlar'dan ekleyebilirsin.";
+}
+
+async function requestAddDiscoveryAccount(discoveryId) {
+  const discovery = findMt5Discovery(discoveryId);
+  if (!discovery || !canAddDiscoveryAsTarget(discovery)) {
+    return;
+  }
+  const tradeType = String(discovery.detected_trade_mode || "UNKNOWN").toUpperCase();
+  if (tradeType === "REAL") {
+    state.pendingRealAccountDiscoveryId = discoveryId;
+    openMt5Modal("mt5-real-account-modal");
+    return;
+  }
+  try {
+    await submitDiscoveryAsTarget(discoveryId, discovery.display_label || "");
+    showAlert(discoveryAddSuccessMessage(tradeType), "success");
+  } catch (error) {
+    showAlert(error.message);
+  }
+}
+
+async function confirmRealAccountAdd() {
+  const discoveryId = state.pendingRealAccountDiscoveryId;
+  const discovery = findMt5Discovery(discoveryId);
+  if (!discoveryId || !discovery) return;
+  try {
+    await submitDiscoveryAsTarget(discoveryId, discovery.display_label || "");
+    closeMt5Modal("mt5-real-account-modal");
+    state.pendingRealAccountDiscoveryId = null;
+    showAlert(discoveryAddSuccessMessage("REAL"), "success");
+  } catch (error) {
+    showAlert(error.message);
+  }
+}
+
+async function confirmAddDiscoveryAccount() {
+  const discoveryId = state.pendingDiscoveryAddId;
+  const input = $("#mt5-add-account-name-input");
+  const displayName = input?.value.trim();
+  if (!discoveryId) return;
+  try {
+    await submitDiscoveryAsTarget(discoveryId, displayName || undefined);
+    closeMt5Modal("mt5-add-account-modal");
+    state.pendingDiscoveryAddId = null;
+    const discovery = findMt5Discovery(discoveryId);
+    const tradeType = String(discovery?.detected_trade_mode || "UNKNOWN").toUpperCase();
+    showAlert(discoveryAddSuccessMessage(tradeType), "success");
+  } catch (error) {
+    showAlert(error.message);
+  }
+}
+
+function openMt5Modal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) modal.classList.remove("hidden");
+}
+
+function closeMt5Modal(modalId) {
+  const modal = document.getElementById(modalId);
+  if (modal) modal.classList.add("hidden");
+}
+
+function setTargetModalTab(tabName) {
+  document.querySelectorAll("[data-target-tab]").forEach((button) => {
+    button.classList.toggle("active", button.getAttribute("data-target-tab") === tabName);
+  });
+  document.querySelectorAll("[data-target-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.getAttribute("data-target-panel") === tabName);
+  });
+}
+
+function routeCountForTarget(targetId) {
+  return (state.routes || []).filter((route) => Number(route.target_id) === Number(targetId)).length;
+}
+
+function eaDisplayName(target) {
+  const pending = "_discovery_pending_seed.txt";
+  if (!target.ea_name || target.seed_filename === pending) {
+    return "Henüz Eşleştirilmedi";
+  }
+  return target.ea_name;
+}
+
+function magicDisplayStatus(target) {
+  if (target.magic_number == null || target.magic_number === "") return "Henüz girilmedi";
+  return String(target.magic_number);
+}
+
+function fileMatchStatus(target) {
+  if (target.ea_config_match?.status === "OK") return "Tamam";
+  return "Kontrol Gerekli";
+}
+
+function isDiscoveryOffline(discovery) {
+  return (
+    discovery.verification_status === "TERMINAL_OFFLINE"
+    || discovery.terminal_status_label === "Terminal Çevrimdışı"
+  );
+}
+
+function renderMt5PathChips() {
+  const container = $("#mt5-path-chips");
+  if (!container) return;
+  if (!state.mt5TerminalPaths.length) {
+    container.innerHTML = `<p class="muted mt5-path-empty">Terminal yolunu ekleyip açık hesaplarını otomatik bul.</p>`;
+    return;
+  }
+  container.innerHTML = state.mt5TerminalPaths
+    .map(
+      (path, index) => `
+        <span class="mt5-path-chip">
+          <span class="mt5-path-chip-label">[ ${escapeCell(terminalChipLabel(path))} ]</span>
+          <span class="mt5-path-chip-path" title="${escapeCell(path)}">${escapeCell(truncatePath(path))}</span>
+          <button type="button" class="mt5-path-chip-remove" data-remove-path="${index}" aria-label="Yolu kaldır">×</button>
+        </span>`
+    )
+    .join("");
+  container.querySelectorAll("[data-remove-path]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const index = Number(button.getAttribute("data-remove-path"));
+      state.mt5TerminalPaths.splice(index, 1);
+      syncMt5PathsTextarea();
+      renderMt5PathChips();
+    });
+  });
+}
+
+function resolvedAccountType(item) {
+  const detected = item.detected_trade_mode && item.last_verified_at_utc
+    ? item.detected_trade_mode
+    : item.expected_account_type || item.detected_trade_mode;
+  return String(detected || "UNKNOWN").toUpperCase();
+}
+
+function targetStatusBucket(target) {
+  const status = target.card_status || "";
+  if (status.includes("Çevrimdışı")) return "OFFLINE";
+  if (status.includes("Doğrulandı")) return "VERIFIED";
+  return "ATTENTION";
+}
+
+function targetStatusDisplayLabel(target) {
+  const status = target.card_status || "";
+  if (status.includes("Devre Dışı")) return "Devre Dışı";
+  if (status.includes("Çevrimdışı")) return "Terminal Çevrimdışı";
+  if (status.includes("Doğrulandı")) return "Doğrulandı";
+  if (status.includes("EA")) return "EA Eşleşmesi Bekliyor";
+  if (resolvedAccountType(target) === "REAL") return "Gerçek Hesap Uyarısı";
+  return "Kontrol Gerekli";
+}
+
+function terminalInstanceSubLabel(target) {
+  const instanceStatus = target.terminal_instance_status || "";
+  if (instanceStatus === "Doğrulandı" || instanceStatus === "Kullanıcı Tarafından Girildi") {
+    return "Instance doğrulandı";
+  }
+  return "Kontrol gerekli";
+}
+
+function discoveryTerminalLabel(discovery) {
+  const dataPath = discovery.detected_terminal_data_path || "";
+  if (dataPath) {
+    const parts = dataPath.replace(/\//g, "\\").split("\\").filter(Boolean);
+    const hash = parts[parts.length - 1] || "";
+    if (hash.length >= 3) return hash.slice(0, 3).toUpperCase();
+  }
+  return terminalChipLabel(discovery.terminal_exe_path || discovery.source_path || "Terminal");
+}
+
+function discoveryStatusLabel(discovery) {
+  if (isDiscoveryAlreadyAdded(discovery)) return "Zaten Eklendi";
+  if (isDiscoveryOffline(discovery)) return "Terminal Çevrimdışı";
+  if (discovery.can_add_as_target) return "Eklenebilir";
+  if (discovery.blocking_reason) return "Kontrol Gerekli";
+  return discovery.verification_message_safe || "Kontrol Gerekli";
+}
+
+function sortMt5Targets(targets) {
+  const typeRank = { REAL: 0, CONTEST: 1, DEMO: 2, UNKNOWN: 3 };
+  const statusRank = (target) => {
+    const bucket = targetStatusBucket(target);
+    if (bucket === "VERIFIED") return 1;
+    if (bucket === "ATTENTION") return 2;
+    return 3;
+  };
+  return [...targets].sort((left, right) => {
+    const leftType = typeRank[resolvedAccountType(left)] ?? 9;
+    const rightType = typeRank[resolvedAccountType(right)] ?? 9;
+    if (leftType !== rightType) return leftType - rightType;
+    const leftStatus = statusRank(left);
+    const rightStatus = statusRank(right);
+    if (leftStatus !== rightStatus) return leftStatus - rightStatus;
+    return String(left.display_name || left.name || "").localeCompare(
+      String(right.display_name || right.name || ""),
+      "tr"
+    );
+  });
+}
+
+function filterMt5Targets(targets) {
+  const filters = state.mt5AccountFilters;
+  const search = String(filters.search || "").trim().toLowerCase();
+  return targets.filter((target) => {
+    const type = resolvedAccountType(target);
+    if (filters.type !== "ALL" && type !== filters.type) return false;
+    const bucket = targetStatusBucket(target);
+    if (filters.status !== "ALL" && bucket !== filters.status) return false;
+    if (!search) return true;
+    const haystack = [
+      target.display_name,
+      target.name,
+      target.broker_label,
+      target.detected_server,
+      target.terminal_label,
+      target.detected_account_login_masked,
+      target.expected_account_login_masked,
+      target.ea_name,
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(search);
+  });
+}
+
+function mt5CellStack(primary, secondary) {
+  return `
+    <div class="mt5-cell-stack">
+      <strong>${primary}</strong>
+      ${secondary ? `<span class="muted mt5-cell-sub">${secondary}</span>` : ""}
+    </div>
+  `;
+}
+
+function mt5RowMenu(targetId) {
+  return `
+    <button type="button" class="btn btn-small mt5-menu-trigger" data-menu-target="${targetId}" aria-label="İşlemler" aria-haspopup="menu">⋯</button>
+  `;
+}
+
+function closeMt5RowMenu() {
+  const portal = $("#mt5-row-menu-portal");
+  if (portal) {
+    portal.classList.add("hidden");
+    portal.innerHTML = "";
+  }
+  state.mt5RowMenu = { open: false, targetId: null, trigger: null };
+}
+
+function positionMt5RowMenu(trigger) {
+  const portal = $("#mt5-row-menu-portal");
+  const panel = portal?.querySelector(".mt5-menu-panel");
+  if (!portal || !panel || !trigger) return;
+
+  const rect = trigger.getBoundingClientRect();
+  const menuHeight = panel.offsetHeight || 168;
+  const menuWidth = panel.offsetWidth || 184;
+  const gap = 6;
+  const padding = 8;
+  const mobile = window.innerWidth <= 640;
+  const row = trigger.closest(".mt5-account-row");
+  const rowRect = row?.getBoundingClientRect();
+
+  portal.style.width = "";
+  if (mobile && rowRect) {
+    portal.style.top = `${Math.min(rowRect.bottom + gap, window.innerHeight - padding)}px`;
+    portal.style.left = `${Math.max(padding, rowRect.left)}px`;
+    portal.style.width = `${Math.min(rowRect.width, window.innerWidth - padding * 2)}px`;
+    panel.classList.toggle("opens-up", false);
+    return;
+  }
+
+  let top = rect.bottom + gap;
+  let openUp = false;
+  if (top + menuHeight > window.innerHeight - padding) {
+    top = rect.top - menuHeight - gap;
+    openUp = true;
+  }
+  if (top < padding) {
+    top = padding;
+  }
+
+  let left = rect.right - menuWidth;
+  if (left < padding) left = padding;
+  if (left + menuWidth > window.innerWidth - padding) {
+    left = window.innerWidth - menuWidth - padding;
+  }
+
+  portal.style.top = `${top}px`;
+  portal.style.left = `${left}px`;
+  panel.classList.toggle("opens-up", openUp);
+}
+
+async function handleMt5RowMenuAction(action, targetId) {
+  if (action === "details") {
+    openMt5TargetDrawer(targetId);
+    return;
+  }
+  if (action === "settings") {
+    closeMt5TargetDrawer();
+    openTargetSettingsModal(targetId, "general");
+    return;
+  }
+  if (action === "verify") {
+    try {
+      await api(`/api/mt5-targets/${targetId}/verify`, { method: "POST", body: "{}" });
+      await refreshAll();
+      showAlert("Hesap doğrulaması güncellendi.", "success");
+    } catch (error) {
+      showAlert(error.message);
+    }
+    return;
+  }
+  if (action === "disable") {
+    try {
+      await api(`/api/mt5-targets/${targetId}/disable`, { method: "POST", body: "{}" });
+      await refreshAll();
+      showAlert("Hesap devre dışı bırakıldı.", "success");
+    } catch (error) {
+      showAlert(error.message);
+    }
+  }
+}
+
+function openMt5RowMenu(trigger, targetId) {
+  if (state.mt5RowMenu.open && String(state.mt5RowMenu.targetId) === String(targetId)) {
+    closeMt5RowMenu();
+    return;
+  }
+  closeMt5RowMenu();
+  const portal = $("#mt5-row-menu-portal");
+  if (!portal || !trigger) return;
+
+  portal.innerHTML = `
+    <div class="mt5-menu-panel" role="menu">
+      <button type="button" role="menuitem" data-menu-action="details">Ayrıntılar</button>
+      <button type="button" role="menuitem" data-menu-action="verify">Doğrula</button>
+      <button type="button" role="menuitem" data-menu-action="settings">Ayarlar</button>
+      <button type="button" role="menuitem" data-menu-action="disable">Devre Dışı Bırak</button>
+    </div>
+  `;
+  portal.classList.remove("hidden");
+  state.mt5RowMenu = { open: true, targetId, trigger };
+
+  portal.querySelectorAll("[data-menu-action]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      handleMt5RowMenuAction(button.getAttribute("data-menu-action"), targetId);
+      closeMt5RowMenu();
+    });
+  });
+
+  positionMt5RowMenu(trigger);
+}
+
 function renderMt5DiscoveryMessages(scanPayload) {
   const container = $("#mt5-discovery-path-errors");
   if (!container) return;
@@ -638,89 +1233,102 @@ function renderMt5DiscoveryMessages(scanPayload) {
     .join("");
 }
 
-function renderMt5DiscoveryCard(discovery) {
+function renderMt5DiscoveryRow(discovery) {
   const tradeType = discovery.detected_trade_mode || "UNKNOWN";
-  const warnings = (discovery.warnings || [])
-    .map((warning) => `<div class="mt5-warning">${escapeCell(warning)}</div>`)
-    .join("");
-  const blocking = discovery.blocking_reason
-    ? `<div class="mt5-warning">${escapeCell(discovery.blocking_reason)}</div>`
-    : "";
-  const detailsId = `discovery-details-${discovery.id}`;
+  const offline = isDiscoveryOffline(discovery);
+  const alreadyAdded = isDiscoveryAlreadyAdded(discovery);
+  const canAdd = canAddDiscoveryAsTarget(discovery);
+  const realClass = tradeType === "REAL" && !alreadyAdded ? " is-real-warning" : "";
+  const xauClass = discovery.xauusd_available ? "badge-success" : "badge-muted";
+  const statusClass = alreadyAdded
+    ? "badge-muted"
+    : offline
+      ? "badge-muted"
+      : canAdd
+        ? "badge-success"
+        : "badge-warn";
+  const rowStateClass = alreadyAdded
+    ? " is-already-added"
+    : canAdd
+      ? " is-addable"
+      : offline
+        ? " is-offline"
+        : "";
+  const realNote =
+    tradeType === "REAL" && !alreadyAdded
+      ? `<div class="mt5-row-note">Gerçek hesap algılandı. İşlem yetkisi kilitli kalacaktır.</div>`
+      : "";
   return `
-    <article class="mt5-discovery-card">
-      <div class="mt5-target-card-header">
-        <div>
-          <h4 class="mt5-target-title">${escapeCell(discovery.display_label || "MT5 Hesabı")}</h4>
-          <p class="muted">${escapeCell(discovery.verification_message_safe || "—")}</p>
-        </div>
-        <div class="mt5-target-badges">
-          <span class="badge ${accountTypeBadgeClass(tradeType)}">${escapeCell(accountTypeLabel(tradeType))}</span>
-          <span class="badge badge-success">${escapeCell(discovery.terminal_status_label || "Terminal")}</span>
-          <span class="badge badge-locked">İşlem Yetkisi Kilitli</span>
-        </div>
+    <div class="mt5-table-row mt5-discovery-row${realClass}${rowStateClass}" data-discovery-id="${discovery.id}" role="row"${canAdd ? ' tabindex="0"' : ""}>
+      <div class="col-account" role="cell">
+        ${mt5CellStack(
+          escapeCell(discovery.display_label || "MT5 Hesabı"),
+          escapeCell(`${discovery.detected_server || "—"} · ${discovery.detected_account_login_masked || "—"}`)
+        )}
       </div>
-      ${warnings}
-      ${blocking}
-      <div class="mt5-target-grid">
-        <div><span class="muted">Terminal</span><strong>${escapeCell(discovery.terminal_exe_path || "—")}</strong></div>
-        <div><span class="muted">Instance</span><strong>${escapeCell(discovery.detected_terminal_data_path || "—")}</strong></div>
-        <div><span class="muted">Sunucu</span><strong>${escapeCell(discovery.detected_server || "—")}</strong></div>
-        <div><span class="muted">Hesap</span><strong>${escapeCell(discovery.detected_account_login_masked || "—")}</strong></div>
-        <div><span class="muted">Para Birimi</span><strong>${escapeCell(discovery.detected_currency || "—")}</strong></div>
-        <div><span class="muted">Equity</span><strong>${discovery.detected_equity != null ? escapeCell(String(discovery.detected_equity)) : "—"}</strong></div>
-        <div><span class="muted">XAUUSD</span><strong>${escapeCell(discovery.xauusd_status || "—")}</strong></div>
-        <div><span class="muted">FILE_COMMON</span><strong>${escapeCell(discovery.file_common_status || "—")}</strong></div>
+      <div class="col-type" role="cell"><span class="badge ${accountTypeBadgeClass(tradeType)}">${escapeCell(accountTypeLabel(tradeType))}</span></div>
+      <div class="col-terminal" role="cell">
+        ${mt5CellStack(
+          escapeCell(discoveryTerminalLabel(discovery)),
+          escapeCell(offline ? "Terminal kapalı" : discovery.terminal_status_label || "Terminal açık")
+        )}
       </div>
-      <div id="${detailsId}" class="mt5-target-details hidden">
-        <div class="mt5-target-grid">
-          <div><span class="muted">Şirket</span><strong>${escapeCell(discovery.detected_company || "—")}</strong></div>
-          <div><span class="muted">Instance Anahtarı</span><strong>${escapeCell(discovery.terminal_instance_key || "—")}</strong></div>
-          <div><span class="muted">Doğrulama</span><strong>${escapeCell(discovery.verification_status || "—")}</strong></div>
+      <div class="col-server" role="cell">${escapeCell(discovery.detected_server || "—")}</div>
+      <div class="col-equity" role="cell">${discovery.detected_equity != null ? escapeCell(String(discovery.detected_equity)) : "—"}</div>
+      <div class="col-xauusd" role="cell"><span class="badge ${xauClass}">${escapeCell(discovery.xauusd_status || "—")}</span></div>
+      <div class="col-status" role="cell"><span class="badge ${statusClass}">${escapeCell(discoveryStatusLabel(discovery))}</span></div>
+      <div class="col-actions" role="cell">
+        <div class="mt5-row-actions">
+          <button type="button" class="btn btn-small primary" data-add-discovery-target="${discovery.id}" ${canAdd ? "" : "disabled"}>${alreadyAdded ? "Zaten Eklendi" : "Hesap Olarak Ekle"}</button>
+          <button type="button" class="btn btn-small" data-open-discovery-drawer="${discovery.id}">Ayrıntılar</button>
+          <button type="button" class="btn btn-small subtle" data-refresh-discovery="${discovery.id}">Yeniden Tara</button>
         </div>
       </div>
-      <div class="mt5-target-actions">
-        <button type="button" class="btn btn-small primary" data-add-discovery-target="${discovery.id}" ${discovery.can_add_as_target ? "" : "disabled"}>Hedef Olarak Ekle</button>
-        <button type="button" class="btn btn-small" data-toggle-details="${detailsId}">Ayrıntıları Göster</button>
-        <button type="button" class="btn btn-small" data-refresh-discovery="${discovery.id}">Yeniden Tara</button>
-      </div>
-    </article>
+      ${realNote}
+    </div>
   `;
 }
 
 function renderMt5Discoveries() {
   renderMt5DiscoveryMessages(state.mt5Discoveries);
+  renderMt5PathChips();
   const container = $("#mt5-discovery-results");
   if (!container) return;
   const discoveries = state.mt5Discoveries.discoveries || [];
   if (!discoveries.length) {
-    container.innerHTML = `<p class="muted">Henüz tarama sonucu yok. Terminal yollarını girip “Terminalleri Tara” düğmesine bas.</p>`;
+    container.innerHTML = `<p class="muted">Henüz terminal taraması yapılmadı. Terminal yolu ekleyip “Terminalleri Tara” düğmesine bas.</p>`;
     return;
   }
-  container.innerHTML = discoveries.map(renderMt5DiscoveryCard).join("");
+  container.innerHTML = `
+    <div class="mt5-data-table mt5-discovery-table" role="table">
+      <div class="mt5-table-head" role="row">
+        <div role="columnheader">Hesap</div>
+        <div role="columnheader">Tür</div>
+        <div role="columnheader">Terminal</div>
+        <div role="columnheader">Sunucu</div>
+        <div role="columnheader">Equity</div>
+        <div role="columnheader">XAUUSD</div>
+        <div role="columnheader">Durum</div>
+        <div role="columnheader">İşlem</div>
+      </div>
+      <div class="mt5-table-body" role="rowgroup">
+        ${discoveries.map(renderMt5DiscoveryRow).join("")}
+      </div>
+    </div>
+  `;
+  bindMt5DiscoveryTableActions(container);
+}
+
+function bindMt5DiscoveryTableActions(container) {
   container.querySelectorAll("[data-add-discovery-target]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const discoveryId = button.getAttribute("data-add-discovery-target");
-      const discovery = (state.mt5Discoveries.discoveries || []).find(
-        (item) => String(item.id) === String(discoveryId)
-      );
-      const defaultName = discovery?.display_label || "";
-      const displayName = window.prompt("Hedef görünen adı", defaultName);
-      if (displayName === null) return;
-      try {
-        await api(`/api/mt5-terminals/discoveries/${discoveryId}/add-target`, {
-          method: "POST",
-          body: JSON.stringify({ display_name: displayName.trim() || defaultName }),
-        });
-        await refreshAll();
-        showAlert("Hesap hedef olarak eklendi.", "success");
-      } catch (error) {
-        showAlert(error.message);
-      }
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      requestAddDiscoveryAccount(button.getAttribute("data-add-discovery-target"));
     });
   });
   container.querySelectorAll("[data-refresh-discovery]").forEach((button) => {
-    button.addEventListener("click", async () => {
+    button.addEventListener("click", async (event) => {
+      event.stopPropagation();
       const discoveryId = button.getAttribute("data-refresh-discovery");
       try {
         const payload = await api(`/api/mt5-terminals/discoveries/${discoveryId}/refresh`, {
@@ -738,156 +1346,464 @@ function renderMt5Discoveries() {
       }
     });
   });
-  container.querySelectorAll("[data-toggle-details]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const panel = document.getElementById(button.getAttribute("data-toggle-details"));
-      if (panel) panel.classList.toggle("hidden");
+  container.querySelectorAll("[data-open-discovery-drawer]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openMt5DiscoveryDrawer(button.getAttribute("data-open-discovery-drawer"));
+    });
+  });
+  container.querySelectorAll(".mt5-discovery-row.is-addable").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      requestAddDiscoveryAccount(row.getAttribute("data-discovery-id"));
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        requestAddDiscoveryAccount(row.getAttribute("data-discovery-id"));
+      }
     });
   });
 }
 
 function renderMt5Summary() {
   const container = $("#mt5-target-summary");
+  const extraContainer = $("#mt5-target-summary-extra");
+  const extraWrap = $("#mt5-summary-extra");
   if (!container) return;
   const summary = state.mt5Targets.summary || {};
-  const items = [
-    ["Toplam Hedef", summary.total || 0],
-    ["Demo Hesap", summary.demo_accounts || 0],
-    ["Gerçek Hesap", summary.real_accounts || 0],
+  const primary = [
+    ["Toplam Hesap", summary.total || 0],
+    ["Demo", summary.demo_accounts || 0],
+    ["Gerçek", summary.real_accounts || 0],
+    ["Doğrulanmayı Bekleyen", summary.pending_verification || 0],
+    ["Sorunlu Eşleşme", summary.pending_ea_match || 0],
+  ];
+  const secondary = [
     ["Yarışma Hesabı", summary.contest_accounts || 0],
     ["Terminal Çevrimdışı", summary.terminal_offline || 0],
-    ["Doğrulanmayı Bekleyen", summary.pending_verification || 0],
-    ["EA Eşleşmesi Bekleyen", summary.pending_ea_match || 0],
-    ["Terminal Instance Çakışması Olan", summary.terminal_instance_conflicts || 0],
+    ["Terminal Instance Çakışması", summary.terminal_instance_conflicts || 0],
   ];
-  container.innerHTML = items
+  container.innerHTML = primary
     .map(
       ([label, value]) =>
         `<div class="mt5-summary-card"><span class="muted">${escapeCell(label)}</span><strong>${escapeCell(String(value))}</strong></div>`
     )
     .join("");
+  if (extraContainer && extraWrap) {
+    const hasExtra = secondary.some(([, value]) => Number(value) > 0);
+    extraWrap.classList.toggle("hidden", !hasExtra);
+    extraContainer.innerHTML = secondary
+      .map(
+        ([label, value]) =>
+          `<div class="mt5-summary-card"><span class="muted">${escapeCell(label)}</span><strong>${escapeCell(String(value))}</strong></div>`
+      )
+      .join("");
+  }
 }
 
-function renderMt5TargetCard(target) {
-  const detectedType = target.detected_trade_mode && target.last_verified_at_utc
-    ? target.detected_trade_mode
-    : target.expected_account_type;
-  const warnings = (target.warnings || [])
-    .map((warning) => `<div class="mt5-warning">${escapeCell(warning)}</div>`)
-    .join("");
-  const configIssues = (target.ea_config_match?.issues || [])
-    .map((issue) => `<div class="mt5-warning">${escapeCell(issue)}</div>`)
-    .join("");
-  const detailsId = `mt5-details-${target.id}`;
+function targetStatusBadgeClass(target) {
+  const status = target.card_status || "";
+  if (status.includes("Doğrulandı")) return "badge-success";
+  if (status.includes("Çevrimdışı")) return "badge-muted";
+  return "badge-warn";
+}
+
+function renderMt5TargetRow(target) {
+  const accountType = resolvedAccountType(target);
+  const realClass = accountType === "REAL" ? " is-real-warning" : "";
+  const disabledClass = target.is_enabled ? "" : " is-disabled";
+  const statusLabel = targetStatusDisplayLabel(target);
+  const statusClass = targetStatusBadgeClass(target);
+  const xauClass = String(target.xauusd_status || "").includes("Haz") ? "badge-success" : "badge-muted";
+  const eaName = eaDisplayName(target);
+  const magicLine =
+    target.magic_number != null && target.magic_number !== ""
+      ? `Magic ${escapeCell(String(target.magic_number))}`
+      : "Henüz eşleştirilmedi";
+  const subtitle = `${escapeCell(target.broker_label || target.detected_server || "MT5")} · ${escapeCell(target.detected_account_login_masked || target.expected_account_login_masked || "—")}`;
   return `
-    <article class="mt5-target-card ${target.is_enabled ? "" : "is-disabled"}">
-      <div class="mt5-target-card-header">
-        <div>
-          <h4 class="mt5-target-title">${escapeCell(target.display_name || target.name)}</h4>
-          <p class="muted">${escapeCell(target.card_status || "—")}</p>
-        </div>
-        <div class="mt5-target-badges">
-          <span class="badge ${accountTypeBadgeClass(detectedType)}">${escapeCell(accountTypeLabel(detectedType))}</span>
-          <span class="badge badge-locked">İşlem Yetkisi Kilitli</span>
-        </div>
+    <div class="mt5-table-row mt5-account-row${realClass}${disabledClass}" data-target-id="${target.id}" role="row" tabindex="0">
+      <div class="col-account" role="cell">
+        ${mt5CellStack(escapeCell(target.display_name || target.name), subtitle)}
       </div>
-      ${warnings}
-      ${configIssues}
-      <div class="mt5-target-grid">
-        <div><span class="muted">Terminal Adı</span><strong>${escapeCell(target.terminal_label || "—")}</strong></div>
-        <div><span class="muted">Terminal Program Yolu</span><strong>${escapeCell(target.terminal_exe_path || "—")}</strong></div>
-        <div><span class="muted">Terminal Veri Klasörü</span><strong>${escapeCell(target.terminal_data_path || target.detected_terminal_data_path || "—")}</strong></div>
-        <div><span class="muted">Terminal Instance Durumu</span><strong>${escapeCell(target.terminal_instance_status || "—")}</strong></div>
-        <div><span class="muted">Hesap No</span><strong>${escapeCell(target.detected_account_login_masked || target.expected_account_login_masked || "—")}</strong></div>
-        <div><span class="muted">Broker</span><strong>${escapeCell(target.broker_label || "—")}</strong></div>
-        <div><span class="muted">Sunucu</span><strong>${escapeCell(target.detected_server || target.expected_server || "—")}</strong></div>
-        <div><span class="muted">Hesap Türü</span><strong>${escapeCell(target.detected_trade_mode_label || accountTypeLabel(target.expected_account_type))}</strong></div>
-        <div><span class="muted">Para Birimi</span><strong>${escapeCell(target.detected_currency || "—")}</strong></div>
-        <div><span class="muted">Equity</span><strong>${target.detected_equity != null ? escapeCell(String(target.detected_equity)) : "—"}</strong></div>
-        <div><span class="muted">XAUUSD Durumu</span><strong>${escapeCell(target.xauusd_status || "—")}</strong></div>
-        <div><span class="muted">Terminal Bağlantısı</span><strong>${target.terminal_connected ? "Bağlı" : "Bağlı Değil"}</strong></div>
-        <div><span class="muted">Son Doğrulama</span><strong>${escapeCell(formatLocalDateTime(target.last_verified_at_utc))}</strong></div>
+      <div class="col-type" role="cell"><span class="badge ${accountTypeBadgeClass(accountType)}">${escapeCell(accountTypeLabel(accountType))}</span></div>
+      <div class="col-terminal" role="cell">
+        ${mt5CellStack(
+          escapeCell(target.terminal_label || "—"),
+          escapeCell(terminalInstanceSubLabel(target))
+        )}
       </div>
-      <div class="mt5-target-section">
-        <h5>EA Eşleştirmesi</h5>
-        <div class="mt5-target-grid">
-          <div><span class="muted">EA Adı</span><strong>${escapeCell(target.ea_name || "—")}</strong></div>
-          <div><span class="muted">Chart</span><strong>${escapeCell(`${target.chart_symbol || "XAUUSD"} / ${target.chart_timeframe || "M1"}`)}</strong></div>
-          <div><span class="muted">Magic Number</span><strong>${escapeCell(target.magic_number != null ? String(target.magic_number) : "—")}</strong></div>
-          <div><span class="muted">Seed Dosyası</span><strong>${escapeCell(target.seed_filename || "—")}</strong></div>
-          <div><span class="muted">Details Dosyası</span><strong>${escapeCell(target.details_filename || "—")}</strong></div>
-          <div><span class="muted">Yapılandırma Eşleşmesi</span><strong>${target.ea_config_match?.status === "OK" ? "Tamam" : "Kontrol Gerekli"}</strong></div>
-          <div><span class="muted">Canlı EA Doğrulaması</span><strong>${escapeCell(target.ea_live_verification?.status || "Henüz doğrulanmadı")}</strong></div>
+      <div class="col-server" role="cell">${escapeCell(target.detected_server || target.broker_label || "—")}</div>
+      <div class="col-xauusd" role="cell"><span class="badge ${xauClass}">${escapeCell(target.xauusd_status || "Kontrol Bekliyor")}</span></div>
+      <div class="col-ea" role="cell">${mt5CellStack(escapeCell(eaName), magicLine)}</div>
+      <div class="col-routes" role="cell">${escapeCell(String(routeCountForTarget(target.id)))}</div>
+      <div class="col-status" role="cell"><span class="badge ${statusClass}">${escapeCell(statusLabel)}</span></div>
+      <div class="col-permission" role="cell"><span class="badge badge-locked">Kilitli</span></div>
+      <div class="col-actions" role="cell">
+        <div class="mt5-row-actions">
+          <button type="button" class="btn btn-small" data-open-target-drawer="${target.id}">Ayrıntılar</button>
+          ${mt5RowMenu(target.id)}
         </div>
       </div>
-      <div id="${detailsId}" class="mt5-target-details hidden">
-        <div class="mt5-target-grid">
-          <div><span class="muted">FILE_COMMON</span><strong>${escapeCell(target.file_common_root || "—")}</strong></div>
-          <div><span class="muted">Doğrulama Mesajı</span><strong>${escapeCell(target.verification_message_safe || "—")}</strong></div>
-          <div><span class="muted">Şirket</span><strong>${escapeCell(target.detected_company || "—")}</strong></div>
-        </div>
-      </div>
-      <div class="mt5-target-actions">
-        <button type="button" class="btn btn-small primary" data-verify-target="${target.id}">Doğrula</button>
-        <button type="button" class="btn btn-small" data-edit-target="${target.id}">Düzenle</button>
-        <button type="button" class="btn btn-small" data-edit-ea-target="${target.id}">EA Eşleştirmesini Düzenle</button>
-        <button type="button" class="btn btn-small" data-toggle-details="${detailsId}">Güvenli Ayrıntılar</button>
-        <button type="button" class="btn btn-small" data-disable-target="${target.id}">Hedefi Devre Dışı Bırak</button>
-      </div>
-    </article>
+    </div>
   `;
 }
 
-function renderTargets() {
-  renderMt5Discoveries();
-  renderMt5Summary();
+function renderMt5AccountsTable() {
   const container = $("#targets-list");
   if (!container) return;
-  const targets = state.mt5Targets.targets || [];
-  if (!targets.length) {
-    container.innerHTML = `<p class="muted">Henüz MT5 hesabı eklenmedi.</p>`;
+  const allTargets = state.mt5Targets.targets || [];
+  const targets = sortMt5Targets(filterMt5Targets(allTargets));
+  if (!allTargets.length) {
+    container.innerHTML = `<p class="muted">Henüz MT5 hesabı eklemedin. Terminal taraması yap veya alttaki “Manuel Hesap Ekle” bağlantısını kullan.</p>`;
     return;
   }
-  container.innerHTML = targets.map(renderMt5TargetCard).join("");
-  container.querySelectorAll("[data-verify-target]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const targetId = button.getAttribute("data-verify-target");
-      try {
-        await api(`/api/mt5-targets/${targetId}/verify`, { method: "POST", body: "{}" });
-        await refreshAll();
-        showAlert("Hesap doğrulaması güncellendi.", "success");
-      } catch (error) {
-        showAlert(error.message);
+  if (!targets.length) {
+    container.innerHTML = `<p class="muted">Filtreye uyan hesap bulunamadı. Arama veya filtreleri değiştir.</p>`;
+    return;
+  }
+  container.innerHTML = `
+    <div class="mt5-data-table mt5-accounts-table" role="table">
+      <div class="mt5-table-head" role="row">
+        <div role="columnheader">Hesap Adı</div>
+        <div role="columnheader">Tür</div>
+        <div role="columnheader">Terminal</div>
+        <div role="columnheader">Sunucu</div>
+        <div role="columnheader">XAUUSD</div>
+        <div role="columnheader">EA</div>
+        <div role="columnheader">Route</div>
+        <div role="columnheader">Durum</div>
+        <div role="columnheader">İşlem Yetkisi</div>
+        <div role="columnheader">İşlem</div>
+      </div>
+      <div class="mt5-table-body" role="rowgroup">
+        ${targets.map(renderMt5TargetRow).join("")}
+      </div>
+    </div>
+  `;
+  bindMt5AccountsTableActions(container);
+}
+
+function bindMt5AccountsTableActions(container) {
+  container.querySelectorAll("[data-open-target-drawer]").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openMt5TargetDrawer(button.getAttribute("data-open-target-drawer"));
+    });
+  });
+  container.querySelectorAll(".mt5-account-row").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("button")) return;
+      openMt5TargetDrawer(row.getAttribute("data-target-id"));
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openMt5TargetDrawer(row.getAttribute("data-target-id"));
       }
     });
   });
-  container.querySelectorAll("[data-disable-target]").forEach((button) => {
-    button.addEventListener("click", async () => {
-      const targetId = button.getAttribute("data-disable-target");
-      try {
-        await api(`/api/mt5-targets/${targetId}/disable`, { method: "POST", body: "{}" });
-        await refreshAll();
-        showAlert("Hedef devre dışı bırakıldı.", "success");
-      } catch (error) {
-        showAlert(error.message);
-      }
+  container.querySelectorAll(".mt5-menu-trigger").forEach((button) => {
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openMt5RowMenu(button, button.getAttribute("data-menu-target"));
     });
-  });
-  container.querySelectorAll("[data-toggle-details]").forEach((button) => {
-    button.addEventListener("click", () => {
-      const panel = document.getElementById(button.getAttribute("data-toggle-details"));
-      if (panel) panel.classList.toggle("hidden");
-    });
-  });
-  container.querySelectorAll("[data-edit-target]").forEach((button) => {
-    button.addEventListener("click", () => populateTargetEditForm(button.getAttribute("data-edit-target"), false));
-  });
-  container.querySelectorAll("[data-edit-ea-target]").forEach((button) => {
-    button.addEventListener("click", () => populateTargetEditForm(button.getAttribute("data-edit-ea-target"), true));
   });
 }
 
-function populateTargetEditForm(targetId, eaOnly) {
+function renderMt5DetailGrid(items) {
+  return `
+    <dl class="mt5-detail-grid">
+      ${items
+        .map(
+          ([label, value]) =>
+            `<div><dt>${escapeCell(label)}</dt><dd>${value}</dd></div>`
+        )
+        .join("")}
+    </dl>
+  `;
+}
+
+function renderMt5DrawerRoutes(targetId) {
+  const routes = routesForTarget(targetId);
+  if (!routes.length) {
+    return `<p class="muted">Bu hesaba bağlı sinyal yönlendirmesi yok.</p>`;
+  }
+  return `
+    <ul class="mt5-drawer-route-list">
+      ${routes
+        .map(
+          (route) =>
+            `<li><strong>${escapeCell(route.channel_title || "Kanal")}</strong><span class="muted">→ ${escapeCell(route.target_name || route.name || "Hedef")}</span></li>`
+        )
+        .join("")}
+    </ul>
+  `;
+}
+
+function setMt5DrawerTab(tabName) {
+  state.mt5Drawer.tab = tabName;
+  document.querySelectorAll("[data-drawer-tab]").forEach((button) => {
+    button.classList.toggle("active", button.getAttribute("data-drawer-tab") === tabName);
+  });
+  document.querySelectorAll("[data-drawer-panel]").forEach((panel) => {
+    panel.classList.toggle("active", panel.getAttribute("data-drawer-panel") === tabName);
+  });
+}
+
+function findMt5Target(targetId) {
+  return (state.mt5Targets.targets || []).find((item) => String(item.id) === String(targetId));
+}
+
+function findMt5Discovery(discoveryId) {
+  return (state.mt5Discoveries.discoveries || []).find((item) => String(item.id) === String(discoveryId));
+}
+
+function routesForTarget(targetId) {
+  return (state.routes || []).filter((route) => Number(route.target_id) === Number(targetId));
+}
+
+function openMt5TargetDrawer(targetId, tab = "overview") {
+  if (!findMt5Target(targetId)) return;
+  state.mt5Drawer = { open: true, mode: "target", targetId, discoveryId: null, tab };
+  renderMt5TargetDrawer();
+  const overlay = $("#mt5-target-drawer-overlay");
+  overlay?.classList.remove("hidden");
+  overlay?.setAttribute("aria-hidden", "false");
+  document.body.classList.add("mt5-drawer-open");
+  $("#mt5-target-drawer")?.focus();
+}
+
+function openMt5DiscoveryDrawer(discoveryId) {
+  if (!findMt5Discovery(discoveryId)) return;
+  state.mt5Drawer = { open: true, mode: "discovery", targetId: null, discoveryId, tab: "overview" };
+  renderMt5TargetDrawer();
+  const overlay = $("#mt5-target-drawer-overlay");
+  overlay?.classList.remove("hidden");
+  overlay?.setAttribute("aria-hidden", "false");
+  document.body.classList.add("mt5-drawer-open");
+  $("#mt5-target-drawer")?.focus();
+}
+
+function closeMt5TargetDrawer() {
+  state.mt5Drawer.open = false;
+  const overlay = $("#mt5-target-drawer-overlay");
+  overlay?.classList.add("hidden");
+  overlay?.setAttribute("aria-hidden", "true");
+  document.body.classList.remove("mt5-drawer-open");
+}
+
+function renderMt5TargetDrawer() {
+  const drawer = $("#mt5-target-drawer");
+  if (!drawer || !state.mt5Drawer.open) return;
+
+  if (state.mt5Drawer.mode === "discovery") {
+    const discovery = findMt5Discovery(state.mt5Drawer.discoveryId);
+    if (!discovery) {
+      closeMt5TargetDrawer();
+      return;
+    }
+    const tradeType = discovery.detected_trade_mode || "UNKNOWN";
+    drawer.innerHTML = `
+      <div class="mt5-drawer-header">
+        <div>
+          <h4 id="mt5-drawer-title">${escapeCell(discovery.display_label || "MT5 Hesabı")}</h4>
+          <p class="muted">${escapeCell(`${discovery.detected_server || "—"} · ${discovery.detected_account_login_masked || "—"}`)}</p>
+          <div class="mt5-drawer-badges">
+            <span class="badge ${accountTypeBadgeClass(tradeType)}">${escapeCell(accountTypeLabel(tradeType))}</span>
+            <span class="badge badge-locked">İşlem Yetkisi Kilitli</span>
+          </div>
+        </div>
+        <button type="button" class="icon-btn" data-close-drawer aria-label="Kapat">×</button>
+      </div>
+      <div class="mt5-drawer-body">
+        ${renderMt5DetailGrid([
+          ["Terminal etiketi", escapeCell(discoveryTerminalLabel(discovery))],
+          ["Terminal program yolu", escapeCell(discovery.terminal_exe_path || "—")],
+          ["Terminal instance klasörü", escapeCell(discovery.detected_terminal_data_path || "—")],
+          ["Hesap türü", escapeCell(accountTypeLabel(tradeType))],
+          ["Sunucu", escapeCell(discovery.detected_server || "—")],
+          ["Para birimi", escapeCell(discovery.detected_currency || "—")],
+          ["Equity", discovery.detected_equity != null ? escapeCell(String(discovery.detected_equity)) : "—"],
+          ["XAUUSD durumu", escapeCell(discovery.xauusd_status || "—")],
+          ["Son doğrulama", escapeCell(formatLocalDateTime(discovery.last_verified_at_utc))],
+          ["Durum", escapeCell(discoveryStatusLabel(discovery))],
+          ["Instance anahtarı", escapeCell(discovery.terminal_instance_key || "—")],
+          ["Doğrulama kodu", escapeCell(discovery.verification_status || "—")],
+        ])}
+        ${(discovery.warnings || []).map((warning) => `<div class="mt5-warning">${escapeCell(warning)}</div>`).join("")}
+        ${discovery.blocking_reason ? `<div class="mt5-warning">${escapeCell(discovery.blocking_reason)}</div>` : ""}
+      </div>
+      <div class="mt5-drawer-footer">
+        <button type="button" class="btn primary" data-add-discovery-target="${discovery.id}" ${canAddDiscoveryAsTarget(discovery) ? "" : "disabled"}>${isDiscoveryAlreadyAdded(discovery) ? "Zaten Eklendi" : "Hesap Olarak Ekle"}</button>
+        <button type="button" class="btn" data-refresh-discovery="${discovery.id}">Yeniden Tara</button>
+      </div>
+    `;
+    drawer.querySelector("[data-close-drawer]")?.addEventListener("click", closeMt5TargetDrawer);
+    drawer.querySelector("[data-add-discovery-target]")?.addEventListener("click", () => {
+      requestAddDiscoveryAccount(discovery.id);
+    });
+    drawer.querySelector("[data-refresh-discovery]")?.addEventListener("click", async () => {
+      try {
+        const payload = await api(`/api/mt5-terminals/discoveries/${discovery.id}/refresh`, {
+          method: "POST",
+          body: "{}",
+        });
+        const items = state.mt5Discoveries.discoveries || [];
+        state.mt5Discoveries.discoveries = items.map((item) =>
+          String(item.id) === String(discovery.id) ? payload.discovery : item
+        );
+        renderMt5Discoveries();
+        renderMt5TargetDrawer();
+        showAlert("Tarama sonucu güncellendi.", "success");
+      } catch (error) {
+        showAlert(error.message);
+      }
+    });
+    return;
+  }
+
+  const target = findMt5Target(state.mt5Drawer.targetId);
+  if (!target) {
+    closeMt5TargetDrawer();
+    return;
+  }
+  const accountType = resolvedAccountType(target);
+  const subtitle = `${target.broker_label || target.detected_server || "MT5"} · ${target.detected_account_login_masked || target.expected_account_login_masked || "—"}`;
+  const warnings = (target.warnings || [])
+    .map((warning) => `<div class="mt5-warning">${escapeCell(warning)}</div>`)
+    .join("");
+  const conflictIssues = (target.ea_config_match?.issues || [])
+    .map((issue) => `<div class="mt5-warning">${escapeCell(issue)}</div>`)
+    .join("");
+  drawer.innerHTML = `
+    <div class="mt5-drawer-header">
+      <div>
+        <h4 id="mt5-drawer-title">${escapeCell(target.display_name || target.name)}</h4>
+        <p class="muted">${escapeCell(subtitle)}</p>
+        <div class="mt5-drawer-badges">
+          <span class="badge ${accountTypeBadgeClass(accountType)}">${escapeCell(accountTypeLabel(accountType))}</span>
+          <span class="badge badge-locked">İşlem Yetkisi Kilitli</span>
+        </div>
+      </div>
+      <button type="button" class="icon-btn" data-close-drawer aria-label="Kapat">×</button>
+    </div>
+    <div class="mt5-drawer-tabs" role="tablist">
+      <button type="button" class="mt5-tab ${state.mt5Drawer.tab === "overview" ? "active" : ""}" data-drawer-tab="overview" role="tab">Genel Bakış</button>
+      <button type="button" class="mt5-tab ${state.mt5Drawer.tab === "ea" ? "active" : ""}" data-drawer-tab="ea" role="tab">EA Eşleştirmesi</button>
+      <button type="button" class="mt5-tab ${state.mt5Drawer.tab === "routes" ? "active" : ""}" data-drawer-tab="routes" role="tab">Sinyal Yönlendirmeleri</button>
+      <button type="button" class="mt5-tab ${state.mt5Drawer.tab === "technical" ? "active" : ""}" data-drawer-tab="technical" role="tab">Teknik Ayrıntılar</button>
+    </div>
+    <div class="mt5-drawer-body">
+      <div class="mt5-drawer-panel ${state.mt5Drawer.tab === "overview" ? "active" : ""}" data-drawer-panel="overview">
+        ${renderMt5DetailGrid([
+          ["Terminal etiketi", escapeCell(target.terminal_label || "—")],
+          ["Terminal program yolu", escapeCell(target.terminal_exe_path || "—")],
+          ["Terminal instance klasörü", escapeCell(target.terminal_data_path || target.detected_terminal_data_path || "—")],
+          ["Hesap türü", escapeCell(accountTypeLabel(accountType))],
+          ["Sunucu", escapeCell(target.detected_server || target.broker_label || "—")],
+          ["Para birimi", escapeCell(target.detected_currency || "—")],
+          ["Equity", target.detected_equity != null ? escapeCell(String(target.detected_equity)) : "—"],
+          ["XAUUSD durumu", escapeCell(target.xauusd_status || "—")],
+          ["Son doğrulama", escapeCell(formatLocalDateTime(target.last_verified_at_utc))],
+          ["Instance durumu", escapeCell(target.terminal_instance_status || "—")],
+          ["Kart durumu", escapeCell(target.card_status || "—")],
+        ])}
+        ${warnings}
+      </div>
+      <div class="mt5-drawer-panel ${state.mt5Drawer.tab === "ea" ? "active" : ""}" data-drawer-panel="ea">
+        ${renderMt5DetailGrid([
+          ["EA adı", escapeCell(eaDisplayName(target))],
+          ["Chart sembolü", escapeCell(target.chart_symbol || "—")],
+          ["Zaman dilimi", escapeCell(target.chart_timeframe || "—")],
+          ["Magic number", escapeCell(magicDisplayStatus(target))],
+          ["Seed dosyası", escapeCell(target.seed_filename || "—")],
+          ["Details dosyası", escapeCell(target.details_filename || "—")],
+          ["Dosya eşleşmesi", escapeCell(fileMatchStatus(target))],
+          ["EA doğrulama durumu", escapeCell(target.ea_live_verification?.status || "Henüz doğrulanmadı")],
+        ])}
+        ${conflictIssues}
+      </div>
+      <div class="mt5-drawer-panel ${state.mt5Drawer.tab === "routes" ? "active" : ""}" data-drawer-panel="routes">
+        ${renderMt5DrawerRoutes(target.id)}
+      </div>
+      <div class="mt5-drawer-panel ${state.mt5Drawer.tab === "technical" ? "active" : ""}" data-drawer-panel="technical">
+        ${renderMt5DetailGrid([
+          ["Terminal data path", escapeCell(target.detected_terminal_data_path || target.terminal_data_path || "—")],
+          ["Instance key", escapeCell(target.terminal_instance_key || "—")],
+          ["Verification status", escapeCell(target.verification_status || "—")],
+          ["Doğrulama mesajı", escapeCell(target.verification_message_safe || "—")],
+          ["FILE_COMMON", escapeCell(target.file_common_root || "—")],
+          ["Terminal bağlı", target.terminal_connected ? "Evet" : "Hayır"],
+        ])}
+        ${conflictIssues}
+      </div>
+    </div>
+    <div class="mt5-drawer-footer">
+      <button type="button" class="btn primary" data-drawer-verify="${target.id}">Doğrula</button>
+      <button type="button" class="btn" data-drawer-edit="${target.id}">Ayarları Düzenle</button>
+      <button type="button" class="btn danger" data-drawer-disable="${target.id}">Hedefi Devre Dışı Bırak</button>
+    </div>
+  `;
+  drawer.querySelector("[data-close-drawer]")?.addEventListener("click", closeMt5TargetDrawer);
+  drawer.querySelectorAll("[data-drawer-tab]").forEach((button) => {
+    button.addEventListener("click", () => setMt5DrawerTab(button.getAttribute("data-drawer-tab")));
+  });
+  drawer.querySelector(`[data-drawer-verify="${target.id}"]`)?.addEventListener("click", async () => {
+    try {
+      await api(`/api/mt5-targets/${target.id}/verify`, { method: "POST", body: "{}" });
+      await refreshAll();
+      renderMt5TargetDrawer();
+      showAlert("Hesap doğrulaması güncellendi.", "success");
+    } catch (error) {
+      showAlert(error.message);
+    }
+  });
+  drawer.querySelector(`[data-drawer-edit="${target.id}"]`)?.addEventListener("click", () => {
+    closeMt5TargetDrawer();
+    openTargetSettingsModal(target.id, "ea");
+  });
+  drawer.querySelector(`[data-drawer-disable="${target.id}"]`)?.addEventListener("click", async () => {
+    try {
+      await api(`/api/mt5-targets/${target.id}/disable`, { method: "POST", body: "{}" });
+      closeMt5TargetDrawer();
+      await refreshAll();
+      showAlert("Hesap devre dışı bırakıldı.", "success");
+    } catch (error) {
+      showAlert(error.message);
+    }
+  });
+}
+
+function renderTargets() {
+  renderMt5ServerHint();
+  renderMt5Summary();
+  renderMt5QuickPaths();
+  renderMt5Discoveries();
+  renderMt5AccountsTable();
+  if (state.mt5Drawer.open) {
+    renderMt5TargetDrawer();
+  }
+}
+
+function resetTargetFormDefaults() {
+  const form = $("#target-form");
+  if (!form) return;
+  form.reset();
+  delete form.dataset.editTargetId;
+  delete form.dataset.createMode;
+  form.querySelector('[name="seed_filename"]').value = "basket_recovery_fasttrack_seed.txt";
+  form.querySelector('[name="details_filename"]').value = "basket_recovery_fasttrack_details.txt";
+  form.querySelector('[name="ea_name"]').value = "Basket Recovery EA";
+  form.querySelector('[name="chart_symbol"]').value = "XAUUSD";
+  form.querySelector('[name="chart_timeframe"]').value = "M1";
+  const saveBtn = $("#target-save-btn");
+  if (saveBtn) saveBtn.textContent = "Kaydet";
+  setTargetModalTab("general");
+}
+
+function openTargetSettingsModal(targetId, initialTab = "general") {
   const target = (state.mt5Targets.targets || []).find((item) => String(item.id) === String(targetId));
   const form = $("#target-form");
   if (!target || !form) return;
@@ -901,16 +1817,29 @@ function populateTargetEditForm(targetId, eaOnly) {
   form.querySelector('[name="expected_account_login"]').value = "";
   form.querySelector('[name="expected_account_type"]').value = target.expected_account_type || "UNKNOWN";
   form.querySelector('[name="file_common_root"]').value = target.file_common_root || "";
-  form.querySelector('[name="seed_filename"]').value = target.seed_filename || "";
-  form.querySelector('[name="details_filename"]').value = target.details_filename || "";
+  form.querySelector('[name="seed_filename"]').value = target.seed_filename || "basket_recovery_fasttrack_seed.txt";
+  form.querySelector('[name="details_filename"]').value = target.details_filename || "basket_recovery_fasttrack_details.txt";
   form.querySelector('[name="ea_name"]').value = target.ea_name || "Basket Recovery EA";
   form.querySelector('[name="chart_symbol"]').value = target.chart_symbol || "XAUUSD";
   form.querySelector('[name="chart_timeframe"]').value = target.chart_timeframe || "M1";
   form.querySelector('[name="magic_number"]').value = target.magic_number ?? "";
   form.dataset.editTargetId = targetId;
+  delete form.dataset.createMode;
   const saveBtn = $("#target-save-btn");
-  if (saveBtn) saveBtn.textContent = eaOnly ? "EA Eşleştirmesini Kaydet" : "Değişiklikleri Kaydet";
-  form.scrollIntoView({ behavior: "smooth", block: "start" });
+  if (saveBtn) saveBtn.textContent = "Değişiklikleri Kaydet";
+  $("#mt5-target-modal-title").textContent = "Hesap Ayarları";
+  setTargetModalTab(initialTab);
+  openMt5Modal("mt5-target-modal");
+}
+
+function openManualTargetModal() {
+  resetTargetFormDefaults();
+  const form = $("#target-form");
+  if (form) form.dataset.createMode = "manual";
+  $("#mt5-target-modal-title").textContent = "Manuel Hesap Ekle";
+  const saveBtn = $("#target-save-btn");
+  if (saveBtn) saveBtn.textContent = "Hesabı Kaydet";
+  openMt5Modal("mt5-target-modal");
 }
 
 function formatLocalDateTime(isoUtc) {
@@ -1585,7 +2514,11 @@ async function apiOptional(path, options = {}, fallback = null) {
 }
 
 function isBackendFeatureReady(health) {
-  return Boolean(health?.features?.listener_worker && health?.features?.mt5_targets);
+  return Boolean(
+    health?.features?.listener_worker
+    && health?.features?.mt5_targets
+    && health?.features?.mt5_terminal_discovery
+  );
 }
 
 async function refreshAll() {
@@ -1593,6 +2526,7 @@ async function refreshAll() {
   hideAlert();
   try {
     const health = await apiOptional("/api/health", {}, null);
+    state.dashboardHealth = health;
     const [
       overview,
       telegramStatus,
@@ -1638,8 +2572,11 @@ async function refreshAll() {
     renderAudit();
     renderSafetyMatrix();
     if (health && !isBackendFeatureReady(health)) {
+      const missingDiscovery = !health.features?.mt5_terminal_discovery;
       showAlert(
-        "Dashboard sunucusu güncel değil (eski sürüm çalışıyor). Terminalde sunucuyu durdurup yeniden başlatın, ardından sayfayı Ctrl+Shift+R ile yenileyin.",
+        missingDiscovery
+          ? "Dashboard sunucusu güncel değil — terminal tarama çalışmayabilir. Sunucuyu yeniden başlatıp sayfayı Ctrl+Shift+R ile yenile."
+          : "Dashboard sunucusu güncel değil (eski sürüm çalışıyor). Terminalde sunucuyu durdurup yeniden başlatın, ardından sayfayı Ctrl+Shift+R ile yenileyin.",
         "error"
       );
     }
@@ -1874,34 +2811,107 @@ function bindEvents() {
   });
 
   const discoveryPaths = $("#mt5-discovery-paths");
-  if (discoveryPaths) {
-    $("#mt5-discovery-scan-btn")?.addEventListener("click", async () => {
-      hideAlert();
-      try {
-        const payload = await api("/api/mt5-terminals/discover", {
-          method: "POST",
-          body: JSON.stringify({ paths_text: discoveryPaths.value }),
-        });
-        state.mt5Discoveries = payload;
-        renderMt5Discoveries();
-        showAlert("Terminal taraması tamamlandı.", "success");
-      } catch (error) {
-        showAlert(error.message);
-      }
+  $("#mt5-discovery-add-path-btn")?.addEventListener("click", () => {
+    const input = $("#mt5-path-modal-input");
+    if (input) input.value = "";
+    openMt5Modal("mt5-path-modal");
+  });
+  $("#mt5-path-modal-add-btn")?.addEventListener("click", () => {
+    const input = $("#mt5-path-modal-input");
+    if (addMt5TerminalPath(input?.value)) {
+      closeMt5Modal("mt5-path-modal");
+      notifyMt5PathAdded(true);
+    } else if (input?.value.trim()) {
+      notifyMt5PathAdded(false);
+    }
+  });
+  $("#mt5-path-modal-input")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      $("#mt5-path-modal-add-btn")?.click();
+    }
+  });
+  $("#mt5-discovery-scan-btn")?.addEventListener("click", async () => {
+    await runMt5TerminalDiscovery({ busyButton: $("#mt5-discovery-scan-btn") });
+  });
+  $("#mt5-add-account-confirm-btn")?.addEventListener("click", confirmAddDiscoveryAccount);
+  $("#mt5-real-account-confirm-btn")?.addEventListener("click", confirmRealAccountAdd);
+  $("#mt5-add-account-name-input")?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      confirmAddDiscoveryAccount();
+    }
+  });
+  $("#mt5-manual-add-link")?.addEventListener("click", openManualTargetModal);
+  document.querySelectorAll("[data-mt5-type-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.mt5AccountFilters.type = button.getAttribute("data-mt5-type-filter");
+      document.querySelectorAll("[data-mt5-type-filter]").forEach((chip) => {
+        chip.classList.toggle("active", chip === button);
+      });
+      renderMt5AccountsTable();
     });
-    $("#mt5-discovery-add-line-btn")?.addEventListener("click", () => {
-      const next = window.prompt("Terminal program yolu veya klasörü");
-      if (!next) return;
-      discoveryPaths.value = discoveryPaths.value
-        ? `${discoveryPaths.value.replace(/\s+$/, "")}\n${next.trim()}`
-        : next.trim();
+  });
+  document.querySelectorAll("[data-mt5-status-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.mt5AccountFilters.status = button.getAttribute("data-mt5-status-filter");
+      document.querySelectorAll("[data-mt5-status-filter]").forEach((chip) => {
+        chip.classList.toggle("active", chip === button);
+      });
+      renderMt5AccountsTable();
     });
-    $("#mt5-discovery-clear-btn")?.addEventListener("click", () => {
-      discoveryPaths.value = "";
-      state.mt5Discoveries = { discoveries: [], path_results: [], duplicate_paths: [], scan_id: null };
-      renderMt5Discoveries();
+  });
+  $("#mt5-accounts-search")?.addEventListener("input", (event) => {
+    state.mt5AccountFilters.search = event.target.value;
+    renderMt5AccountsTable();
+  });
+  $("#mt5-target-drawer-overlay")?.addEventListener("click", (event) => {
+    if (event.target.id === "mt5-target-drawer-overlay") {
+      closeMt5TargetDrawer();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (state.mt5Drawer.open) closeMt5TargetDrawer();
+    if (state.mt5RowMenu.open) closeMt5RowMenu();
+  });
+  document.addEventListener("click", (event) => {
+    if (
+      !event.target.closest(".mt5-menu-trigger")
+      && !event.target.closest("#mt5-row-menu-portal")
+    ) {
+      closeMt5RowMenu();
+    }
+  });
+  window.addEventListener("scroll", () => {
+    if (state.mt5RowMenu.open && state.mt5RowMenu.trigger) {
+      positionMt5RowMenu(state.mt5RowMenu.trigger);
+    }
+  }, true);
+  window.addEventListener("resize", () => {
+    if (state.mt5RowMenu.open && state.mt5RowMenu.trigger) {
+      positionMt5RowMenu(state.mt5RowMenu.trigger);
+    }
+  });
+  document.querySelectorAll("[data-close-modal]").forEach((button) => {
+    button.addEventListener("click", () => closeMt5Modal(button.getAttribute("data-close-modal")));
+  });
+  document.querySelectorAll("[data-target-tab]").forEach((button) => {
+    button.addEventListener("click", () => setTargetModalTab(button.getAttribute("data-target-tab")));
+  });
+  document.querySelectorAll(".mt5-modal-overlay").forEach((overlay) => {
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) overlay.classList.add("hidden");
     });
+  });
+  if (discoveryPaths && !state.mt5TerminalPaths.length && discoveryPaths.value.trim()) {
+    state.mt5TerminalPaths = discoveryPaths.value
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
   }
+  syncMt5PathsTextarea();
+  renderMt5PathChips();
 
   $("#target-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1915,14 +2925,13 @@ function bindEvents() {
       payload.magic_number = Number(payload.magic_number);
     }
     const editTargetId = form.dataset.editTargetId;
+    const createMode = form.dataset.createMode;
     try {
       if (editTargetId) {
         await api(`/api/mt5-targets/${editTargetId}`, {
           method: "PATCH",
           body: JSON.stringify(payload),
         });
-        delete form.dataset.editTargetId;
-        $("#target-save-btn").textContent = "Kaydet ve Doğrula";
       } else {
         const created = await api("/api/mt5-targets", { method: "POST", body: JSON.stringify(payload) });
         if (created.target?.id && payload.terminal_exe_path) {
@@ -1933,14 +2942,13 @@ function bindEvents() {
           }
         }
       }
-      form.reset();
-      form.querySelector('[name="seed_filename"]').value = "basket_recovery_fasttrack_seed.txt";
-      form.querySelector('[name="details_filename"]').value = "basket_recovery_fasttrack_details.txt";
-      form.querySelector('[name="ea_name"]').value = "Basket Recovery EA";
-      form.querySelector('[name="chart_symbol"]').value = "XAUUSD";
-      form.querySelector('[name="chart_timeframe"]').value = "M1";
+      closeMt5Modal("mt5-target-modal");
+      resetTargetFormDefaults();
       await refreshAll();
-      showAlert(editTargetId ? "MT5 hesabı güncellendi." : "MT5 hesabı eklendi.", "success");
+      showAlert(
+        editTargetId ? "Hesap ayarları güncellendi." : "Hesap eklendi.",
+        "success"
+      );
     } catch (error) {
       showAlert(error.message);
     }

@@ -944,6 +944,724 @@ details.tech-details summary { cursor: pointer; color: var(--muted); }
   color: var(--text);
 }
 
+.mt5-page {
+  max-width: none;
+  width: 100%;
+}
+
+.mt5-page-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 18px;
+}
+
+.mt5-page-lead {
+  max-width: 52rem;
+  margin-top: 6px;
+}
+
+.mt5-page-safety {
+  flex-shrink: 0;
+}
+
+.mt5-summary-compact {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.mt5-summary-compact.extra {
+  margin-top: 10px;
+}
+
+.mt5-summary-extra {
+  margin-bottom: 16px;
+}
+
+.mt5-summary-extra summary {
+  cursor: pointer;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
+.mt5-summary-extra.hidden {
+  display: none;
+}
+
+.mt5-primary-card {
+  margin-bottom: 24px;
+  padding: 18px 20px;
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  background: rgba(92, 176, 255, 0.05);
+}
+
+.mt5-primary-card h4 {
+  margin: 0 0 6px;
+}
+
+.mt5-steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  margin: 0 0 16px;
+  padding: 0;
+  list-style: none;
+}
+
+.mt5-steps li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.mt5-steps li span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 999px;
+  background: rgba(92, 176, 255, 0.15);
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.mt5-server-hint {
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 196, 92, 0.35);
+  background: rgba(255, 196, 92, 0.08);
+  line-height: 1.5;
+}
+
+.mt5-server-hint code {
+  display: block;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+.mt5-quick-paths {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mt5-quick-path-item {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 1px solid rgba(92, 176, 255, 0.25);
+  background: rgba(92, 176, 255, 0.08);
+}
+
+.mt5-quick-label {
+  font-size: 0.88rem;
+}
+
+.mt5-quick-path-btn {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  padding: 6px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.88rem;
+}
+
+.mt5-quick-path-btn:hover {
+  background: rgba(92, 176, 255, 0.16);
+}
+
+.mt5-quick-scan-btn {
+  border: none;
+  border-left: 1px solid rgba(92, 176, 255, 0.25);
+  background: rgba(92, 176, 255, 0.12);
+  color: var(--accent);
+  padding: 0 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.mt5-quick-scan-btn:hover {
+  background: rgba(92, 176, 255, 0.22);
+}
+
+.mt5-scan-hint {
+  margin: 10px 0 0;
+  font-size: 0.9rem;
+}
+
+.mt5-primary-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.mt5-path-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mt5-path-empty {
+  margin: 0;
+}
+
+.mt5-path-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.03);
+  max-width: 100%;
+}
+
+.mt5-path-chip-label {
+  color: var(--accent);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.mt5-path-chip-path {
+  font-size: 0.88rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt5-path-chip-remove {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 2px;
+}
+
+.mt5-section {
+  margin-bottom: 28px;
+}
+
+.mt5-section-title {
+  margin: 0 0 12px;
+}
+
+.mt5-accounts-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.mt5-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mt5-filter-chip {
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font: inherit;
+  font-size: 0.84rem;
+  cursor: pointer;
+}
+
+.mt5-filter-chip.active {
+  color: var(--text);
+  border-color: rgba(92, 176, 255, 0.4);
+  background: rgba(92, 176, 255, 0.12);
+}
+
+.mt5-search-field {
+  flex: 1 1 220px;
+  min-width: 180px;
+}
+
+.mt5-search-field input {
+  width: 100%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font: inherit;
+}
+
+.mt5-table-wrap {
+  width: 100%;
+}
+
+.mt5-data-table {
+  width: 100%;
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.mt5-table-head,
+.mt5-table-row {
+  display: grid;
+  align-items: center;
+  gap: 8px 10px;
+  padding: 10px 12px;
+}
+
+.mt5-accounts-table .mt5-table-head,
+.mt5-accounts-table .mt5-table-row {
+  grid-template-columns:
+    minmax(130px, 1.35fr)
+    72px
+    minmax(88px, 0.85fr)
+    minmax(96px, 0.95fr)
+    78px
+    minmax(110px, 1fr)
+    52px
+    minmax(96px, 0.9fr)
+    88px
+    minmax(148px, 1.05fr);
+}
+
+.mt5-discovery-table .mt5-table-head,
+.mt5-discovery-table .mt5-table-row {
+  grid-template-columns:
+    minmax(130px, 1.4fr)
+    72px
+    minmax(88px, 0.85fr)
+    minmax(96px, 0.95fr)
+    72px
+    78px
+    minmax(96px, 0.9fr)
+    minmax(170px, 1.15fr);
+}
+
+.mt5-table-head {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--panel-border);
+  background: rgba(0, 0, 0, 0.18);
+}
+
+.mt5-table-row {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background 0.15s ease;
+}
+
+.mt5-table-row:last-child {
+  border-bottom: none;
+}
+
+.mt5-table-row.is-addable {
+  cursor: pointer;
+}
+
+.mt5-discovery-row.is-addable:hover,
+.mt5-discovery-row.is-addable:focus-visible {
+  background: rgba(92, 176, 255, 0.12);
+  outline: none;
+}
+
+.mt5-account-row {
+  cursor: pointer;
+}
+
+.mt5-account-row:hover,
+.mt5-account-row:focus-visible {
+  background: rgba(92, 176, 255, 0.07);
+  outline: none;
+}
+
+.mt5-discovery-row.is-already-added {
+  opacity: 0.72;
+  cursor: default;
+}
+
+.mt5-table-row.is-disabled {
+  opacity: 0.72;
+}
+
+.mt5-table-row.is-real-warning {
+  box-shadow: inset 3px 0 0 rgba(255, 107, 107, 0.75);
+  background: rgba(255, 107, 107, 0.04);
+}
+
+.mt5-table-row.is-offline {
+  opacity: 0.78;
+}
+
+.mt5-discovery-row {
+  grid-template-rows: auto;
+}
+
+.mt5-row-note {
+  grid-column: 1 / -1;
+  margin-top: -2px;
+  padding: 0 0 4px;
+  font-size: 0.82rem;
+  color: #ffc4c4;
+}
+
+.mt5-cell-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.mt5-cell-stack strong {
+  font-size: 0.92rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt5-cell-sub {
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mt5-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 4px;
+}
+
+.mt5-menu-trigger {
+  min-width: 36px;
+  padding-inline: 10px;
+  flex-shrink: 0;
+}
+
+.mt5-menu-portal {
+  position: fixed;
+  z-index: 1300;
+}
+
+.mt5-menu-portal.hidden {
+  display: none;
+}
+
+.mt5-menu-portal .mt5-menu-panel {
+  position: static;
+  min-width: 184px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+}
+
+.mt5-menu-portal .mt5-menu-panel.opens-up {
+  transform-origin: bottom right;
+}
+
+.mt5-menu-portal .mt5-menu-panel button {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 8px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  font: inherit;
+  width: 100%;
+}
+
+.mt5-menu-portal .mt5-menu-panel button:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.mt5-discovery-row .btn.primary {
+  font-weight: 600;
+}
+
+.mt5-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1100;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.mt5-drawer-overlay.hidden {
+  display: none;
+}
+
+body.mt5-drawer-open {
+  overflow: hidden;
+}
+
+.mt5-drawer {
+  width: min(520px, 100vw);
+  height: 100%;
+  background: var(--panel);
+  border-left: 1px solid var(--panel-border);
+  box-shadow: -12px 0 40px rgba(0, 0, 0, 0.35);
+  display: flex;
+  flex-direction: column;
+  outline: none;
+}
+
+.mt5-drawer-header,
+.mt5-drawer-footer {
+  padding: 16px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.mt5-drawer-footer {
+  border-bottom: none;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: auto;
+  flex-wrap: wrap;
+}
+
+.mt5-drawer-header h4 {
+  margin: 0 0 4px;
+}
+
+.mt5-drawer-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.mt5-drawer-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 18px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mt5-drawer-body {
+  padding: 16px 18px;
+  overflow: auto;
+  flex: 1;
+}
+
+.mt5-drawer-panel {
+  display: none;
+}
+
+.mt5-drawer-panel.active {
+  display: block;
+}
+
+.mt5-detail-grid {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.mt5-detail-grid > div {
+  display: grid;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.mt5-detail-grid dt {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.mt5-detail-grid dd {
+  margin: 0;
+  font-size: 0.92rem;
+  word-break: break-word;
+}
+
+.mt5-drawer-route-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+
+.mt5-drawer-route-list li {
+  padding: 10px 12px;
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.02);
+  display: grid;
+  gap: 4px;
+}
+
+.mt5-manual-link-wrap {
+  margin-top: 14px;
+  text-align: center;
+}
+
+.link-btn {
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  font: inherit;
+  padding: 0;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.mt5-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 1000;
+}
+
+.mt5-modal-overlay.hidden {
+  display: none;
+}
+
+.mt5-modal {
+  width: min(520px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  border-radius: 14px;
+  border: 1px solid var(--panel-border);
+  background: var(--panel);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.35);
+}
+
+.mt5-modal-wide {
+  width: min(760px, 100%);
+}
+
+.mt5-modal-header,
+.mt5-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.mt5-modal-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mt5-modal-footer {
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mt5-modal-body,
+.mt5-modal-form {
+  padding: 16px 18px;
+}
+
+.mt5-modal-form {
+  padding-top: 0;
+}
+
+.mt5-modal-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 0 18px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mt5-tab {
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.mt5-tab.active {
+  color: var(--text);
+  border-color: rgba(92, 176, 255, 0.35);
+  background: rgba(92, 176, 255, 0.1);
+}
+
+.mt5-tab-panel {
+  display: none;
+  padding-top: 14px;
+}
+
+.mt5-tab-panel.active {
+  display: block;
+}
+
+.icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.btn.danger {
+  border-color: rgba(255, 92, 92, 0.45);
+  color: #ff9a9a;
+}
+
+.btn.subtle {
+  opacity: 0.85;
+}
+
 .mt5-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -965,6 +1683,175 @@ details.tech-details summary { cursor: pointer; color: var(--muted); }
   display: grid;
   gap: 16px;
   margin-top: 20px;
+}
+
+.mt5-discovery-card.is-offline {
+  opacity: 0.72;
+  border-style: dashed;
+}
+
+.mt5-target-grid.compact {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mt5-account-card-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 20px;
+  margin: 12px 0 4px;
+}
+
+.mt5-account-col {
+  display: grid;
+  gap: 10px;
+}
+
+.mt5-account-col .muted {
+  display: block;
+  font-size: 0.82rem;
+  margin-bottom: 2px;
+}
+
+@media (max-width: 1200px) {
+  .mt5-accounts-table .col-server,
+  .mt5-accounts-table .mt5-table-head > :nth-child(4) {
+    display: none;
+  }
+
+  .mt5-accounts-table .mt5-table-head,
+  .mt5-accounts-table .mt5-table-row {
+    grid-template-columns:
+      minmax(130px, 1.5fr)
+      72px
+      minmax(88px, 0.9fr)
+      78px
+      minmax(110px, 1fr)
+      52px
+      minmax(96px, 0.9fr)
+      88px
+      minmax(118px, 0.95fr);
+  }
+
+  .mt5-discovery-table .col-equity,
+  .mt5-discovery-table .mt5-table-head > :nth-child(5) {
+    display: none;
+  }
+
+  .mt5-discovery-table .mt5-table-head,
+  .mt5-discovery-table .mt5-table-row {
+    grid-template-columns:
+      minmax(130px, 1.5fr)
+      72px
+      minmax(88px, 0.9fr)
+      minmax(96px, 0.95fr)
+      78px
+      minmax(96px, 0.9fr)
+      minmax(150px, 1.1fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .mt5-accounts-table .col-ea,
+  .mt5-accounts-table .col-routes,
+  .mt5-accounts-table .col-permission,
+  .mt5-accounts-table .mt5-table-head > :nth-child(6),
+  .mt5-accounts-table .mt5-table-head > :nth-child(7),
+  .mt5-accounts-table .mt5-table-head > :nth-child(9) {
+    display: none;
+  }
+
+  .mt5-accounts-table .mt5-table-head,
+  .mt5-accounts-table .mt5-table-row {
+    grid-template-columns: minmax(130px, 1.6fr) 72px minmax(88px, 0.9fr) 78px minmax(96px, 0.9fr) minmax(118px, 0.95fr);
+  }
+
+  .mt5-discovery-table .col-server,
+  .mt5-discovery-table .col-xauusd,
+  .mt5-discovery-table .mt5-table-head > :nth-child(4),
+  .mt5-discovery-table .mt5-table-head > :nth-child(6) {
+    display: none;
+  }
+
+  .mt5-discovery-table .mt5-table-head,
+  .mt5-discovery-table .mt5-table-row {
+    grid-template-columns: minmax(130px, 1.6fr) 72px minmax(88px, 0.9fr) minmax(96px, 0.9fr) minmax(150px, 1.1fr);
+  }
+
+  .mt5-page-header {
+    flex-direction: column;
+  }
+
+  .mt5-row-actions .btn.subtle,
+  .mt5-discovery-row .col-actions .btn.subtle {
+    display: none;
+  }
+}
+
+@media (max-width: 640px) {
+  .mt5-table-head {
+    display: none;
+  }
+
+  .mt5-accounts-table .mt5-table-row,
+  .mt5-discovery-table .mt5-table-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    grid-template-areas:
+      "account type"
+      "terminal status"
+      "actions actions";
+    gap: 8px 10px;
+    padding: 12px;
+  }
+
+  .mt5-accounts-table .col-account,
+  .mt5-discovery-table .col-account {
+    grid-area: account;
+  }
+
+  .mt5-accounts-table .col-type,
+  .mt5-discovery-table .col-type {
+    grid-area: type;
+    justify-self: end;
+  }
+
+  .mt5-accounts-table .col-terminal,
+  .mt5-discovery-table .col-terminal {
+    grid-area: terminal;
+    display: block;
+  }
+
+  .mt5-accounts-table .col-status,
+  .mt5-discovery-table .col-status {
+    grid-area: status;
+    justify-self: end;
+    display: block;
+  }
+
+  .mt5-accounts-table .col-server,
+  .mt5-accounts-table .col-xauusd,
+  .mt5-accounts-table .col-ea,
+  .mt5-accounts-table .col-routes,
+  .mt5-accounts-table .col-permission,
+  .mt5-discovery-table .col-server,
+  .mt5-discovery-table .col-equity,
+  .mt5-discovery-table .col-xauusd {
+    display: none;
+  }
+
+  .mt5-accounts-table .col-actions,
+  .mt5-discovery-table .col-actions {
+    grid-area: actions;
+    display: block;
+  }
+
+  .mt5-row-actions {
+    justify-content: flex-start;
+  }
+
+  .mt5-drawer {
+    width: 100vw;
+  }
 }
 
 .mt5-target-card {
