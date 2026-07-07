@@ -26,7 +26,10 @@ import dashboard_store  # noqa: E402
 import dashboard_vault  # noqa: E402
 import fasttrack_file_bridge  # noqa: E402
 import route_listener_service  # noqa: E402
+import listener_worker_client  # noqa: E402
 import telegram_adapter  # noqa: E402
+import mt5_account_probe  # noqa: E402
+import mt5_target_service  # noqa: E402
 import telegram_dashboard_server  # noqa: E402
 from telegram_adapter import (  # noqa: E402
     CREDENTIAL_SOURCE_ENV,
@@ -185,6 +188,12 @@ class DashboardServerTests(unittest.TestCase):
             return_value=True,
         )
         self.telethon_patch.start()
+        self.worker_inline_patch = patch.dict(
+            os.environ,
+            {"DASHBOARD_LISTENER_WORKER_INLINE": "1"},
+            clear=False,
+        )
+        self.worker_inline_patch.start()
         self.db = dashboard_store.DashboardDatabase(self.data_dir / "dashboard.sqlite3")
         self.telegram_service = dashboard_api.TelegramService(
             data_dir=self.data_dir,
@@ -204,10 +213,17 @@ class DashboardServerTests(unittest.TestCase):
         self.thread.start()
 
     def tearDown(self) -> None:
+        if getattr(self.context, "listener_worker_client", None) is not None:
+            try:
+                self.context.listener_worker_client.stop_worker()
+            except Exception:
+                pass
+            self.context.listener_worker_client.shutdown_inline_worker()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=2)
         self.telethon_patch.stop()
+        self.worker_inline_patch.stop()
         self.env_patch.stop()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
@@ -871,7 +887,9 @@ class RouteListenerDashboardTests(DashboardServerTests):
 
     def _listener_manager(self) -> route_listener_service.RouteListenerManager:
         self.request("GET", "/api/listener/status")
-        manager = self.context.route_listener_manager
+        client = self.context.listener_worker_client
+        self.assertIsNotNone(client)
+        manager = client.get_inline_manager()
         self.assertIsNotNone(manager)
         return manager
 
@@ -1686,6 +1704,184 @@ class SignalSummaryApiTests(DashboardServerTests):
         self.assertEqual(summary["symbol"], "XAUUSD")
 
 
+class ListenerWorkerPersistenceTests(RouteListenerDashboardTests):
+    def _start_worker(self) -> dict:
+        _status, payload = self.request("POST", "/api/listener/worker/start", {})
+        return payload
+
+    def _worker_status(self) -> dict:
+        _status, payload = self.request("GET", "/api/listener/worker/status")
+        return payload["worker"]
+
+    def _ready_route(self) -> dict:
+        channel = self._create_tracked_channel("9099")
+        target = self._create_target(
+            name="Worker Route Target",
+            seed_filename="seed_worker.txt",
+            details_filename="details_worker.txt",
+        )
+        return self._create_route(channel["id"], target["id"], "Worker Route")
+
+    def test_dashboard_restart_does_not_stop_worker(self) -> None:
+        route = self._ready_route()
+        self._start_worker()
+        self._start_listener(route["id"])
+        worker_client = self.context.listener_worker_client
+        self.assertIsNotNone(worker_client)
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=2)
+        new_context = dashboard_api.DashboardContext(
+            host=dashboard_security.ALLOWED_HOST,
+            port=self.port,
+            data_dir=self.data_dir,
+            dashboard_dir=DASHBOARD_DIR.resolve(),
+            database=self.db,
+            telegram_service=self.telegram_service,
+        )
+        self.server = dashboard_server.create_server(new_context)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.context = new_context
+        status, payload = self.request("GET", "/api/listener/status")
+        self.assertEqual(status, 200)
+        self.assertGreaterEqual(payload["active_route_count"], 1)
+        worker_client.shutdown_inline_worker()
+
+    def test_second_worker_start_is_rejected(self) -> None:
+        self._start_worker()
+        second = self._start_worker()
+        self.assertEqual(second["status"], "WORKER_ALREADY_RUNNING")
+
+    def test_worker_heartbeat_visible_via_api(self) -> None:
+        self._start_worker()
+        worker = self._worker_status()
+        self.assertIsNotNone(worker.get("last_heartbeat_at_utc"))
+        self.assertIn(worker["state"], ("CONNECTED", "CONNECTING", "STARTING"))
+
+    def test_stale_heartbeat_shows_degraded(self) -> None:
+        self._start_worker()
+        stale = dashboard_security.utc_now_iso()
+        with self.db._connect() as conn:
+            conn.execute(
+                """
+                UPDATE listener_worker_state
+                SET last_heartbeat_at_utc = '2000-01-01T00:00:00+00:00',
+                    state = 'CONNECTED'
+                WHERE id = 1
+                """
+            )
+        worker = self._worker_status()
+        self.assertEqual(worker["state"], listener_worker_client.WORKER_DEGRADED)
+
+    def test_worker_restart_does_not_auto_resume_routes(self) -> None:
+        route = self._ready_route()
+        self._start_worker()
+        self._start_listener(route["id"])
+        client = self.context.listener_worker_client
+        self.assertIsNotNone(client)
+        client.stop_worker()
+        self._start_worker()
+        status, payload = self.request("GET", f"/api/routes/{route['id']}/listener-status")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["listener_status"], route_listener_service.LISTENER_STOPPED)
+        self.assertFalse(payload["running"])
+
+    def test_route_start_starts_worker_and_waiting(self) -> None:
+        route = self._ready_route()
+        status, payload = self._start_listener(route["id"])
+        self.assertEqual(status, 200)
+        worker = self._worker_status()
+        self.assertIn(worker["state"], ("CONNECTED", "CONNECTING", "STARTING"))
+        route_status = self.request("GET", f"/api/routes/{route['id']}/listener-status")[1]
+        self.assertEqual(route_status["listener_status"], route_listener_service.LISTENER_WAITING)
+
+    def test_route_stop_only_stops_target_route(self) -> None:
+        channel = self._create_tracked_channel("9098")
+        self._connect_telegram()
+        target_a = self._create_target(
+            name="Worker A",
+            seed_filename="seed_wa.txt",
+            details_filename="details_wa.txt",
+            root_suffix="wa",
+        )
+        target_b = self._create_target(
+            name="Worker B",
+            seed_filename="seed_wb.txt",
+            details_filename="details_wb.txt",
+            root_suffix="wb",
+        )
+        route_a = self._create_route(channel["id"], target_a["id"], "Worker A Route")
+        route_b = self._create_route(channel["id"], target_b["id"], "Worker B Route")
+        self._start_worker()
+        self._start_listener(route_a["id"])
+        self._start_listener(route_b["id"])
+        self.request("POST", f"/api/routes/{route_a['id']}/listener/stop", {})
+        status_a = self.request("GET", f"/api/routes/{route_a['id']}/listener-status")[1]
+        status_b = self.request("GET", f"/api/routes/{route_b['id']}/listener-status")[1]
+        self.assertFalse(status_a["running"])
+        self.assertTrue(status_b["running"])
+
+    def test_worker_stop_runs_telethon_cleanup(self) -> None:
+        route = self._ready_route()
+        self._start_worker()
+        self._start_listener(route["id"])
+        manager = self._listener_manager()
+        bridge = manager._telethon_bridge
+        if bridge is not None:
+            with patch.object(bridge, "shutdown", wraps=bridge.shutdown) as shutdown_mock:
+                self.request("POST", "/api/listener/worker/stop", {})
+                if manager._telethon_enabled:
+                    shutdown_mock.assert_called()
+        else:
+            self.request("POST", "/api/listener/worker/stop", {})
+        worker = self._worker_status()
+        self.assertEqual(worker["state"], listener_worker_client.WORKER_STOPPED)
+
+    def test_reconnect_state_is_safe(self) -> None:
+        self.db.upsert_listener_worker_state(
+            state=listener_worker_client.WORKER_RECONNECTING,
+            reconnect_count=2,
+            safe_last_error="Telegram bağlantısı yeniden kuruluyor.",
+            last_heartbeat_at_utc=dashboard_security.utc_now_iso(),
+            pid=os.getpid(),
+        )
+        worker = self._worker_status()
+        self.assertEqual(worker["state"], listener_worker_client.WORKER_RECONNECTING)
+        self.assertEqual(worker["reconnect_count"], 2)
+        self.assertNotIn("Traceback", worker.get("safe_last_error") or "")
+
+    def test_raw_telegram_message_not_in_worker_state(self) -> None:
+        route = self._ready_route()
+        self._start_worker()
+        self._start_listener(route["id"])
+        channels = self.request("GET", "/api/channels")[1]["channels"]
+        channel = next(item for item in channels if item["id"] == route["channel_id"])
+        manager = self._listener_manager()
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text=VALID_SEED,
+                message_id=501,
+                channel_id=int(channel["telegram_channel_id"]),
+            )
+        )
+        worker = self._worker_status()
+        blob = json.dumps(worker)
+        self.assertNotIn(VALID_SEED, blob)
+        status, payload = self.request("GET", "/api/listener/status")
+        self.assertNotIn(VALID_SEED, json.dumps(payload))
+        self.assertEqual(status, 200)
+
+    def test_listener_status_includes_worker_fields(self) -> None:
+        route = self._ready_route()
+        self._start_worker()
+        self._start_listener(route["id"])
+        payload = self.request("GET", f"/api/routes/{route['id']}/listener-status")[1]
+        self.assertIn("worker_state", payload)
+        self.assertIn("telegram_connected", payload)
+        self.assertIn("worker_connected", payload)
+
+
 class LiveSignalMetaTests(RouteListenerDashboardTests):
     VALID_BUY_SEED = "Gold buy now"
     VALID_BUY_MARKET_DETAILS = "Gold buy now\nSL: 4010\nTP: open"
@@ -2040,6 +2236,381 @@ class SignalHistoryApiTests(RouteListenerDashboardTests):
         self.assertEqual(summary["execution_status"], "NOT_EXECUTED")
         self.assertIsNone(summary["realized_pnl"])
         self.assertEqual(summary["pnl_state"], "unknown")
+
+
+class Mt5TargetVerificationTests(DashboardServerTests):
+    def setUp(self) -> None:
+        super().setUp()
+        self._probe_backup = mt5_account_probe._PROBE_OVERRIDE
+        mt5_account_probe.set_probe_override(None)
+        self._instance_counter = 0
+
+    def tearDown(self) -> None:
+        mt5_account_probe.set_probe_override(self._probe_backup)
+        super().tearDown()
+
+    def _write_terminal_exe(self) -> Path:
+        exe = self.data_dir / "terminal64.exe"
+        exe.write_text("fake", encoding="utf-8")
+        return exe
+
+    def _instance_path(self, suffix: str) -> str:
+        path = self.data_dir / f"terminal_instance_{suffix}"
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    def _target_payload(self, **overrides) -> dict:
+        instance_suffix = overrides.pop("instance_suffix", None)
+        if instance_suffix is None:
+            self._instance_counter += 1
+            instance_suffix = str(self._instance_counter)
+        payload = {
+            "display_name": overrides.pop("display_name", "Probe Target"),
+            "terminal_label": "D0E",
+            "terminal_exe_path": str(self._write_terminal_exe()),
+            "terminal_data_path": overrides.pop(
+                "terminal_data_path",
+                self._instance_path(instance_suffix),
+            ),
+            "broker_label": "VantageMarkets-Demo",
+            "expected_server": "VantageMarkets-Demo",
+            "expected_account_login": overrides.pop(
+                "expected_account_login",
+                f"1000{instance_suffix}",
+            ),
+            "expected_account_type": "DEMO",
+            "file_common_root": str(self.data_dir / "common"),
+            "seed_filename": "seed_probe_a.txt",
+            "details_filename": "details_probe_a.txt",
+            "ea_name": "Basket Recovery EA",
+            "chart_symbol": "XAUUSD",
+            "chart_timeframe": "M1",
+            "magic_number": 91001,
+        }
+        payload.update(overrides)
+        return payload
+
+    def _create_target(self, **overrides) -> dict:
+        payload = self._target_payload(**overrides)
+        status, response = self.request("POST", "/api/mt5-targets", payload)
+        self.assertEqual(status, 201)
+        target = response["target"]
+        target["_expected_login"] = payload.get("expected_account_login", "")
+        target["_expected_server"] = payload.get("expected_server", "")
+        target["_terminal_data_path"] = payload.get("terminal_data_path", "")
+        return target
+
+    def _demo_probe(self, **overrides) -> mt5_account_probe.ProbeResult:
+        values = {
+            "status": mt5_account_probe.PROBE_STATUS_VERIFIED,
+            "user_message": "Hesap bilgileri okundu.",
+            "terminal_connected": True,
+            "account_login": "12345678",
+            "server": "VantageMarkets-Demo",
+            "company": "Vantage",
+            "trade_mode": mt5_account_probe.ACCOUNT_TYPE_DEMO,
+            "trade_mode_label": "Demo Hesap",
+            "currency": "USD",
+            "equity": 10000.0,
+            "terminal_trade_allowed": True,
+            "xauusd_available": True,
+        }
+        values.update(overrides)
+        return mt5_account_probe.ProbeResult(**values)
+
+    def _probe_for_target(self, target: dict, **overrides):
+        account_login = overrides.pop("account_login", target.get("_expected_login") or "12345678")
+        server = overrides.pop("server", target.get("_expected_server") or "VantageMarkets-Demo")
+        data_path = overrides.pop(
+            "detected_terminal_data_path",
+            target.get("_terminal_data_path") or target.get("terminal_data_path"),
+        )
+        return lambda _req: self._demo_probe(
+            account_login=account_login,
+            server=server,
+            detected_terminal_data_path=data_path,
+            **overrides,
+        )
+
+    def test_terminal_offline_safe_status(self) -> None:
+        target = self._create_target()
+        mt5_account_probe.set_probe_override(
+            lambda _req: mt5_account_probe.ProbeResult(
+                status=mt5_account_probe.PROBE_STATUS_TERMINAL_OFFLINE,
+                user_message="Terminal çevrimdışı. MT5 terminalini açıp tekrar doğrulayın.",
+            )
+        )
+        status, payload = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["verification"]["status"], mt5_account_probe.PROBE_STATUS_TERMINAL_OFFLINE)
+        self.assertEqual(payload["target"]["card_status"], mt5_target_service.CARD_STATUS_TERMINAL_OFFLINE)
+
+    def test_connector_unavailable_user_message(self) -> None:
+        target = self._create_target()
+        mt5_account_probe.set_probe_override(
+            lambda _req: mt5_account_probe.ProbeResult(
+                status=mt5_account_probe.PROBE_STATUS_CONNECTOR_UNAVAILABLE,
+                user_message="MT5 doğrulama bileşeni bu bilgisayarda hazır değil.",
+            )
+        )
+        status, payload = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload["verification"]["status"],
+            mt5_account_probe.PROBE_STATUS_CONNECTOR_UNAVAILABLE,
+        )
+        self.assertIn("hazır değil", payload["verification"]["message"])
+
+    def test_demo_account_detection(self) -> None:
+        target = self._create_target()
+        mt5_account_probe.set_probe_override(self._probe_for_target(target))
+        status, payload = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["verification"]["status"], mt5_target_service.VERIFICATION_VERIFIED_OK)
+        self.assertEqual(payload["target"]["detected_trade_mode"], "DEMO")
+
+    def test_real_account_warning_execution_locked(self) -> None:
+        target = self._create_target(expected_account_type="DEMO")
+        mt5_account_probe.set_probe_override(
+            self._probe_for_target(
+                target,
+                trade_mode=mt5_account_probe.ACCOUNT_TYPE_REAL,
+                trade_mode_label="Gerçek Hesap",
+            )
+        )
+        status, payload = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["verification"]["status"], mt5_target_service.VERIFICATION_REAL_ACCOUNT_WARNING)
+        self.assertTrue(payload["target"]["warnings"])
+        self.assertEqual(payload["target"]["execution_permission"], "LOCKED")
+
+    def test_expected_account_mismatch(self) -> None:
+        target = self._create_target(expected_account_login="12345678")
+        mt5_account_probe.set_probe_override(
+            self._probe_for_target(target, account_login="99999999")
+        )
+        status, payload = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["verification"]["status"], mt5_target_service.VERIFICATION_ACCOUNT_MISMATCH)
+
+    def test_expected_server_mismatch(self) -> None:
+        target = self._create_target(expected_server="VantageMarkets-Demo")
+        mt5_account_probe.set_probe_override(
+            self._probe_for_target(target, server="OtherServer-Demo")
+        )
+        status, payload = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["verification"]["status"], mt5_target_service.VERIFICATION_SERVER_MISMATCH)
+
+    def test_xauusd_not_found(self) -> None:
+        target = self._create_target()
+        mt5_account_probe.set_probe_override(self._probe_for_target(target, xauusd_available=False))
+        status, payload = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["verification"]["status"], mt5_target_service.VERIFICATION_XAUUSD_NOT_FOUND)
+        self.assertEqual(payload["target"]["xauusd_status"], "Bulunamadı")
+
+    def test_duplicate_seed_filename_conflict(self) -> None:
+        self._create_target(display_name="Target A", seed_filename="dup_seed.txt", details_filename="details_a.txt")
+        second = self._create_target(
+            display_name="Target B",
+            seed_filename="dup_seed.txt",
+            details_filename="details_b.txt",
+            magic_number=91002,
+        )
+        issues = second["ea_config_match"]["issues"]
+        self.assertTrue(any("Dosya adı" in issue for issue in issues))
+
+    def test_duplicate_magic_number_conflict(self) -> None:
+        self._create_target(display_name="Magic A", magic_number=424242, seed_filename="seed_m1.txt", details_filename="details_m1.txt")
+        second = self._create_target(
+            display_name="Magic B",
+            magic_number=424242,
+            seed_filename="seed_m2.txt",
+            details_filename="details_m2.txt",
+        )
+        issues = second["ea_config_match"]["issues"]
+        self.assertTrue(any("Magic numarası" in issue for issue in issues))
+
+    def test_account_login_masked_in_api(self) -> None:
+        target = self._create_target(expected_account_login="12345678")
+        mt5_account_probe.set_probe_override(self._probe_for_target(target, account_login="12345678"))
+        status, payload = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["target"]["detected_account_login_masked"], "***5678")
+        get_status, listed = self.request("GET", "/api/mt5-targets")
+        self.assertEqual(get_status, 200)
+        item = next(row for row in listed["targets"] if row["id"] == target["id"])
+        self.assertEqual(item["detected_account_login_masked"], "***5678")
+        self.assertNotIn("12345678", json.dumps(listed))
+
+    def test_password_field_rejected(self) -> None:
+        payload = self._target_payload()
+        payload["password"] = "secret"
+        status, body = self.request("POST", "/api/mt5-targets", payload)
+        self.assertEqual(status, 400)
+        self.assertIn("credentials", str(body).lower())
+
+    def test_verify_rate_limit(self) -> None:
+        target = self._create_target()
+        mt5_account_probe.set_probe_override(self._probe_for_target(target))
+        first_status, _ = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(first_status, 200)
+        second_status, body = self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        self.assertEqual(second_status, 400)
+        self.assertIn("bekleyin", str(body).lower())
+
+    def test_get_verification_endpoint(self) -> None:
+        target = self._create_target()
+        mt5_account_probe.set_probe_override(self._probe_for_target(target))
+        self.request("POST", f"/api/mt5-targets/{target['id']}/verify", {})
+        status, payload = self.request("GET", f"/api/mt5-targets/{target['id']}/verification")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["verification"]["status"], mt5_target_service.VERIFICATION_VERIFIED_OK)
+
+    def test_disable_target(self) -> None:
+        target = self._create_target()
+        status, payload = self.request("POST", f"/api/mt5-targets/{target['id']}/disable", {})
+        self.assertEqual(status, 200)
+        self.assertFalse(payload["target"]["is_enabled"])
+
+    def test_execution_permission_cannot_be_changed(self) -> None:
+        target = self._create_target()
+        status, _body = self.request(
+            "PATCH",
+            f"/api/mt5-targets/{target['id']}",
+            {"execution_permission": "OPEN"},
+        )
+        self.assertEqual(status, 400)
+
+    def test_same_exe_different_data_path_allowed(self) -> None:
+        exe = str(self._write_terminal_exe())
+        first = self._create_target(
+            terminal_exe_path=exe,
+            terminal_data_path=self._instance_path("instance_a"),
+            display_name="Instance A",
+            magic_number=93001,
+            seed_filename="seed_inst_a.txt",
+            details_filename="details_inst_a.txt",
+        )
+        status, payload = self.request(
+            "POST",
+            "/api/mt5-targets",
+            self._target_payload(
+                terminal_exe_path=exe,
+                terminal_data_path=self._instance_path("instance_b"),
+                display_name="Instance B",
+                magic_number=93002,
+                seed_filename="seed_inst_b.txt",
+                details_filename="details_inst_b.txt",
+            ),
+        )
+        self.assertEqual(status, 201)
+        self.assertNotEqual(first["terminal_data_path"], payload["target"]["terminal_data_path"])
+
+    def test_same_terminal_data_path_conflict(self) -> None:
+        shared = str(self.data_dir / "shared_terminal_instance")
+        Path(shared).mkdir(parents=True, exist_ok=True)
+        self._create_target(
+            terminal_data_path=shared,
+            display_name="Shared A",
+            magic_number=94001,
+            seed_filename="seed_shared_a.txt",
+            details_filename="details_shared_a.txt",
+        )
+        status, body = self.request(
+            "POST",
+            "/api/mt5-targets",
+            self._target_payload(
+                terminal_data_path=shared,
+                display_name="Shared B",
+                magic_number=94002,
+                seed_filename="seed_shared_b.txt",
+                details_filename="details_shared_b.txt",
+            ),
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("terminal instance", str(body).lower())
+
+    def test_duplicate_account_server_rejected(self) -> None:
+        self._create_target(
+            expected_account_login="555001",
+            expected_server="Broker-Demo",
+            display_name="Account A",
+            magic_number=95001,
+            seed_filename="seed_acc_a.txt",
+            details_filename="details_acc_a.txt",
+            instance_suffix="acc_a",
+        )
+        status, body = self.request(
+            "POST",
+            "/api/mt5-targets",
+            self._target_payload(
+                expected_account_login="555001",
+                expected_server="Broker-Demo",
+                display_name="Account B",
+                magic_number=95002,
+                seed_filename="seed_acc_b.txt",
+                details_filename="details_acc_b.txt",
+                instance_suffix="acc_b",
+            ),
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("hesap numarası", str(body).lower())
+
+    def test_instance_ambiguous_without_data_path(self) -> None:
+        exe = str(self._write_terminal_exe())
+        common_root = str(self.data_dir / "common")
+        legacy_payload = {
+            "name": "Legacy A",
+            "terminal_label": "D0E",
+            "broker_label": "VantageMarkets-Demo",
+            "account_mode": "DEMO",
+            "file_common_root": common_root,
+            "seed_filename": "seed_legacy_a.txt",
+            "details_filename": "details_legacy_a.txt",
+            "terminal_exe_path": exe,
+        }
+        self.request("POST", "/api/targets", legacy_payload)
+        self.request(
+            "POST",
+            "/api/targets",
+            {
+                **legacy_payload,
+                "name": "Legacy B",
+                "seed_filename": "seed_legacy_b.txt",
+                "details_filename": "details_legacy_b.txt",
+            },
+        )
+        listed = self.request("GET", "/api/mt5-targets")[1]["targets"]
+        target_row = next(item for item in listed if item["display_name"] == "Legacy A")
+        mt5_account_probe.set_probe_override(self._probe_for_target(target_row))
+        status, payload = self.request("POST", f"/api/mt5-targets/{target_row['id']}/verify", {})
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            payload["verification"]["status"],
+            mt5_target_service.VERIFICATION_INSTANCE_AMBIGUOUS,
+        )
+        self.assertEqual(payload["target"]["terminal_instance_status"], mt5_target_service.INSTANCE_STATUS_AMBIGUOUS)
+
+    def test_dynamic_summary_counts(self) -> None:
+        for count, expected_total in ((1, 1), (5, 6), (10, 16)):
+            for index in range(count):
+                suffix = f"{count}_{index}"
+                self._create_target(
+                    display_name=f"Summary {count}-{index}",
+                    expected_account_type="DEMO" if index % 2 == 0 else "REAL",
+                    magic_number=96000 + count * 100 + index,
+                    seed_filename=f"seed_summary_{suffix}.txt",
+                    details_filename=f"details_summary_{suffix}.txt",
+                    instance_suffix=suffix,
+                )
+            status, payload = self.request("GET", "/api/mt5-targets")
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["summary"]["total"], expected_total)
+        self.assertGreaterEqual(payload["summary"]["demo_accounts"], 1)
+        self.assertGreaterEqual(payload["summary"]["real_accounts"], 1)
+        self.assertEqual(payload["summary"]["pending_verification"], payload["summary"]["total"])
 
 
 class DashboardDataDirTests(unittest.TestCase):

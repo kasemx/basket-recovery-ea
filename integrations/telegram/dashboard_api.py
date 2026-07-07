@@ -31,7 +31,17 @@ from dashboard_signal_history import (
     history_response,
     paginate_items,
 )
+from mt5_target_service import (
+    build_targets_summary,
+    compute_instance_fields,
+    normalize_create_payload,
+    prepare_target_row_fields,
+    project_mt5_target,
+    validate_target_registration,
+    verify_target,
+)
 from dashboard_store import DashboardDatabase
+from listener_worker_client import ListenerWorkerClient
 from route_listener_service import (
     LISTENER_DETAILS_DETECTED,
     LISTENER_PUBLISH_FAILED,
@@ -40,8 +50,6 @@ from route_listener_service import (
     LISTENER_SEED_DETECTED,
     LISTENER_STOPPED,
     LISTENER_WAITING,
-    RouteListenerManager,
-    build_default_listener_manager,
 )
 from dashboard_vault import (
     CREDENTIAL_VAULT_UNSUPPORTED_PLATFORM,
@@ -311,7 +319,7 @@ class DashboardContext:
     dashboard_dir: Path
     database: DashboardDatabase
     telegram_service: TelegramService | None = None
-    route_listener_manager: RouteListenerManager | None = None
+    listener_worker_client: ListenerWorkerClient | None = None
 
 
 @dataclass
@@ -507,18 +515,16 @@ class TelegramService:
             "phone_masked": row.get("phone_masked"),
         }
 
-    def verify_code(self, db: DashboardDatabase, code: str) -> dict[str, Any]:
+    def verify_code(self, db: DashboardDatabase, code: str, phone: str = "") -> dict[str, Any]:
         if not self.telethon_available():
             return {"status": "ERROR", "error_code": TELETHON_NOT_INSTALLED}
         phone_code_hash = db.get_phone_code_hash()
         if not phone_code_hash:
             raise DashboardValidationError("Request a login code before verification")
-        phone = self._auth_phone
-        if not phone:
-            raise DashboardValidationError("Configure phone number before verification")
+        resolved_phone = self.resolve_request_phone(phone)
         adapter = self._require_adapter()
         result = run_telegram_async(
-            adapter.sign_in_code(phone, code, phone_code_hash)
+            adapter.sign_in_code(resolved_phone, code, phone_code_hash)
         )
         if result.status == TELEGRAM_CONNECTED:
             db.set_telegram_connected()
@@ -598,13 +604,22 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             self.context.telegram_service = TelegramService(data_dir=self.context.data_dir)
         return self.context.telegram_service
 
-    def _listener_manager(self) -> RouteListenerManager:
-        if self.context.route_listener_manager is None:
-            self.context.route_listener_manager = build_default_listener_manager(
-                self.context.database,
-                self.context.data_dir,
+    def _listener_client(self) -> ListenerWorkerClient:
+        if self.context.listener_worker_client is None:
+            self.context.listener_worker_client = ListenerWorkerClient(
+                database=self.context.database,
+                data_dir=self.context.data_dir,
             )
-        return self.context.route_listener_manager
+        return self.context.listener_worker_client
+
+    def _parse_listener_worker_path(self, path: str) -> str | None:
+        if path == "/api/listener/worker/status":
+            return "status"
+        if path == "/api/listener/worker/start":
+            return "start"
+        if path == "/api/listener/worker/stop":
+            return "stop"
+        return None
 
     def _parse_route_listener_path(self, path: str) -> tuple[int | None, str | None]:
         match = re.match(
@@ -616,12 +631,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         return int(match.group(1)), match.group(2)
 
     def _enrich_routes(self, routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        manager = self._listener_manager()
-        dry_run = manager.status_payload().get("dry_run", _listener_dry_run_enabled())
+        client = self._listener_client()
+        dry_run = client.status_payload().get("dry_run", _listener_dry_run_enabled())
         enriched: list[dict[str, Any]] = []
         for route in routes:
             item = dict(route)
-            status = manager.route_listener_status(int(route["id"]))
+            status = client.route_listener_status(int(route["id"]))
             item["listener"] = status or {
                 "route_id": route["id"],
                 "running": False,
@@ -669,6 +684,37 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return None
         return int(suffix)
 
+    def _parse_mt5_target_path(self, path: str) -> tuple[int | None, str | None]:
+        if path == "/api/mt5-targets":
+            return None, None
+        match = re.match(r"^/api/mt5-targets/(\d+)(?:/(verify|verification|disable))?$", path)
+        if not match:
+            return None, None
+        return int(match.group(1)), match.group(2)
+
+    def _mt5_targets_response(self) -> dict[str, Any]:
+        rows = self.context.database.list_targets()
+        targets = [project_mt5_target(row, rows) for row in rows]
+        return {"targets": targets, "summary": build_targets_summary(rows)}
+
+    def _mt5_target_verification_response(self, target_id: int) -> dict[str, Any]:
+        row = self.context.database.get_target(target_id)
+        if row is None:
+            raise DashboardValidationError("Target not found")
+        projected = project_mt5_target(row, self.context.database.list_targets())
+        return {
+            "target_id": target_id,
+            "verification": {
+                "status": projected.get("verification_status"),
+                "message": projected.get("verification_message_safe"),
+                "last_verified_at_utc": projected.get("last_verified_at_utc"),
+                "warnings": projected.get("warnings", []),
+                "detected_account_login_masked": projected.get("detected_account_login_masked"),
+                "detected_trade_mode_label": projected.get("detected_trade_mode_label"),
+                "xauusd_status": projected.get("xauusd_status"),
+            },
+        }
+
     def do_GET(self) -> None:
         path = urlparse(self.path).path
         try:
@@ -678,8 +724,14 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     {
                         "ok": True,
                         "server": "telegram-route-dashboard",
+                        "api_version": "9e.0.2",
                         "host": self.context.host,
                         "telegram_status": telegram["status"],
+                        "features": {
+                            "mt5_targets": True,
+                            "listener_worker": True,
+                            "signal_history": True,
+                        },
                     }
                 )
                 return
@@ -705,12 +757,23 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/targets":
                 self._send_json({"targets": self.context.database.list_targets()})
                 return
+            if path == "/api/mt5-targets":
+                self._send_json(self._mt5_targets_response())
+                return
+            mt5_target_id, mt5_subpath = self._parse_mt5_target_path(path)
+            if mt5_target_id is not None and mt5_subpath == "verification":
+                self._send_json(self._mt5_target_verification_response(mt5_target_id))
+                return
             if path == "/api/listener/status":
-                self._send_json(self._listener_manager().status_payload())
+                self._send_json(self._listener_client().status_payload())
+                return
+            worker_subpath = self._parse_listener_worker_path(path)
+            if worker_subpath == "status":
+                self._send_json({"worker": self._listener_client().worker_status_payload()})
                 return
             route_id, subpath = self._parse_route_listener_path(path)
             if route_id is not None and subpath == "listener-status":
-                status = self._listener_manager().route_listener_status(route_id)
+                status = self._listener_client().route_listener_status(route_id)
                 if status is None:
                     self._send_error_json(HTTPStatus.NOT_FOUND, "Route not found")
                     return
@@ -731,7 +794,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 payload = query_signal_history(
                     self.context.database,
                     query,
-                    dry_run=bool(self._listener_manager().status_payload().get("dry_run", _listener_dry_run_enabled())),
+                    dry_run=bool(self._listener_client().status_payload().get("dry_run", _listener_dry_run_enabled())),
                 )
                 self._send_json(payload)
                 return
@@ -840,11 +903,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 return
 
             if path == "/api/telegram/verify-code":
-                reject_literal_credentials(payload, allowed=frozenset({"code"}))
+                reject_literal_credentials(payload, allowed=frozenset({"code", "phone"}))
                 code = str(payload.get("code", "")).strip()
                 if not code:
                     raise DashboardValidationError("Verification code is required")
-                result = telegram.verify_code(db, code)
+                phone = str(payload.get("phone", "")).strip()
+                result = telegram.verify_code(db, code, phone)
                 db.add_audit(
                     "TELEGRAM_VERIFY_CODE",
                     "INFO" if result.get("status") == TELEGRAM_CONNECTED else "ERROR",
@@ -929,6 +993,53 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"target": target}, HTTPStatus.CREATED)
                 return
 
+            if path == "/api/mt5-targets":
+                reject_literal_credentials(payload)
+                normalized = normalize_create_payload(payload)
+                rows = db.list_targets()
+                validate_target_registration(rows, normalized)
+                normalized.update(prepare_target_row_fields(normalized))
+                target = db.create_mt5_target(normalized)
+                rows = db.list_targets()
+                projected = project_mt5_target(target, rows)
+                db.add_audit(
+                    "MT5_TARGET_CREATE",
+                    "INFO",
+                    f"Created MT5 target {target['name']}",
+                    {"target_id": target["id"], "observer_only": 1},
+                )
+                self._send_json({"target": projected}, HTTPStatus.CREATED)
+                return
+
+            mt5_target_id, mt5_subpath = self._parse_mt5_target_path(path)
+            if mt5_target_id is not None and mt5_subpath == "verify":
+                reject_literal_credentials(payload)
+                result = verify_target(db, mt5_target_id)
+                db.add_audit(
+                    "MT5_TARGET_VERIFY",
+                    "INFO",
+                    "MT5 target read-only verification completed",
+                    {
+                        "target_id": mt5_target_id,
+                        "verification_status": result["verification"]["status"],
+                    },
+                )
+                self._send_json(result)
+                return
+            if mt5_target_id is not None and mt5_subpath == "disable":
+                reject_literal_credentials(payload)
+                target = db.disable_target(mt5_target_id)
+                rows = db.list_targets()
+                projected = project_mt5_target(target, rows)
+                db.add_audit(
+                    "MT5_TARGET_DISABLE",
+                    "INFO",
+                    f"Disabled MT5 target {mt5_target_id}",
+                    {"target_id": mt5_target_id},
+                )
+                self._send_json({"target": projected})
+                return
+
             if path == "/api/routes":
                 if payload.get("mode") and str(payload["mode"]).upper() != "OBSERVER_ONLY":
                     raise DashboardValidationError("Route mode changes are not allowed")
@@ -942,9 +1053,31 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json({"route": route}, HTTPStatus.CREATED)
                 return
 
+            worker_subpath = self._parse_listener_worker_path(path)
+            if worker_subpath == "start":
+                result = self._listener_client().start_worker()
+                db.add_audit(
+                    "LISTENER_WORKER_START",
+                    "INFO",
+                    "Telegram listener worker start requested",
+                    {"worker_state": result.get("worker", {}).get("state")},
+                )
+                self._send_json(result)
+                return
+            if worker_subpath == "stop":
+                result = self._listener_client().stop_worker()
+                db.add_audit(
+                    "LISTENER_WORKER_STOP",
+                    "INFO",
+                    "Telegram listener worker stop requested",
+                    {"worker_state": result.get("worker", {}).get("state")},
+                )
+                self._send_json(result)
+                return
+
             route_id, subpath = self._parse_route_listener_path(path)
             if route_id is not None and subpath == "listener/start":
-                result = self._listener_manager().start_route(route_id)
+                result = self._listener_client().start_route(route_id)
                 if result.get("status") == "ERROR":
                     db.add_audit(
                         "ROUTE_LISTENER_START",
@@ -963,7 +1096,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(result)
                 return
             if route_id is not None and subpath == "listener/stop":
-                result = self._listener_manager().stop_route(route_id)
+                result = self._listener_client().stop_route(route_id)
                 db.add_audit(
                     "ROUTE_LISTENER_STOP",
                     "INFO",
@@ -1012,6 +1145,28 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     {"target_id": target_id, "fields": sorted(payload.keys())},
                 )
                 self._send_json({"target": target})
+                return
+
+            mt5_target_id, mt5_subpath = self._parse_mt5_target_path(path)
+            if mt5_target_id is not None and mt5_subpath is None:
+                existing = db.get_target(mt5_target_id)
+                if existing is None:
+                    raise DashboardValidationError("Target not found")
+                rows = db.list_targets()
+                validate_target_registration(rows, payload, target_id=mt5_target_id)
+                target = db.update_target(mt5_target_id, payload)
+                instance_fields = compute_instance_fields(target)
+                if instance_fields.get("terminal_instance_key") != target.get("terminal_instance_key"):
+                    target = db.update_target(mt5_target_id, instance_fields)
+                rows = db.list_targets()
+                projected = project_mt5_target(target, rows)
+                db.add_audit(
+                    "MT5_TARGET_UPDATE",
+                    "INFO",
+                    f"Updated MT5 target {mt5_target_id}",
+                    {"target_id": mt5_target_id, "fields": sorted(payload.keys())},
+                )
+                self._send_json({"target": projected})
                 return
 
             route_id = self._route_id("/api/routes/")

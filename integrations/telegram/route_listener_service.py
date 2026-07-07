@@ -282,6 +282,7 @@ class RouteListenerManager:
         pair_timeout_seconds: int = 900,
         telethon_client_factory: TelethonClientFactory | None = None,
         normalize_stale_states: bool = True,
+        stale_state_reason: str = "Dashboard yeniden başlatıldı; dinleme durduruldu.",
     ) -> None:
         self._database = database
         self._data_dir = data_dir
@@ -293,7 +294,7 @@ class RouteListenerManager:
         self._active: dict[int, RouteRuntime] = {}
         self._telethon_bridge: TelethonRouteListenerBridge | None = None
         if normalize_stale_states:
-            self._normalize_stale_listener_states()
+            self._normalize_stale_listener_states(reason_message=stale_state_reason)
 
     def status_payload(self) -> dict[str, Any]:
         with self._lock:
@@ -684,7 +685,11 @@ class RouteListenerManager:
             self._telethon_bridge.shutdown()
             self._telethon_bridge = None
 
-    def _normalize_stale_listener_states(self) -> None:
+    def _normalize_stale_listener_states(
+        self,
+        *,
+        reason_message: str = "Dashboard yeniden başlatıldı; dinleme durduruldu.",
+    ) -> None:
         now = utc_now_iso()
         with self._database._connect() as conn:
             conn.execute(
@@ -697,11 +702,30 @@ class RouteListenerManager:
                 """,
                 (
                     LISTENER_STOPPED,
-                    "Dashboard yeniden başlatıldı; dinleme durduruldu.",
+                    reason_message,
                     now,
                     LISTENER_STOPPED,
                 ),
             )
+
+
+def build_worker_listener_manager(
+    database: DashboardDatabase,
+    data_dir: Path,
+    *,
+    telethon_client_factory: TelethonClientFactory | None = None,
+) -> RouteListenerManager:
+    dry_run = os.environ.get("DASHBOARD_ROUTE_LISTENER_DRY_RUN", "1") == "1"
+    telethon_enabled = os.environ.get("DASHBOARD_ROUTE_LISTENER_TELETHON", "0") == "1"
+    return RouteListenerManager(
+        database=database,
+        data_dir=data_dir,
+        dry_run=dry_run,
+        telethon_enabled=telethon_enabled,
+        telethon_client_factory=telethon_client_factory,
+        normalize_stale_states=True,
+        stale_state_reason="Dinleme servisi yeniden başlatıldı; takibi yeniden başlatın.",
+    )
 
 
 def build_default_listener_manager(
@@ -715,4 +739,5 @@ def build_default_listener_manager(
         data_dir=data_dir,
         dry_run=dry_run,
         telethon_enabled=telethon_enabled,
+        normalize_stale_states=False,
     )

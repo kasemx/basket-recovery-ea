@@ -4,11 +4,13 @@ const state = {
   credentialsStatus: null,
   channels: [],
   targets: [],
+  mt5Targets: { targets: [], summary: {} },
   routes: [],
   audit: [],
   signalHistory: { items: [], page: 1, page_size: 20, total: 0 },
   signalHistoryFilters: { page: 1, page_size: 20 },
   signalHistoryView: "cards",
+  listenerWorker: null,
 };
 
 const SIGNAL_HISTORY_VIEW_KEY = "br_dashboard_signal_history_view";
@@ -28,7 +30,7 @@ const views = {
   },
   targets: {
     title: "MT5 Hesaplarım",
-    subtitle: "Sinyallerin izleneceği MT5 hesapları",
+    subtitle: "Terminal hesabını doğrula, demo/gerçek ayrımını gör, EA eşleşmesini yönet",
   },
   routes: {
     title: "Sinyal Yönlendirmeleri",
@@ -55,6 +57,17 @@ const STATUS_LABELS = {
   TWO_FACTOR_REQUIRED: "Ek Şifre Gerekli",
   CONNECTED: "Bağlandı",
   TELEGRAM_CONNECTED: "Bağlandı",
+  ERROR: "Hata",
+};
+
+const LISTENER_WORKER_STATE_LABELS = {
+  STOPPED: "Kapalı",
+  STARTING: "Başlatılıyor",
+  CONNECTING: "Bağlanıyor",
+  CONNECTED: "Bağlı",
+  RECONNECTING: "Yeniden Bağlanıyor",
+  DEGRADED: "Sorun Var",
+  STOPPING: "Durduruluyor",
   ERROR: "Hata",
 };
 
@@ -368,8 +381,14 @@ function updateWizardStages(statusPayload) {
   );
 
   const canRequestCode =
-    status === "API_CONFIGURED" && configReady && telethonReady && !connected && !codeSent;
+    (status === "API_CONFIGURED" || status === "CODE_SENT") &&
+    configReady &&
+    telethonReady &&
+    !connected;
   $("#request-code-btn").disabled = !canRequestCode;
+  if ($("#request-code-btn")) {
+    $("#request-code-btn").textContent = codeSent ? "Doğrulama Kodunu Yeniden Gönder" : "Doğrulama Kodu Gönder";
+  }
   $("#verify-code-btn").disabled = !(configReady && telethonReady && codeSent);
   $("#sync-channels-btn").disabled = !connected;
   $("#disconnect-btn").disabled = status === "DISCONNECTED";
@@ -387,12 +406,12 @@ function updateWizardStages(statusPayload) {
 
   setHint(
     "#request-code-hint",
-    canRequestCode
-      ? ""
-      : connected
-        ? "Zaten bağlısın."
-        : codeSent
-          ? "Kod gönderildi. Gelen kodu yazıp doğrula."
+    codeSent
+      ? "Kod Telegram uygulamanıza gider (Ayarlar → Cihazlar). Gerekirse yeniden gönderebilirsin."
+      : canRequestCode
+        ? "Doğrulama kodu Telegram uygulamanıza gönderilir."
+        : connected
+          ? "Zaten bağlısın."
           : !phoneConfigured
             ? "Telefon numaran kayıtlı değil."
             : !configReady
@@ -400,12 +419,14 @@ function updateWizardStages(statusPayload) {
               : !telethonReady
                 ? "Telegram bağlantı bileşeni hazır değil."
                 : "Telefon kaydı tamamlandıktan sonra kod gönderebilirsin.",
-    !canRequestCode
+    codeSent || !canRequestCode
   );
 
   setHint(
     "#verify-code-hint",
-    codeSent ? "Telegram uygulamasından veya SMS'ten gelen kodu gir." : "",
+    codeSent
+      ? "Kodu Telegram uygulamanızdan alın (Ayarlar → Cihazlar). 12345 gibi test kodu çalışmaz."
+      : "",
     codeSent
   );
 
@@ -420,6 +441,7 @@ function renderTelegramStatus(statusPayload) {
   state.telegramStatus = statusPayload;
   renderTelegramBadges(statusPayload);
   updateWizardStages(statusPayload);
+  renderListenerWorkerPanel();
 
   const box = $("#telegram-status");
   const channelLabel =
@@ -445,6 +467,71 @@ function renderTelegramStatus(statusPayload) {
       <div><strong>Teknik hata kodu:</strong> ${escapeCell(statusPayload.last_error_code || "—")}</div>
     `;
   }
+}
+
+function formatListenerWorkerStateLabel(worker) {
+  if (!worker) {
+    return "Kapalı";
+  }
+  return worker.state_label || LISTENER_WORKER_STATE_LABELS[worker.state] || worker.state || "Kapalı";
+}
+
+function formatUtcShort(value) {
+  if (!value) {
+    return "—";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "—";
+  }
+  return parsed.toLocaleString("tr-TR");
+}
+
+function renderListenerWorkerPanel() {
+  const container = $("#listener-worker-status");
+  const startBtn = $("#listener-worker-start-btn");
+  const stopBtn = $("#listener-worker-stop-btn");
+  if (!container) {
+    return;
+  }
+  const worker = state.listenerWorker;
+  if (!worker) {
+    container.innerHTML = `<p class="muted">Dinleme servisi durumu yükleniyor…</p>`;
+    if (startBtn) startBtn.disabled = false;
+    if (stopBtn) stopBtn.disabled = true;
+    return;
+  }
+  const activeCount = worker.active_route_count || 0;
+  const running = ["CONNECTED", "RECONNECTING", "CONNECTING", "STARTING"].includes(worker.state);
+  container.innerHTML = `
+    <div><strong>Durum:</strong> ${escapeCell(formatListenerWorkerStateLabel(worker))}</div>
+    <div><strong>Aktif Route:</strong> ${escapeCell(String(activeCount))}</div>
+    <div><strong>Son Bağlantı:</strong> ${escapeCell(formatUtcShort(worker.started_at_utc))}</div>
+    <div><strong>Son Kontrol:</strong> ${escapeCell(formatUtcShort(worker.last_heartbeat_at_utc))}</div>
+    ${worker.safe_last_error ? `<div class="muted">${escapeCell(worker.safe_last_error)}</div>` : ""}
+  `;
+  if (startBtn) startBtn.disabled = running;
+  if (stopBtn) stopBtn.disabled = !running && worker.state !== "DEGRADED" && worker.state !== "ERROR";
+}
+
+function renderRoutesWorkerHint() {
+  const hint = $("#routes-worker-hint");
+  if (!hint) {
+    return;
+  }
+  const worker = state.listenerWorker;
+  const active = worker && ["CONNECTED", "RECONNECTING"].includes(worker.state);
+  hint.textContent = active
+    ? "Telegram Dinleme Servisi Aktif"
+    : "Önce Telegram Dinleme Servisini Başlat";
+  hint.classList.toggle("hidden", false);
+}
+
+function routeConnectionLabels(listener) {
+  const workerLabel = listener.worker_state_label || formatListenerWorkerStateLabel({ state: listener.worker_state });
+  const telegramLabel = listener.telegram_connected ? "Bağlı" : "Bağlı Değil";
+  const routeLabel = listener.running ? "Aktif" : "Kapalı";
+  return { routeLabel, workerLabel, telegramLabel };
 }
 
 function renderTable(container, headers, rows, emptyMessage) {
@@ -516,36 +603,186 @@ function renderChannels() {
   });
 }
 
+function accountTypeBadgeClass(type) {
+  if (type === "REAL") return "badge-danger";
+  if (type === "DEMO") return "badge-success";
+  if (type === "CONTEST") return "badge-warn";
+  return "badge-muted";
+}
+
+function accountTypeLabel(type) {
+  const labels = {
+    DEMO: "DEMO",
+    REAL: "GERÇEK",
+    CONTEST: "YARIŞMA",
+    UNKNOWN: "BİLİNMİYOR",
+  };
+  return labels[type] || "BİLİNMİYOR";
+}
+
+function renderMt5Summary() {
+  const container = $("#mt5-target-summary");
+  if (!container) return;
+  const summary = state.mt5Targets.summary || {};
+  const items = [
+    ["Toplam Hedef", summary.total || 0],
+    ["Demo Hesap", summary.demo_accounts || 0],
+    ["Gerçek Hesap", summary.real_accounts || 0],
+    ["Yarışma Hesabı", summary.contest_accounts || 0],
+    ["Terminal Çevrimdışı", summary.terminal_offline || 0],
+    ["Doğrulanmayı Bekleyen", summary.pending_verification || 0],
+    ["EA Eşleşmesi Bekleyen", summary.pending_ea_match || 0],
+  ];
+  container.innerHTML = items
+    .map(
+      ([label, value]) =>
+        `<div class="mt5-summary-card"><span class="muted">${escapeCell(label)}</span><strong>${escapeCell(String(value))}</strong></div>`
+    )
+    .join("");
+}
+
+function renderMt5TargetCard(target) {
+  const detectedType = target.detected_trade_mode && target.last_verified_at_utc
+    ? target.detected_trade_mode
+    : target.expected_account_type;
+  const warnings = (target.warnings || [])
+    .map((warning) => `<div class="mt5-warning">${escapeCell(warning)}</div>`)
+    .join("");
+  const configIssues = (target.ea_config_match?.issues || [])
+    .map((issue) => `<div class="mt5-warning">${escapeCell(issue)}</div>`)
+    .join("");
+  const detailsId = `mt5-details-${target.id}`;
+  return `
+    <article class="mt5-target-card ${target.is_enabled ? "" : "is-disabled"}">
+      <div class="mt5-target-card-header">
+        <div>
+          <h4 class="mt5-target-title">${escapeCell(target.display_name || target.name)}</h4>
+          <p class="muted">${escapeCell(target.card_status || "—")}</p>
+        </div>
+        <div class="mt5-target-badges">
+          <span class="badge ${accountTypeBadgeClass(detectedType)}">${escapeCell(accountTypeLabel(detectedType))}</span>
+          <span class="badge badge-locked">İşlem Yetkisi Kilitli</span>
+        </div>
+      </div>
+      ${warnings}
+      ${configIssues}
+      <div class="mt5-target-grid">
+        <div><span class="muted">Terminal Adı</span><strong>${escapeCell(target.terminal_label || "—")}</strong></div>
+        <div><span class="muted">Terminal Program Yolu</span><strong>${escapeCell(target.terminal_exe_path || "—")}</strong></div>
+        <div><span class="muted">Terminal Veri Klasörü</span><strong>${escapeCell(target.terminal_data_path || target.detected_terminal_data_path || "—")}</strong></div>
+        <div><span class="muted">Terminal Instance Durumu</span><strong>${escapeCell(target.terminal_instance_status || "—")}</strong></div>
+        <div><span class="muted">Hesap No</span><strong>${escapeCell(target.detected_account_login_masked || target.expected_account_login_masked || "—")}</strong></div>
+        <div><span class="muted">Broker</span><strong>${escapeCell(target.broker_label || "—")}</strong></div>
+        <div><span class="muted">Sunucu</span><strong>${escapeCell(target.detected_server || target.expected_server || "—")}</strong></div>
+        <div><span class="muted">Hesap Türü</span><strong>${escapeCell(target.detected_trade_mode_label || accountTypeLabel(target.expected_account_type))}</strong></div>
+        <div><span class="muted">Para Birimi</span><strong>${escapeCell(target.detected_currency || "—")}</strong></div>
+        <div><span class="muted">Equity</span><strong>${target.detected_equity != null ? escapeCell(String(target.detected_equity)) : "—"}</strong></div>
+        <div><span class="muted">XAUUSD Durumu</span><strong>${escapeCell(target.xauusd_status || "—")}</strong></div>
+        <div><span class="muted">Terminal Bağlantısı</span><strong>${target.terminal_connected ? "Bağlı" : "Bağlı Değil"}</strong></div>
+        <div><span class="muted">Son Doğrulama</span><strong>${escapeCell(formatLocalDateTime(target.last_verified_at_utc))}</strong></div>
+      </div>
+      <div class="mt5-target-section">
+        <h5>EA Eşleştirmesi</h5>
+        <div class="mt5-target-grid">
+          <div><span class="muted">EA Adı</span><strong>${escapeCell(target.ea_name || "—")}</strong></div>
+          <div><span class="muted">Chart</span><strong>${escapeCell(`${target.chart_symbol || "XAUUSD"} / ${target.chart_timeframe || "M1"}`)}</strong></div>
+          <div><span class="muted">Magic Number</span><strong>${escapeCell(target.magic_number != null ? String(target.magic_number) : "—")}</strong></div>
+          <div><span class="muted">Seed Dosyası</span><strong>${escapeCell(target.seed_filename || "—")}</strong></div>
+          <div><span class="muted">Details Dosyası</span><strong>${escapeCell(target.details_filename || "—")}</strong></div>
+          <div><span class="muted">Yapılandırma Eşleşmesi</span><strong>${target.ea_config_match?.status === "OK" ? "Tamam" : "Kontrol Gerekli"}</strong></div>
+          <div><span class="muted">Canlı EA Doğrulaması</span><strong>${escapeCell(target.ea_live_verification?.status || "Henüz doğrulanmadı")}</strong></div>
+        </div>
+      </div>
+      <div id="${detailsId}" class="mt5-target-details hidden">
+        <div class="mt5-target-grid">
+          <div><span class="muted">FILE_COMMON</span><strong>${escapeCell(target.file_common_root || "—")}</strong></div>
+          <div><span class="muted">Doğrulama Mesajı</span><strong>${escapeCell(target.verification_message_safe || "—")}</strong></div>
+          <div><span class="muted">Şirket</span><strong>${escapeCell(target.detected_company || "—")}</strong></div>
+        </div>
+      </div>
+      <div class="mt5-target-actions">
+        <button type="button" class="btn btn-small primary" data-verify-target="${target.id}">Doğrula</button>
+        <button type="button" class="btn btn-small" data-edit-target="${target.id}">Düzenle</button>
+        <button type="button" class="btn btn-small" data-edit-ea-target="${target.id}">EA Eşleştirmesini Düzenle</button>
+        <button type="button" class="btn btn-small" data-toggle-details="${detailsId}">Güvenli Ayrıntılar</button>
+        <button type="button" class="btn btn-small" data-disable-target="${target.id}">Hedefi Devre Dışı Bırak</button>
+      </div>
+    </article>
+  `;
+}
+
 function renderTargets() {
+  renderMt5Summary();
   const container = $("#targets-list");
-  const rows = state.targets.map((target) => [
-    escapeCell(target.name),
-    escapeCell(target.terminal_label),
-    escapeCell(target.broker_label),
-    escapeCell(target.account_mode === "DEMO" ? "Demo" : "Bilinmiyor"),
-    escapeCell(target.seed_filename),
-    escapeCell(target.details_filename),
-    `<span class="badge badge-locked">Sadece İzle</span>`,
-    `<button type="button" class="btn btn-small" data-delete-target="${target.id}">Sil</button>`,
-  ]);
-  renderTable(
-    container,
-    ["Ad", "Terminal", "Broker", "Hesap Türü", "Sinyal Dosyası", "Detay Dosyası", "Mod", "İşlem"],
-    rows,
-    "Henüz MT5 hesabı eklenmedi."
-  );
-  container.querySelectorAll("[data-delete-target]").forEach((button) => {
+  if (!container) return;
+  const targets = state.mt5Targets.targets || [];
+  if (!targets.length) {
+    container.innerHTML = `<p class="muted">Henüz MT5 hesabı eklenmedi.</p>`;
+    return;
+  }
+  container.innerHTML = targets.map(renderMt5TargetCard).join("");
+  container.querySelectorAll("[data-verify-target]").forEach((button) => {
     button.addEventListener("click", async () => {
-      const targetId = button.getAttribute("data-delete-target");
+      const targetId = button.getAttribute("data-verify-target");
       try {
-        await api(`/api/targets/${targetId}`, { method: "DELETE" });
+        await api(`/api/mt5-targets/${targetId}/verify`, { method: "POST", body: "{}" });
         await refreshAll();
-        showAlert("MT5 hesabı silindi.", "success");
+        showAlert("Hesap doğrulaması güncellendi.", "success");
       } catch (error) {
         showAlert(error.message);
       }
     });
   });
+  container.querySelectorAll("[data-disable-target]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const targetId = button.getAttribute("data-disable-target");
+      try {
+        await api(`/api/mt5-targets/${targetId}/disable`, { method: "POST", body: "{}" });
+        await refreshAll();
+        showAlert("Hedef devre dışı bırakıldı.", "success");
+      } catch (error) {
+        showAlert(error.message);
+      }
+    });
+  });
+  container.querySelectorAll("[data-toggle-details]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const panel = document.getElementById(button.getAttribute("data-toggle-details"));
+      if (panel) panel.classList.toggle("hidden");
+    });
+  });
+  container.querySelectorAll("[data-edit-target]").forEach((button) => {
+    button.addEventListener("click", () => populateTargetEditForm(button.getAttribute("data-edit-target"), false));
+  });
+  container.querySelectorAll("[data-edit-ea-target]").forEach((button) => {
+    button.addEventListener("click", () => populateTargetEditForm(button.getAttribute("data-edit-ea-target"), true));
+  });
+}
+
+function populateTargetEditForm(targetId, eaOnly) {
+  const target = (state.mt5Targets.targets || []).find((item) => String(item.id) === String(targetId));
+  const form = $("#target-form");
+  if (!target || !form) return;
+  form.querySelector('[name="display_name"]').value = target.display_name || target.name || "";
+  form.querySelector('[name="name"]').value = target.display_name || target.name || "";
+  form.querySelector('[name="terminal_label"]').value = target.terminal_label || "";
+  form.querySelector('[name="terminal_exe_path"]').value = target.terminal_exe_path || "";
+  form.querySelector('[name="terminal_data_path"]').value = target.terminal_data_path || "";
+  form.querySelector('[name="broker_label"]').value = target.broker_label || "";
+  form.querySelector('[name="expected_server"]').value = target.expected_server || "";
+  form.querySelector('[name="expected_account_login"]').value = "";
+  form.querySelector('[name="expected_account_type"]').value = target.expected_account_type || "UNKNOWN";
+  form.querySelector('[name="file_common_root"]').value = target.file_common_root || "";
+  form.querySelector('[name="seed_filename"]').value = target.seed_filename || "";
+  form.querySelector('[name="details_filename"]').value = target.details_filename || "";
+  form.querySelector('[name="ea_name"]').value = target.ea_name || "Basket Recovery EA";
+  form.querySelector('[name="chart_symbol"]').value = target.chart_symbol || "XAUUSD";
+  form.querySelector('[name="chart_timeframe"]').value = target.chart_timeframe || "M1";
+  form.querySelector('[name="magic_number"]').value = target.magic_number ?? "";
+  form.dataset.editTargetId = targetId;
+  const saveBtn = $("#target-save-btn");
+  if (saveBtn) saveBtn.textContent = eaOnly ? "EA Eşleştirmesini Kaydet" : "Değişiklikleri Kaydet";
+  form.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function formatLocalDateTime(isoUtc) {
@@ -853,6 +1090,7 @@ async function stopRouteListener(routeId) {
 }
 
 function renderRoutes() {
+  renderRoutesWorkerHint();
   const channelSelect = $("#route-channel-select");
   const targetSelect = $("#route-target-select");
   const tracked = state.channels.filter((c) => c.is_tracking);
@@ -878,6 +1116,7 @@ function renderRoutes() {
     .map((route) => {
       const listener = route.listener || {};
       const running = Boolean(listener.running);
+      const connections = routeConnectionLabels(listener);
       const startDisabled = running ? "disabled" : "";
       const stopDisabled = running ? "" : "disabled";
       return `
@@ -887,7 +1126,13 @@ function renderRoutes() {
             <h4 class="route-card-title">${escapeCell(route.name)}</h4>
             <p class="route-card-route-line">${escapeCell(route.channel_title)} → ${escapeCell(route.target_name)}</p>
           </div>
-          <span class="badge ${route.is_enabled ? "badge-success" : "badge-muted"}">${route.is_enabled ? "Açık" : "Kapalı"}</span>
+          <span class="badge ${route.is_enabled ? "badge-success" : "badge-muted"}">${route.is_enabled ? "Route: Aktif" : "Route: Kapalı"}</span>
+        </div>
+        <div class="route-status-grid">
+          <div><strong>Route</strong><span>${escapeCell(connections.routeLabel)}</span></div>
+          <div><strong>Dinleme Servisi</strong><span>${escapeCell(connections.workerLabel)}</span></div>
+          <div><strong>Telegram</strong><span>${escapeCell(connections.telegramLabel)}</span></div>
+          <div><strong>İşlem Açma</strong><span>Kapalı</span></div>
         </div>
         <div class="route-card-badges">
           <span class="badge badge-observer">Sadece İzle</span>
@@ -1203,24 +1448,50 @@ function renderSafetyMatrix() {
     .join("");
 }
 
+async function apiOptional(path, options = {}, fallback = null) {
+  try {
+    return await api(path, options);
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function isBackendFeatureReady(health) {
+  return Boolean(health?.features?.listener_worker && health?.features?.mt5_targets);
+}
+
 async function refreshAll() {
   setLoading(true);
   hideAlert();
   try {
-    const [overview, telegramStatus, credentialsStatus, channelsPayload, targetsPayload, routesPayload, auditPayload] =
-      await Promise.all([
-        api("/api/overview"),
-        api("/api/telegram/status"),
-        api("/api/telegram/credentials/status"),
-        api("/api/channels"),
-        api("/api/targets"),
-        api("/api/routes"),
-        api("/api/audit?limit=100"),
-      ]);
+    const health = await apiOptional("/api/health", {}, null);
+    const [
+      overview,
+      telegramStatus,
+      credentialsStatus,
+      listenerStatus,
+      channelsPayload,
+      targetsPayload,
+      mt5TargetsPayload,
+      routesPayload,
+      auditPayload,
+    ] = await Promise.all([
+      api("/api/overview"),
+      api("/api/telegram/status"),
+      api("/api/telegram/credentials/status"),
+      apiOptional("/api/listener/status", {}, { worker: null, active_route_count: 0 }),
+      api("/api/channels"),
+      api("/api/targets"),
+      apiOptional("/api/mt5-targets", {}, { targets: [], summary: {} }),
+      api("/api/routes"),
+      apiOptional("/api/audit?limit=100", {}, { events: [] }),
+    ]);
     state.overview = overview;
     state.credentialsStatus = credentialsStatus;
+    state.listenerWorker = listenerStatus?.worker || null;
     state.channels = channelsPayload.channels;
     state.targets = targetsPayload.targets;
+    state.mt5Targets = mt5TargetsPayload;
     state.routes = routesPayload.routes;
     state.audit = auditPayload.events;
     const mergedStatus = mergeTelegramStatus(telegramStatus, credentialsStatus);
@@ -1235,6 +1506,12 @@ async function refreshAll() {
     }
     renderAudit();
     renderSafetyMatrix();
+    if (health && !isBackendFeatureReady(health)) {
+      showAlert(
+        "Dashboard sunucusu güncel değil (eski sürüm çalışıyor). Terminalde sunucuyu durdurup yeniden başlatın, ardından sayfayı Ctrl+Shift+R ile yenileyin.",
+        "error"
+      );
+    }
   } catch (error) {
     showAlert(error.message);
   } finally {
@@ -1344,7 +1621,10 @@ function bindEvents() {
       });
       await refreshAll();
       if (result.status === "CODE_SENT") {
-        showAlert("Doğrulama kodu gönderildi. Telegram veya SMS'i kontrol et.", "success");
+        showAlert(
+          "Doğrulama kodu Telegram uygulamanıza gönderildi. Telegram → Ayarlar → Cihazlar veya 'Telegram' sohbetinden 5 haneli kodu alın. SMS gelmeyebilir.",
+          "success"
+        );
       } else {
         showAlert(formatErrorMessage(result));
       }
@@ -1362,10 +1642,19 @@ function bindEvents() {
   $("#verify-code-btn").addEventListener("click", async () => {
     hideAlert();
     const code = $("#code-input").value.trim();
+    const phone = $("#phone-input").value.trim();
+    if (!code) {
+      showAlert("Telegram uygulamasından gelen doğrulama kodunu gir.");
+      return;
+    }
+    if (!phone) {
+      showAlert("Telefon numarasını tekrar gir; sunucu yeniden başladıysa numara gerekir.");
+      return;
+    }
     try {
       const result = await api("/api/telegram/verify-code", {
         method: "POST",
-        body: JSON.stringify({ code }),
+        body: JSON.stringify({ code, phone }),
       });
       await refreshAll();
       if (result.status === "TWO_FACTOR_REQUIRED") {
@@ -1415,6 +1704,34 @@ function bindEvents() {
     }
   });
 
+  const workerStartBtn = $("#listener-worker-start-btn");
+  if (workerStartBtn) {
+    workerStartBtn.addEventListener("click", async () => {
+      hideAlert();
+      try {
+        await api("/api/listener/worker/start", { method: "POST", body: "{}" });
+        await refreshAll();
+        showAlert("Telegram dinleme servisi başlatıldı.", "success");
+      } catch (error) {
+        showAlert(error.message);
+      }
+    });
+  }
+
+  const workerStopBtn = $("#listener-worker-stop-btn");
+  if (workerStopBtn) {
+    workerStopBtn.addEventListener("click", async () => {
+      hideAlert();
+      try {
+        await api("/api/listener/worker/stop", { method: "POST", body: "{}" });
+        await refreshAll();
+        showAlert("Telegram dinleme servisi durduruldu.", "success");
+      } catch (error) {
+        showAlert(error.message);
+      }
+    });
+  }
+
   $("#import-demo-channels").addEventListener("click", async () => {
     try {
       await api("/api/channels/import-demo", { method: "POST", body: "{}" });
@@ -1429,13 +1746,40 @@ function bindEvents() {
     event.preventDefault();
     const form = event.target;
     const payload = Object.fromEntries(new FormData(form).entries());
+    payload.display_name = payload.display_name || payload.name;
+    payload.name = payload.display_name;
+    if (payload.magic_number === "") {
+      delete payload.magic_number;
+    } else if (payload.magic_number != null) {
+      payload.magic_number = Number(payload.magic_number);
+    }
+    const editTargetId = form.dataset.editTargetId;
     try {
-      await api("/api/targets", { method: "POST", body: JSON.stringify(payload) });
+      if (editTargetId) {
+        await api(`/api/mt5-targets/${editTargetId}`, {
+          method: "PATCH",
+          body: JSON.stringify(payload),
+        });
+        delete form.dataset.editTargetId;
+        $("#target-save-btn").textContent = "Kaydet ve Doğrula";
+      } else {
+        const created = await api("/api/mt5-targets", { method: "POST", body: JSON.stringify(payload) });
+        if (created.target?.id && payload.terminal_exe_path) {
+          try {
+            await api(`/api/mt5-targets/${created.target.id}/verify`, { method: "POST", body: "{}" });
+          } catch (verifyError) {
+            showAlert(verifyError.message);
+          }
+        }
+      }
       form.reset();
       form.querySelector('[name="seed_filename"]').value = "basket_recovery_fasttrack_seed.txt";
       form.querySelector('[name="details_filename"]').value = "basket_recovery_fasttrack_details.txt";
+      form.querySelector('[name="ea_name"]').value = "Basket Recovery EA";
+      form.querySelector('[name="chart_symbol"]').value = "XAUUSD";
+      form.querySelector('[name="chart_timeframe"]').value = "M1";
       await refreshAll();
-      showAlert("MT5 hesabı eklendi.", "success");
+      showAlert(editTargetId ? "MT5 hesabı güncellendi." : "MT5 hesabı eklendi.", "success");
     } catch (error) {
       showAlert(error.message);
     }

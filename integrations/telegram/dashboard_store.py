@@ -147,11 +147,66 @@ class DashboardDatabase:
                     created_at_utc TEXT NOT NULL,
                     FOREIGN KEY(route_id) REFERENCES routes(id) ON DELETE CASCADE
                 );
+
+                CREATE TABLE IF NOT EXISTS listener_worker_state (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    state TEXT NOT NULL DEFAULT 'STOPPED',
+                    pid INTEGER NULL,
+                    started_at_utc TEXT NULL,
+                    last_heartbeat_at_utc TEXT NULL,
+                    reconnect_count INTEGER NOT NULL DEFAULT 0,
+                    active_route_count INTEGER NOT NULL DEFAULT 0,
+                    active_route_ids_json TEXT NULL,
+                    safe_last_error TEXT NULL,
+                    dry_run INTEGER NOT NULL DEFAULT 1,
+                    updated_at_utc TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS listener_worker_commands (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    command_type TEXT NOT NULL,
+                    route_id INTEGER NULL,
+                    status TEXT NOT NULL DEFAULT 'PENDING',
+                    result_json TEXT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    processed_at_utc TEXT NULL
+                );
                 """
             )
             self._ensure_column(conn, "telegram_connection", "phone_code_hash", "TEXT NULL")
             self._ensure_column(conn, "telegram_connection", "session_path_masked", "TEXT NULL")
             self._ensure_column(conn, "tracked_channels", "source", "TEXT NULL")
+            for column, definition in (
+                ("terminal_exe_path", "TEXT NULL"),
+                ("expected_account_login", "TEXT NULL"),
+                ("expected_server", "TEXT NULL"),
+                ("expected_account_type", "TEXT NULL"),
+                ("ea_name", "TEXT NULL"),
+                ("chart_symbol", "TEXT NULL"),
+                ("chart_timeframe", "TEXT NULL"),
+                ("magic_number", "INTEGER NULL"),
+                ("execution_permission", "TEXT NOT NULL DEFAULT 'LOCKED'"),
+                ("detected_account_login", "TEXT NULL"),
+                ("detected_server", "TEXT NULL"),
+                ("detected_company", "TEXT NULL"),
+                ("detected_trade_mode", "TEXT NULL"),
+                ("detected_currency", "TEXT NULL"),
+                ("detected_equity", "REAL NULL"),
+                ("terminal_connected", "INTEGER NULL"),
+                ("terminal_trade_allowed", "INTEGER NULL"),
+                ("xauusd_available", "INTEGER NULL"),
+                ("xauusd_trade_mode", "TEXT NULL"),
+                ("last_verified_at_utc", "TEXT NULL"),
+                ("verification_status", "TEXT NULL"),
+                ("verification_message_safe", "TEXT NULL"),
+                ("last_verify_attempt_at_utc", "TEXT NULL"),
+                ("terminal_data_path", "TEXT NULL"),
+                ("terminal_instance_key", "TEXT NULL"),
+                ("terminal_process_id", "INTEGER NULL"),
+                ("detected_terminal_data_path", "TEXT NULL"),
+                ("detected_terminal_path", "TEXT NULL"),
+            ):
+                self._ensure_column(conn, "mt5_targets", column, definition)
             row = conn.execute("SELECT id FROM telegram_connection WHERE id = 1").fetchone()
             if row is None:
                 now = utc_now_iso()
@@ -160,6 +215,17 @@ class DashboardDatabase:
                     INSERT INTO telegram_connection
                     (id, status, phone_masked, channel_count, last_error_code, updated_at_utc)
                     VALUES (1, 'DISCONNECTED', NULL, 0, NULL, ?)
+                    """,
+                    (now,),
+                )
+            worker_row = conn.execute("SELECT id FROM listener_worker_state WHERE id = 1").fetchone()
+            if worker_row is None:
+                now = utc_now_iso()
+                conn.execute(
+                    """
+                    INSERT INTO listener_worker_state
+                    (id, state, reconnect_count, active_route_count, dry_run, updated_at_utc)
+                    VALUES (1, 'STOPPED', 0, 0, 1, ?)
                     """,
                     (now,),
                 )
@@ -488,46 +554,78 @@ class DashboardDatabase:
             rows = conn.execute("SELECT * FROM mt5_targets ORDER BY name").fetchall()
         return [dict(row) for row in rows]
 
-    def create_target(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def get_target(self, target_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM mt5_targets WHERE id = ?", (target_id,)).fetchone()
+        return dict(row) if row else None
+
+    def _validate_target_core(self, payload: dict[str, Any]) -> tuple[str, str, str, str, str]:
         seed_filename = validate_basename_safe(str(payload["seed_filename"]))
         details_filename = validate_basename_safe(str(payload["details_filename"]))
         if seed_filename == details_filename:
             raise DashboardValidationError("Seed and details filenames must differ")
-        account_mode = str(payload["account_mode"]).upper()
-        if account_mode not in ACCOUNT_MODES:
-            raise DashboardValidationError("account_mode must be DEMO or UNKNOWN")
+        expected_type = str(
+            payload.get("expected_account_type") or payload.get("account_mode") or "UNKNOWN"
+        ).upper()
+        if expected_type not in {"DEMO", "REAL", "UNKNOWN"}:
+            raise DashboardValidationError("expected_account_type must be DEMO, REAL, or UNKNOWN")
+        account_mode = expected_type if expected_type in ACCOUNT_MODES else "UNKNOWN"
         if payload.get("observer_only") in (False, 0, "0", "false"):
             raise DashboardValidationError("observer_only must remain enabled")
+        if str(payload.get("execution_permission", "LOCKED")).upper() != "LOCKED":
+            raise DashboardValidationError("execution_permission must remain LOCKED")
+        return seed_filename, details_filename, account_mode, expected_type, str(payload["name"]).strip()
+
+    def create_target(self, payload: dict[str, Any]) -> dict[str, Any]:
+        seed_filename, details_filename, account_mode, expected_type, name = self._validate_target_core(payload)
         now = utc_now_iso()
+        terminal_data_path = str(payload.get("terminal_data_path") or "").strip() or None
+        terminal_instance_key = str(payload.get("terminal_instance_key") or "").strip() or None
         with self._connect() as conn:
             conn.execute(
                 """
                 INSERT INTO mt5_targets
                 (name, terminal_label, broker_label, account_mode, file_common_root,
                  seed_filename, details_filename, observer_only, is_enabled,
+                 terminal_exe_path, expected_account_login, expected_server, expected_account_type,
+                 ea_name, chart_symbol, chart_timeframe, magic_number, execution_permission,
+                 terminal_data_path, terminal_instance_key,
                  created_at_utc, updated_at_utc)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?, ?, ?, ?, ?, ?, ?, 'LOCKED', ?, ?, ?, ?)
                 """,
                 (
-                    str(payload["name"]).strip(),
+                    name,
                     str(payload["terminal_label"]).strip(),
                     str(payload["broker_label"]).strip(),
                     account_mode,
                     str(payload["file_common_root"]).strip(),
                     seed_filename,
                     details_filename,
+                    str(payload.get("terminal_exe_path") or "").strip() or None,
+                    str(payload.get("expected_account_login") or "").strip() or None,
+                    str(payload.get("expected_server") or "").strip() or None,
+                    expected_type,
+                    str(payload.get("ea_name") or "Basket Recovery EA").strip(),
+                    str(payload.get("chart_symbol") or "XAUUSD").strip(),
+                    str(payload.get("chart_timeframe") or "M1").strip(),
+                    int(payload["magic_number"]) if payload.get("magic_number") not in (None, "") else None,
+                    terminal_data_path,
+                    terminal_instance_key,
                     now,
                     now,
                 ),
             )
-            row = conn.execute(
-                "SELECT * FROM mt5_targets WHERE name = ?", (payload["name"],)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM mt5_targets WHERE name = ?", (name,)).fetchone()
         return dict(row)
+
+    def create_mt5_target(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self.create_target(payload)
 
     def update_target(self, target_id: int, updates: dict[str, Any]) -> dict[str, Any]:
         if updates.get("observer_only") in (False, 0, "0", "false"):
             raise DashboardValidationError("observer_only cannot be disabled")
+        if "execution_permission" in updates:
+            raise DashboardValidationError("execution_permission cannot be changed")
         allowed_keys = (
             "name",
             "terminal_label",
@@ -535,6 +633,17 @@ class DashboardDatabase:
             "seed_filename",
             "details_filename",
             "is_enabled",
+            "terminal_exe_path",
+            "expected_account_login",
+            "expected_server",
+            "expected_account_type",
+            "file_common_root",
+            "ea_name",
+            "chart_symbol",
+            "chart_timeframe",
+            "magic_number",
+            "terminal_data_path",
+            "terminal_instance_key",
         )
         allowed = {}
         for key in allowed_keys:
@@ -543,6 +652,13 @@ class DashboardDatabase:
             value = updates[key]
             if key in ("seed_filename", "details_filename"):
                 value = validate_basename_safe(str(value))
+            if key == "expected_account_type":
+                value = str(value).upper()
+                if value not in {"DEMO", "REAL", "UNKNOWN"}:
+                    raise DashboardValidationError("expected_account_type must be DEMO, REAL, or UNKNOWN")
+                allowed["account_mode"] = value if value in ACCOUNT_MODES else "UNKNOWN"
+            if key == "magic_number":
+                value = int(value) if value not in (None, "") else None
             allowed[key] = value
         if not allowed:
             raise DashboardValidationError("No updatable target fields provided")
@@ -558,6 +674,67 @@ class DashboardDatabase:
                 raise DashboardValidationError("Target not found")
             row = conn.execute("SELECT * FROM mt5_targets WHERE id = ?", (target_id,)).fetchone()
         return dict(row)
+
+    def disable_target(self, target_id: int) -> dict[str, Any]:
+        return self.update_target(target_id, {"is_enabled": 0})
+
+    def verify_rate_limit_ok(self, target_id: int, min_seconds: int) -> tuple[bool, int]:
+        row = self.get_target(target_id)
+        if row is None:
+            raise DashboardValidationError("Target not found")
+        last_attempt = row.get("last_verify_attempt_at_utc")
+        now = utc_now_iso()
+        if not last_attempt:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE mt5_targets SET last_verify_attempt_at_utc = ? WHERE id = ?",
+                    (now, target_id),
+                )
+            return True, 0
+        from datetime import datetime, timezone
+
+        previous = datetime.strptime(last_attempt, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        current = datetime.strptime(now, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        elapsed = int((current - previous).total_seconds())
+        if elapsed < min_seconds:
+            return False, min_seconds - elapsed
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE mt5_targets SET last_verify_attempt_at_utc = ? WHERE id = ?",
+                (now, target_id),
+            )
+        return True, 0
+
+    def save_target_verification(self, target_id: int, fields: dict[str, Any]) -> None:
+        allowed_keys = (
+            "detected_account_login",
+            "detected_server",
+            "detected_company",
+            "detected_trade_mode",
+            "detected_currency",
+            "detected_equity",
+            "terminal_connected",
+            "terminal_trade_allowed",
+            "xauusd_available",
+            "xauusd_trade_mode",
+            "last_verified_at_utc",
+            "verification_status",
+            "verification_message_safe",
+            "detected_terminal_data_path",
+            "detected_terminal_path",
+            "terminal_process_id",
+        )
+        updates = {key: fields[key] for key in allowed_keys if key in fields}
+        if not updates:
+            return
+        now = utc_now_iso()
+        sets = ", ".join(f"{key} = ?" for key in updates)
+        values = list(updates.values()) + [now, target_id]
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE mt5_targets SET {sets}, updated_at_utc = ? WHERE id = ?",
+                values,
+            )
 
     def delete_target(self, target_id: int) -> None:
         with self._connect() as conn:
@@ -931,3 +1108,146 @@ class DashboardDatabase:
                 "channel_live_sync": "IMPLEMENTED_ON_DEMAND",
             },
         }
+
+    def get_listener_worker_state(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, state, pid, started_at_utc, last_heartbeat_at_utc,
+                       reconnect_count, active_route_count, active_route_ids_json,
+                       safe_last_error, dry_run, updated_at_utc
+                FROM listener_worker_state
+                WHERE id = 1
+                """
+            ).fetchone()
+        if row is None:
+            return {
+                "state": "STOPPED",
+                "pid": None,
+                "started_at_utc": None,
+                "last_heartbeat_at_utc": None,
+                "reconnect_count": 0,
+                "active_route_count": 0,
+                "active_route_ids": [],
+                "safe_last_error": None,
+                "dry_run": True,
+                "updated_at_utc": utc_now_iso(),
+            }
+        item = dict(row)
+        raw_ids = item.pop("active_route_ids_json", None)
+        item["active_route_ids"] = json.loads(raw_ids) if raw_ids else []
+        item["dry_run"] = bool(item.get("dry_run", 1))
+        return item
+
+    def upsert_listener_worker_state(self, **fields: Any) -> None:
+        allowed = {
+            "state",
+            "pid",
+            "started_at_utc",
+            "last_heartbeat_at_utc",
+            "reconnect_count",
+            "active_route_count",
+            "active_route_ids_json",
+            "safe_last_error",
+            "dry_run",
+        }
+        updates = {key: value for key, value in fields.items() if key in allowed}
+        if not updates:
+            return
+        if "active_route_ids_json" not in updates and "active_route_ids" in fields:
+            ids = fields["active_route_ids"]
+            normalized = sorted(set(ids))
+            updates["active_route_ids_json"] = json.dumps(normalized)
+            updates["active_route_count"] = len(normalized)
+        updates.pop("active_route_ids", None)
+        updates["updated_at_utc"] = utc_now_iso()
+        columns = ", ".join(f"{key} = ?" for key in updates)
+        values = list(updates.values())
+        with self._connect() as conn:
+            conn.execute(
+                f"UPDATE listener_worker_state SET {columns} WHERE id = 1",
+                values,
+            )
+
+    def enqueue_listener_worker_command(
+        self,
+        command_type: str,
+        *,
+        route_id: int | None = None,
+    ) -> int:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO listener_worker_commands
+                (command_type, route_id, status, created_at_utc)
+                VALUES (?, ?, 'PENDING', ?)
+                """,
+                (command_type, route_id, now),
+            )
+            return int(cursor.lastrowid)
+
+    def claim_pending_worker_commands(self, limit: int = 20) -> list[dict[str, Any]]:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, command_type, route_id, status, created_at_utc
+                FROM listener_worker_commands
+                WHERE status = 'PENDING'
+                ORDER BY id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            ids = [int(row["id"]) for row in rows]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"""
+                    UPDATE listener_worker_commands
+                    SET status = 'PROCESSING', processed_at_utc = ?
+                    WHERE id IN ({placeholders})
+                    """,
+                    [now, *ids],
+                )
+        return [dict(row) for row in rows]
+
+    def complete_worker_command(
+        self,
+        command_id: int,
+        *,
+        status: str,
+        result: dict[str, Any] | None = None,
+    ) -> None:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE listener_worker_commands
+                SET status = ?, result_json = ?, processed_at_utc = ?
+                WHERE id = ?
+                """,
+                (status, json.dumps(result) if result is not None else None, now, command_id),
+            )
+
+    def get_worker_command(self, command_id: int) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT id, command_type, route_id, status, result_json,
+                       created_at_utc, processed_at_utc
+                FROM listener_worker_commands
+                WHERE id = ?
+                """,
+                (command_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        if item.get("result_json"):
+            item["result"] = json.loads(item["result_json"])
+        else:
+            item["result"] = None
+        del item["result_json"]
+        return item

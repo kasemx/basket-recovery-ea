@@ -252,6 +252,30 @@ body {
   border: 1px solid var(--panel-border);
 }
 
+.listener-worker-status {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0 4px;
+}
+
+.route-status-grid {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+  font-size: 0.92rem;
+}
+
+.route-status-grid div {
+  display: flex;
+  gap: 8px;
+}
+
+.route-status-grid strong {
+  min-width: 130px;
+  color: var(--muted);
+  font-weight: 600;
+}
+
 .table-wrap {
   margin-top: 18px;
   overflow-x: auto;
@@ -909,4 +933,135 @@ details.tech-details summary { cursor: pointer; color: var(--muted); }
   background: rgba(92, 176, 255, 0.12);
   color: var(--accent);
   border: 1px solid rgba(92, 176, 255, 0.25);
+}
+
+.mt5-safety-note {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 196, 92, 0.25);
+  background: rgba(255, 196, 92, 0.08);
+  color: var(--text);
+}
+
+.mt5-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.mt5-summary-card {
+  padding: 12px;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  background: rgba(255, 255, 255, 0.02);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mt5-target-cards {
+  display: grid;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.mt5-target-card {
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.mt5-target-card.is-disabled {
+  opacity: 0.72;
+}
+
+.mt5-target-card-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+
+.mt5-target-title {
+  margin: 0 0 4px;
+}
+
+.mt5-target-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.mt5-target-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.mt5-target-grid .muted {
+  display: block;
+  font-size: 0.82rem;
+  margin-bottom: 2px;
+}
+
+.mt5-target-section {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.mt5-target-section h5 {
+  margin: 0 0 10px;
+}
+
+.mt5-target-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.mt5-warning {
+  margin: 8px 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 92, 92, 0.35);
+  background: rgba(255, 92, 92, 0.08);
+  color: #ffb4b4;
+}
+
+.badge-danger {
+  background: rgba(255, 92, 92, 0.15);
+  color: #ff9a9a;
+  border: 1px solid rgba(255, 92, 92, 0.35);
+}
+
+.badge-success {
+  background: rgba(92, 220, 140, 0.12);
+  color: #8fe8b0;
+  border: 1px solid rgba(92, 220, 140, 0.25);
+}
+
+.badge-warn {
+  background: rgba(255, 196, 92, 0.12);
+  color: #ffd27a;
+  border: 1px solid rgba(255, 196, 92, 0.25);
+}
+
+.badge-muted {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.mt5-wizard {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }

@@ -133,6 +133,21 @@
           </article>
         </div>
 
+        <article class="wizard-card" id="listener-worker-panel">
+          <div class="wizard-header">
+            <span class="step-badge">★</span>
+            <div>
+              <h3>Telegram Dinleme Servisi</h3>
+              <p class="muted">Dashboard kapatılsa bile dinleme bu serviste devam eder.</p>
+            </div>
+          </div>
+          <div id="listener-worker-status" class="listener-worker-status"></div>
+          <div class="actions action-row">
+            <button type="button" class="btn primary" id="listener-worker-start-btn">Dinleme Servisini Başlat</button>
+            <button type="button" class="btn btn-muted" id="listener-worker-stop-btn">Dinleme Servisini Durdur</button>
+          </div>
+        </article>
+
         <div id="telegram-status" class="status-box"></div>
         <details class="technical-details" id="telegram-technical-details">
           <summary>Teknik Durumu Göster</summary>
@@ -155,26 +170,42 @@
       <section id="view-targets" class="view">
         <div class="panel">
           <h3>MT5 Hesaplarım</h3>
-          <p class="muted">Bu aşamada MT5'e sinyal gönderilmez ve işlem açılmaz.</p>
-          <form id="target-form" class="form-grid two-col">
-            <label>Bu Hedefin Adı<input type="text" name="name" required placeholder="Vantage Demo Altın"></label>
-            <label>Terminal Adı<input type="text" name="terminal_label" required placeholder="D0E"></label>
-            <label>Broker / Hesap Açıklaması<input type="text" name="broker_label" required placeholder="VantageMarkets-Demo"></label>
-            <label>Hesap Türü
-              <select name="account_mode" required>
+          <p class="muted">Buradan her terminalin bağlı olduğu hesabı doğrular, demo/gerçek hesap ayrımını görür ve EA eşleşmesini yönetirsin.</p>
+          <div class="safety-note mt5-safety-note">
+            İşlem açma varsayılan olarak kapalıdır. Hesap doğrulama işlemi emir göndermez.
+          </div>
+          <div id="mt5-target-summary" class="mt5-summary-grid"></div>
+          <form id="target-form" class="form-grid two-col mt5-wizard">
+            <h4 class="full signal-section-title">Hesap Ekle</h4>
+            <label>Hedef Adı<input type="text" name="display_name" required placeholder="Vantage Demo Altın"></label>
+            <label>Terminal Etiketi<input type="text" name="terminal_label" required placeholder="D0E"></label>
+            <label class="full">Terminal Program Yolu<input type="text" name="terminal_exe_path" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe"></label>
+            <label class="full">MT5 Terminal Veri Klasörü / Instance Kimliği<input type="text" name="terminal_data_path" required placeholder="C:\Users\...\Terminal\D0E35EE...\MQL5"></label>
+            <p class="muted full">Aynı terminal programı birden fazla hesabı çalıştırabilir. Bu alan, doğru MT5 terminalini ayırt etmek içindir.</p>
+            <label>Broker<input type="text" name="broker_label" required placeholder="VantageMarkets-Demo"></label>
+            <label>Beklenen Sunucu<input type="text" name="expected_server" placeholder="VantageMarkets-Demo"></label>
+            <label>Beklenen Hesap No (isteğe bağlı)<input type="text" name="expected_account_login" placeholder="12345678"></label>
+            <label>Beklenen Hesap Türü
+              <select name="expected_account_type" required>
                 <option value="DEMO">Demo</option>
+                <option value="REAL">Gerçek</option>
                 <option value="UNKNOWN">Bilinmiyor</option>
               </select>
             </label>
-            <label class="full">MT5 Ortak Dosya Klasörü<input type="text" name="file_common_root" required placeholder="C:\Users\...\Terminal\Common\Files"></label>
-            <label>Sinyal Dosyası Adı<input type="text" name="seed_filename" required value="basket_recovery_fasttrack_seed.txt"></label>
-            <label>Detay Dosyası Adı<input type="text" name="details_filename" required value="basket_recovery_fasttrack_details.txt"></label>
+            <label class="full">FILE_COMMON Dizini<input type="text" name="file_common_root" required placeholder="C:\Users\...\Terminal\Common\Files"></label>
+            <label>Seed Dosyası<input type="text" name="seed_filename" required value="basket_recovery_fasttrack_seed.txt"></label>
+            <label>Details Dosyası<input type="text" name="details_filename" required value="basket_recovery_fasttrack_details.txt"></label>
+            <label>EA Adı<input type="text" name="ea_name" value="Basket Recovery EA"></label>
+            <label>Chart Sembol<input type="text" name="chart_symbol" value="XAUUSD"></label>
+            <label>Chart Zaman Dilimi<input type="text" name="chart_timeframe" value="M1"></label>
+            <label>Magic Number<input type="number" name="magic_number" min="0" placeholder="123456"></label>
+            <input type="hidden" name="name" value="">
             <div class="full actions">
-              <span class="badge badge-locked">Sadece İzleme Modu</span>
-              <button type="submit" class="btn primary">MT5 Hesabı Ekle</button>
+              <span class="badge badge-locked">İşlem Yetkisi Kilitli</span>
+              <button type="submit" class="btn primary" id="target-save-btn">Kaydet ve Doğrula</button>
             </div>
           </form>
-          <div id="targets-list" class="table-wrap"></div>
+          <div id="targets-list" class="mt5-target-cards"></div>
         </div>
       </section>
 
@@ -182,6 +213,8 @@
         <div class="panel">
           <h3>Sinyal Yönlendirmeleri</h3>
           <p class="muted">Bir Telegram kanalını seçtiğin MT5 hesabıyla eşleştirirsin. İlk aşamada sinyaller yalnız izlenir, işlem açılmaz.</p>
+          <p class="muted">Dashboard kapatılsa bile dinleme devam eder.</p>
+          <p class="muted" id="routes-worker-hint"></p>
           <p class="muted hidden" id="routes-empty-hint">Önce takip edilen bir kanal ve en az bir MT5 hesabı eklemelisin.</p>
           <form id="route-form" class="form-grid two-col">
             <label>Yönlendirme Adı<input type="text" name="name" required placeholder="Altın VIP → Vantage Demo"></label>

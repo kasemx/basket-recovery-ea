@@ -64,6 +64,8 @@ SECRET_SUBSTRINGS = (
 )
 ROUTE_MODES = frozenset({"DISABLED", "OBSERVER_ONLY"})
 ACCOUNT_MODES = frozenset({"DEMO", "UNKNOWN"})
+EXPECTED_ACCOUNT_TYPES = frozenset({"DEMO", "REAL", "UNKNOWN"})
+EXECUTION_PERMISSIONS = frozenset({"LOCKED"})
 
 STATIC_ASSET_MAP = {
     "/": "index.html",
@@ -97,6 +99,17 @@ def mask_session_path(path: str) -> str:
     if len(name) <= 4:
         return f"***{name}"
     return f"***{name[-4:]}"
+
+
+def mask_account_login(value: str | int | None) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if len(text) <= 4:
+        return f"***{text}"
+    return f"***{text[-4:]}"
 
 
 def mask_phone(phone: str) -> str:
