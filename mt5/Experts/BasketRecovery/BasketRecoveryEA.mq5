@@ -12,6 +12,8 @@
 #include <BasketRecovery/Domain/Execution/ExecutionAuthorizationResult.mqh>
 #include <BasketRecovery/Application/Strategy/FastTrack/FastTrackManualTestOrchestrator.mqh>
 #include <BasketRecovery/Application/Strategy/FastTrack/FastTrackAuditFileSource.mqh>
+#include <BasketRecovery/Application/Strategy/FastTrack/FastTrackDemoSubmissionBridge.mqh>
+#include <BasketRecovery/Application/Strategy/FastTrack/FastTrackDemoSubmissionEnvironmentResolver.mqh>
 
 input string InpProfileName               = "default";
 input string InpLogFilePath               = "BasketRecovery/logs/basket_recovery.log";
@@ -72,6 +74,9 @@ input bool   InpFastTrackEnableBreakEven = false;
 input bool   InpFastTrackAuditFilePollingEnabled = false;
 input string InpFastTrackAuditSeedFileName = "basket_recovery_fasttrack_seed.txt";
 input string InpFastTrackAuditDetailsFileName = "basket_recovery_fasttrack_details.txt";
+input long   InpFastTrackDemoSubmissionMagicOverride = 91001;
+input string InpFastTrackDemoSubmissionRouteLabel = "justgold-dashboard-route";
+input string InpFastTrackDemoSubmissionTargetLabel = "d0e-vantage-xauusd-demo";
 
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
@@ -80,6 +85,7 @@ int g_manualSubmissionTimerTicks=0;
 bool g_manualRecoverySubmitAttempted=false;
 bool g_manualProfitCloseSubmitAttempted=false;
 CFastTrackManualTestOrchestrator g_fastTrackManualTestOrchestrator;
+CFastTrackDemoSubmissionCandidateRegistry g_fastTrackDemoSubmissionRegistry;
 bool g_fastTrackManualTestProcessed=false;
 
 SFastTrackManualTestInputs BuildFastTrackManualTestInputs(void)
@@ -100,6 +106,37 @@ SFastTrackManualTestInputs BuildFastTrackManualTestInputs(void)
    inputs.enable_live_demo_execution=InpEnableLiveDemoExecution;
    inputs.execution_mode=InpExecutionMode;
    return inputs;
+  }
+
+SFastTrackDemoSubmissionBridgeInputs BuildFastTrackDemoSubmissionBridgeInputs(void)
+  {
+   SFastTrackDemoSubmissionBridgeInputs bridgeInputs;
+   bridgeInputs.Reset();
+   bridgeInputs.enabled=InpFastTrackManualTestEnabled;
+   bridgeInputs.require_manual_demo_authorization=InpRequireManualDemoAuthorization;
+   bridgeInputs.audit_file_polling_enabled=InpFastTrackAuditFilePollingEnabled;
+   bridgeInputs.allow_demo_seed_execution=InpFastTrackAllowDemoSeedExecution;
+   bridgeInputs.enable_recovery=InpFastTrackEnableRecovery;
+   bridgeInputs.enable_range_add=InpFastTrackEnableRangeAdd;
+   bridgeInputs.enable_de_risk=InpFastTrackEnableDeRisk;
+   bridgeInputs.enable_break_even=InpFastTrackEnableBreakEven;
+   bridgeInputs.enable_re_entry=false;
+   bridgeInputs.enable_partial_close=false;
+   bridgeInputs.enable_trailing=false;
+   bridgeInputs.observer_only_startup_isolation=InpObserverOnlyStartupIsolation;
+   bridgeInputs.global_execution_kill_switch=InpGlobalExecutionKillSwitch;
+   bridgeInputs.enable_live_demo_execution=InpEnableLiveDemoExecution;
+   bridgeInputs.execution_mode=InpExecutionMode;
+   bridgeInputs.seed_lot=InpFastTrackSeedLot;
+   bridgeInputs.seed_order_count=InpFastTrackSeedOrderCount;
+   bridgeInputs.magic_number_override=InpFastTrackDemoSubmissionMagicOverride;
+   bridgeInputs.manual_demo_authorization_basket_id=InpManualDemoAuthorizationBasketId;
+   bridgeInputs.route_label=InpFastTrackDemoSubmissionRouteLabel;
+   bridgeInputs.target_label=InpFastTrackDemoSubmissionTargetLabel;
+   bridgeInputs.environment=CFastTrackDemoSubmissionEnvironmentResolver::ResolveRuntime("XAUUSD");
+   bridgeInputs.environment.require_manual_demo_authorization=InpRequireManualDemoAuthorization;
+   bridgeInputs.environment.audit_file_polling_enabled=InpFastTrackAuditFilePollingEnabled;
+   return bridgeInputs;
   }
 
 bool ResolveFastTrackSignalText(string &seedText,string &detailsText)
@@ -149,6 +186,14 @@ void ProcessFastTrackManualTest(void)
 
    if(outcome.stage==BRE_FAST_TRACK_MANUAL_STAGE_WAIT_DETAILS)
       return;
+
+   if(outcome.order_plan_result==BRE_FAST_TRACK_ORDER_PLAN_ALLOWED)
+     {
+      SFastTrackDemoSubmissionBridgeInputs bridgeInputs=BuildFastTrackDemoSubmissionBridgeInputs();
+      SFastTrackDemoSubmissionBridgeOutcome bridgeOutcome=CFastTrackDemoSubmissionBridge::TryCreateCandidate(
+         inputs,outcome,bridgeInputs,g_fastTrackDemoSubmissionRegistry,TimeCurrent());
+      CFastTrackDemoSubmissionBridge::PrintAudit(bridgeOutcome);
+     }
 
    g_fastTrackManualTestProcessed=true;
   }
