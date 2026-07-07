@@ -55,6 +55,10 @@ INSTANCE_STATUS_PENDING = "Doğrulama Bekliyor"
 
 EA_LIVE_STATUS_PENDING = "Henüz doğrulanmadı"
 
+DISCOVERY_PENDING_SEED = "_discovery_pending_seed.txt"
+DISCOVERY_PENDING_DETAILS = "_discovery_pending_details.txt"
+FILE_COMMON_PENDING = "__FILE_COMMON_PENDING_VERIFICATION__"
+
 TERMINAL_INSTANCE_CONFLICT_MESSAGE = (
     "Bu MT5 terminal instance'ı başka aktif hedefte zaten kullanılıyor."
 )
@@ -199,11 +203,18 @@ def evaluate_config_match(
     issues: list[str] = []
     seed = str(row.get("seed_filename") or "").strip()
     details = str(row.get("details_filename") or "").strip()
+    pending_seed = seed == DISCOVERY_PENDING_SEED
+    pending_details = details == DISCOVERY_PENDING_DETAILS
+    file_common = normalize_storage_path(str(row.get("file_common_root") or ""))
     if not normalize_storage_path(str(row.get("terminal_data_path") or "")):
         issues.append("MT5 terminal veri klasörü (instance kimliği) zorunludur.")
     elif all_targets and is_instance_ambiguous(row, all_targets):
         issues.append(INSTANCE_AMBIGUOUS_MESSAGE)
-    if not seed or not details:
+    if file_common == normalize_storage_path(FILE_COMMON_PENDING):
+        issues.append("FILE_COMMON doğrulaması bekliyor.")
+    if pending_seed or pending_details:
+        issues.append("EA dosya eşleşmesi henüz doğrulanmadı.")
+    elif not seed or not details:
         issues.append("Seed ve details dosya adları zorunludur.")
     else:
         try:
@@ -661,3 +672,122 @@ def paginate_mt5_targets(
     start = (safe_page - 1) * safe_size
     end = start + safe_size
     return targets[start:end], total
+
+
+def discovery_target_blocking_reason(
+    probe: Any,
+    existing_targets: list[dict[str, Any]],
+    instance_key: str | None,
+) -> str | None:
+    active = [row for row in existing_targets if int(row.get("is_enabled", 1)) == 1]
+    data_path = normalize_storage_path(probe.detected_terminal_data_path or "")
+    login = str(probe.account_login or "").strip()
+    server = str(probe.server or "").strip().lower()
+
+    for row in active:
+        if data_path and data_path == normalize_storage_path(str(row.get("terminal_data_path") or "")):
+            return TERMINAL_INSTANCE_CONFLICT_MESSAGE
+        if instance_key and instance_key == str(row.get("terminal_instance_key") or ""):
+            return "Bu terminal instance anahtarı başka aktif hedefte zaten kayıtlı."
+        row_login = str(row.get("detected_account_login") or row.get("expected_account_login") or "").strip()
+        row_server = str(row.get("detected_server") or row.get("expected_server") or "").strip().lower()
+        if login and server and row_login == login and row_server == server:
+            return ACCOUNT_SERVER_DUPLICATE_MESSAGE
+    return None
+
+
+def build_target_payload_from_discovery(
+    discovery: dict[str, Any],
+    *,
+    display_name: str | None = None,
+) -> dict[str, Any]:
+    if not discovery.get("can_add_as_target"):
+        raise DashboardValidationError(
+            str(discovery.get("blocking_reason") or "Bu keşif hedef olarak eklenemez.")
+        )
+    if discovery.get("verification_status") == VERIFICATION_INSTANCE_AMBIGUOUS:
+        raise DashboardValidationError(
+            "Belirsiz terminal instance için otomatik hedef oluşturulamaz."
+        )
+    data_path = str(discovery.get("detected_terminal_data_path") or "").strip()
+    if not data_path:
+        raise DashboardValidationError("terminal_data_path is required")
+
+    login = str(discovery.get("detected_account_login") or "").strip()
+    server = str(discovery.get("detected_server") or "").strip()
+    company = str(discovery.get("detected_company") or "").strip()
+    broker_label = company or server or "MT5"
+    trade_mode = str(discovery.get("detected_trade_mode") or "UNKNOWN").upper()
+    label = display_name or str(discovery.get("display_label") or broker_label).strip()
+    terminal_label = _terminal_label_from_discovery(data_path)
+
+    payload: dict[str, Any] = {
+        "display_name": label,
+        "name": label,
+        "terminal_label": terminal_label,
+        "terminal_exe_path": discovery.get("terminal_exe_path"),
+        "terminal_data_path": data_path,
+        "terminal_instance_key": discovery.get("terminal_instance_key"),
+        "expected_account_login": login,
+        "expected_server": server,
+        "expected_account_type": trade_mode if trade_mode in EXPECTED_ACCOUNT_TYPES else "UNKNOWN",
+        "broker_label": broker_label,
+        "file_common_root": discovery.get("file_common_root") or FILE_COMMON_PENDING,
+        "seed_filename": DISCOVERY_PENDING_SEED,
+        "details_filename": DISCOVERY_PENDING_DETAILS,
+        "ea_name": "Basket Recovery EA",
+        "chart_symbol": "XAUUSD",
+        "chart_timeframe": "M1",
+        "magic_number": None,
+        "observer_only": True,
+        "execution_permission": "LOCKED",
+        "is_enabled": True,
+    }
+    return payload
+
+
+def _terminal_label_from_discovery(data_path: str) -> str:
+    name = Path(data_path).name
+    return name[:12] if name else "MT5"
+
+
+def create_target_from_discovery(
+    database: DashboardDatabase,
+    discovery: dict[str, Any],
+    *,
+    display_name: str | None = None,
+) -> dict[str, Any]:
+    payload = build_target_payload_from_discovery(discovery, display_name=display_name)
+    normalized = normalize_create_payload(payload)
+    rows = database.list_targets()
+    validate_target_registration(rows, normalized)
+    normalized.update(prepare_target_row_fields(normalized))
+    target = database.create_mt5_target(normalized)
+
+    verification_fields = {
+        "detected_account_login": discovery.get("detected_account_login"),
+        "detected_server": discovery.get("detected_server"),
+        "detected_company": discovery.get("detected_company"),
+        "detected_trade_mode": discovery.get("detected_trade_mode"),
+        "detected_currency": discovery.get("detected_currency"),
+        "detected_equity": discovery.get("detected_equity"),
+        "terminal_connected": int(bool(discovery.get("terminal_connected"))),
+        "terminal_trade_allowed": discovery.get("terminal_trade_allowed"),
+        "xauusd_available": int(bool(discovery.get("xauusd_available"))),
+        "xauusd_trade_mode": discovery.get("xauusd_trade_mode"),
+        "detected_terminal_data_path": discovery.get("detected_terminal_data_path"),
+        "detected_terminal_path": discovery.get("detected_terminal_path"),
+        "terminal_process_id": discovery.get("terminal_process_id"),
+        "last_verified_at_utc": discovery.get("last_verified_at_utc"),
+        "verification_status": VERIFICATION_VERIFIED_OK,
+        "verification_message_safe": discovery.get("verification_message_safe")
+        or "Terminal taramasından hedef oluşturuldu.",
+    }
+    if verification_fields.get("terminal_trade_allowed") is not None:
+        verification_fields["terminal_trade_allowed"] = int(
+            bool(verification_fields["terminal_trade_allowed"])
+        )
+    database.save_target_verification(target["id"], verification_fields)
+    updated = database.get_target(target["id"])
+    assert updated is not None
+    return project_mt5_target(updated, database.list_targets())

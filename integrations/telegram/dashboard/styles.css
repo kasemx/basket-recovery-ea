@@ -1060,6 +1060,42 @@ details.tech-details summary { cursor: pointer; color: var(--muted); }
   border: 1px solid rgba(255, 255, 255, 0.08);
 }
 
+.mt5-discovery-panel {
+  margin: 1.25rem 0 1.5rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.mt5-discovery-panel h4 {
+  margin: 0 0 0.35rem;
+}
+
+.mt5-discovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin: 0.75rem 0;
+}
+
+.mt5-discovery-cards {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.mt5-discovery-card {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1rem;
+  background: rgba(0, 0, 0, 0.12);
+}
+
+.mt5-discovery-messages:empty {
+  display: none;
+}
+
 .mt5-wizard {
   margin-top: 8px;
   padding-top: 12px;

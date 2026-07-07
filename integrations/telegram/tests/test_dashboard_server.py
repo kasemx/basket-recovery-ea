@@ -30,6 +30,7 @@ import listener_worker_client  # noqa: E402
 import telegram_adapter  # noqa: E402
 import mt5_account_probe  # noqa: E402
 import mt5_target_service  # noqa: E402
+import mt5_terminal_discovery  # noqa: E402
 import telegram_dashboard_server  # noqa: E402
 from telegram_adapter import (  # noqa: E402
     CREDENTIAL_SOURCE_ENV,
@@ -2651,6 +2652,318 @@ class Mt5TargetVerificationTests(DashboardServerTests):
         self.assertGreaterEqual(payload["total"], 3)
         self.assertEqual(payload["page"], 1)
         self.assertEqual(payload["page_size"], 2)
+
+
+class Mt5TerminalDiscoveryTests(DashboardServerTests):
+    def setUp(self) -> None:
+        super().setUp()
+        self._probe_backup = mt5_account_probe._PROBE_OVERRIDE
+        self._discovery_backup = mt5_terminal_discovery._DISCOVERY_INSTANCES_OVERRIDE
+        mt5_account_probe.set_probe_override(None)
+        mt5_terminal_discovery.set_discovery_instances_override(None)
+        mt5_terminal_discovery.reset_discovery_store()
+
+    def tearDown(self) -> None:
+        mt5_account_probe.set_probe_override(self._probe_backup)
+        mt5_terminal_discovery.set_discovery_instances_override(self._discovery_backup)
+        mt5_terminal_discovery.reset_discovery_store()
+        super().tearDown()
+
+    def _write_terminal_exe(self, folder: Path | None = None) -> Path:
+        base = folder or self.data_dir
+        exe = base / "terminal64.exe"
+        exe.write_text("fake", encoding="utf-8")
+        return exe
+
+    def _instance_path(self, suffix: str) -> str:
+        path = self.data_dir / f"terminal_instance_{suffix}"
+        path.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    def _verified_probe(
+        self,
+        *,
+        exe: str,
+        data_path: str,
+        login: str = "12345678",
+        server: str = "VantageMarkets-Demo",
+        trade_mode: str = mt5_account_probe.ACCOUNT_TYPE_DEMO,
+        company: str = "Vantage",
+        equity: float = 10000.0,
+    ) -> mt5_account_probe.ProbeResult:
+        return mt5_account_probe.ProbeResult(
+            status=mt5_account_probe.PROBE_STATUS_VERIFIED,
+            user_message="Hesap bilgileri okundu.",
+            terminal_connected=True,
+            terminal_exe_path=exe,
+            detected_terminal_path=exe,
+            detected_terminal_data_path=data_path,
+            account_login=login,
+            server=server,
+            company=company,
+            trade_mode=trade_mode,
+            trade_mode_label="Demo Hesap" if trade_mode == mt5_account_probe.ACCOUNT_TYPE_DEMO else "Gerçek Hesap",
+            currency="USD",
+            equity=equity,
+            terminal_trade_allowed=True,
+            xauusd_available=True,
+        )
+
+    def _scan_paths(self, paths: list[str]) -> dict:
+        status, payload = self.request(
+            "POST",
+            "/api/mt5-terminals/discover",
+            {"terminal_paths": paths},
+        )
+        self.assertEqual(status, 200)
+        return payload
+
+    def test_exe_path_normalizes(self) -> None:
+        exe = self._write_terminal_exe()
+        result = mt5_terminal_discovery.normalize_terminal_path(str(exe))
+        self.assertEqual(result.status, "OK")
+        self.assertEqual(result.terminal_exe_path, str(exe.resolve()))
+
+    def test_folder_path_finds_terminal64(self) -> None:
+        folder = self.data_dir / "BrokerTerminal"
+        folder.mkdir()
+        exe = self._write_terminal_exe(folder)
+        result = mt5_terminal_discovery.normalize_terminal_path(str(folder))
+        self.assertEqual(result.status, "OK")
+        self.assertEqual(result.terminal_exe_path, str(exe.resolve()))
+
+    def test_folder_without_executable_reports_error(self) -> None:
+        folder = self.data_dir / "empty_terminal_folder"
+        folder.mkdir()
+        result = mt5_terminal_discovery.normalize_terminal_path(str(folder))
+        self.assertEqual(result.status, mt5_terminal_discovery.TERMINAL_EXECUTABLE_NOT_FOUND)
+
+    def test_missing_path_reports_error(self) -> None:
+        result = mt5_terminal_discovery.normalize_terminal_path(str(self.data_dir / "missing-path"))
+        self.assertEqual(result.status, mt5_terminal_discovery.TERMINAL_PATH_NOT_FOUND)
+
+    def test_terminal_offline_discovery(self) -> None:
+        exe = self._write_terminal_exe()
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [
+                mt5_account_probe.ProbeResult(
+                    status=mt5_account_probe.PROBE_STATUS_TERMINAL_OFFLINE,
+                    user_message="Terminal çevrimdışı. MT5 terminalini açıp tekrar tarayın.",
+                    terminal_exe_path=str(exe),
+                )
+            ]
+        )
+        payload = self._scan_paths([str(exe)])
+        self.assertEqual(payload["discoveries"][0]["verification_status"], mt5_account_probe.PROBE_STATUS_TERMINAL_OFFLINE)
+
+    def test_demo_account_discovery(self) -> None:
+        exe = self._write_terminal_exe()
+        data_path = self._instance_path("demo_a")
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [self._verified_probe(exe=str(exe), data_path=data_path)]
+        )
+        payload = self._scan_paths([str(exe)])
+        self.assertEqual(payload["discoveries"][0]["detected_trade_mode"], "DEMO")
+
+    def test_real_account_discovery_execution_locked(self) -> None:
+        exe = self._write_terminal_exe()
+        data_path = self._instance_path("real_a")
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [
+                self._verified_probe(
+                    exe=str(exe),
+                    data_path=data_path,
+                    trade_mode=mt5_account_probe.ACCOUNT_TYPE_REAL,
+                    login="87654321",
+                )
+            ]
+        )
+        payload = self._scan_paths([str(exe)])
+        discovery = payload["discoveries"][0]
+        self.assertEqual(discovery["detected_trade_mode"], "REAL")
+        self.assertEqual(discovery["execution_permission"], "LOCKED")
+
+    def test_same_exe_different_data_paths_create_two_discoveries(self) -> None:
+        exe = self._write_terminal_exe()
+        path_a = self._instance_path("inst_a")
+        path_b = self._instance_path("inst_b")
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [
+                self._verified_probe(exe=str(exe), data_path=path_a, login="111001"),
+                self._verified_probe(exe=str(exe), data_path=path_b, login="111002"),
+            ]
+        )
+        payload = self._scan_paths([str(exe)])
+        self.assertEqual(len(payload["discoveries"]), 2)
+
+    def test_duplicate_account_server_blocks_second_target(self) -> None:
+        exe = self._write_terminal_exe()
+        data_path_a = self._instance_path("dup_account_a")
+        data_path_b = self._instance_path("dup_account_b")
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [self._verified_probe(exe=str(exe), data_path=data_path_a, login="555001")]
+        )
+        payload = self._scan_paths([str(exe)])
+        discovery_id = payload["discoveries"][0]["id"]
+        first_status, _ = self.request(
+            "POST",
+            f"/api/mt5-terminals/discoveries/{discovery_id}/add-target",
+            {},
+        )
+        self.assertEqual(first_status, 200)
+        mt5_terminal_discovery.reset_discovery_store()
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [self._verified_probe(exe=str(exe), data_path=data_path_b, login="555001")]
+        )
+        payload = self._scan_paths([str(exe)])
+        second_id = payload["discoveries"][0]["id"]
+        second_status, body = self.request(
+            "POST",
+            f"/api/mt5-terminals/discoveries/{second_id}/add-target",
+            {},
+        )
+        self.assertEqual(second_status, 400)
+        self.assertIn("hesap", str(body).lower())
+
+    def test_duplicate_terminal_data_path_blocks_second_target(self) -> None:
+        exe = self._write_terminal_exe()
+        shared = self._instance_path("shared_data")
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [self._verified_probe(exe=str(exe), data_path=shared, login="777001")]
+        )
+        payload = self._scan_paths([str(exe)])
+        discovery_id = payload["discoveries"][0]["id"]
+        self.request("POST", f"/api/mt5-terminals/discoveries/{discovery_id}/add-target", {})
+        mt5_terminal_discovery.reset_discovery_store()
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [self._verified_probe(exe=str(exe), data_path=shared, login="777002")]
+        )
+        payload = self._scan_paths([str(exe)])
+        second_id = payload["discoveries"][0]["id"]
+        status, body = self.request(
+            "POST",
+            f"/api/mt5-terminals/discoveries/{second_id}/add-target",
+            {},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("instance", str(body).lower())
+
+    def test_ambiguous_instance_cannot_add_target(self) -> None:
+        exe = self._write_terminal_exe()
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [
+                mt5_account_probe.ProbeResult(
+                    status=mt5_account_probe.PROBE_STATUS_VERIFIED,
+                    user_message="Hesap bilgileri okundu.",
+                    terminal_exe_path=str(exe),
+                    account_login="12345678",
+                    server="VantageMarkets-Demo",
+                    trade_mode=mt5_account_probe.ACCOUNT_TYPE_DEMO,
+                )
+            ]
+        )
+        payload = self._scan_paths([str(exe)])
+        discovery = payload["discoveries"][0]
+        self.assertEqual(discovery["verification_status"], mt5_target_service.VERIFICATION_INSTANCE_AMBIGUOUS)
+        self.assertFalse(discovery["can_add_as_target"])
+        status, _body = self.request(
+            "POST",
+            f"/api/mt5-terminals/discoveries/{discovery['id']}/add-target",
+            {},
+        )
+        self.assertEqual(status, 400)
+
+    def test_added_target_masks_login(self) -> None:
+        exe = self._write_terminal_exe()
+        data_path = self._instance_path("mask_login")
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [self._verified_probe(exe=str(exe), data_path=data_path, login="12345678")]
+        )
+        payload = self._scan_paths([str(exe)])
+        discovery_id = payload["discoveries"][0]["id"]
+        status, body = self.request(
+            "POST",
+            f"/api/mt5-terminals/discoveries/{discovery_id}/add-target",
+            {"display_name": "Adem Demo"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(body["target"]["detected_account_login_masked"], "***5678")
+        self.assertNotIn("12345678", json.dumps(body))
+
+    def test_password_field_rejected_on_discover(self) -> None:
+        exe = self._write_terminal_exe()
+        status, body = self.request(
+            "POST",
+            "/api/mt5-terminals/discover",
+            {"terminal_paths": [str(exe)], "password": "secret"},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("credentials", str(body).lower())
+
+    def test_discovery_scan_supports_multiple_paths(self) -> None:
+        for count in (1, 5, 10):
+            mt5_terminal_discovery.reset_discovery_store()
+            paths: list[str] = []
+            probe_by_exe: dict[str, mt5_account_probe.ProbeResult] = {}
+            for index in range(count):
+                folder = self.data_dir / f"scan_terminal_{count}_{index}"
+                folder.mkdir(parents=True, exist_ok=True)
+                exe = self._write_terminal_exe(folder)
+                paths.append(str(exe))
+                probe_by_exe[str(exe.resolve())] = self._verified_probe(
+                    exe=str(exe),
+                    data_path=self._instance_path(f"scan_{count}_{index}"),
+                    login=f"900{count}{index}",
+                )
+
+            def handler(path: str, mapping: dict[str, mt5_account_probe.ProbeResult] = probe_by_exe):
+                return [mapping[path]]
+
+            mt5_terminal_discovery.set_discovery_instances_override(handler)
+            payload = self._scan_paths(paths)
+            self.assertEqual(len(payload["discoveries"]), count)
+
+    def test_duplicate_input_path_reported(self) -> None:
+        exe = self._write_terminal_exe()
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [self._verified_probe(exe=str(exe), data_path=self._instance_path("dup_path"))]
+        )
+        payload = self._scan_paths([str(exe), str(exe)])
+        self.assertEqual(payload["duplicate_paths"], [str(exe)])
+
+    def test_list_discoveries_endpoint(self) -> None:
+        exe = self._write_terminal_exe()
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [self._verified_probe(exe=str(exe), data_path=self._instance_path("listed"))]
+        )
+        scan = self._scan_paths([str(exe)])
+        status, payload = self.request("GET", f"/api/mt5-terminals/discoveries?scan_id={scan['scan_id']}")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["discoveries"]), 1)
+
+    def test_refresh_discovery_endpoint(self) -> None:
+        exe = self._write_terminal_exe()
+        data_path = self._instance_path("refresh_me")
+        mt5_terminal_discovery.set_discovery_instances_override(
+            lambda _path: [self._verified_probe(exe=str(exe), data_path=data_path, equity=1000.0)]
+        )
+        scan = self._scan_paths([str(exe)])
+        discovery_id = scan["discoveries"][0]["id"]
+
+        def refreshed_probe(_path: str) -> list[mt5_account_probe.ProbeResult]:
+            return [self._verified_probe(exe=str(exe), data_path=data_path, equity=2000.0)]
+
+        mt5_terminal_discovery.set_discovery_instances_override(refreshed_probe)
+        mt5_account_probe.set_probe_override(
+            lambda _req: self._verified_probe(exe=str(exe), data_path=data_path, equity=2000.0)
+        )
+        status, payload = self.request(
+            "POST",
+            f"/api/mt5-terminals/discoveries/{discovery_id}/refresh",
+            {},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["discovery"]["detected_equity"], 2000.0)
 
 
 class DashboardDataDirTests(unittest.TestCase):

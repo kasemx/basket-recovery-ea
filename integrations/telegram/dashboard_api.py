@@ -34,6 +34,7 @@ from dashboard_signal_history import (
 from mt5_target_service import (
     build_targets_summary,
     compute_instance_fields,
+    create_target_from_discovery,
     filter_mt5_targets,
     normalize_create_payload,
     paginate_mt5_targets,
@@ -41,6 +42,16 @@ from mt5_target_service import (
     project_mt5_target,
     validate_target_registration,
     verify_target,
+)
+from mt5_terminal_discovery import (
+    discover_terminal_paths,
+    discovery_record_target_source,
+    get_discovery_store,
+    list_discoveries,
+    parse_terminal_path_lines,
+    project_discovery,
+    project_scan,
+    refresh_discovery_record,
 )
 from dashboard_store import DashboardDatabase
 from listener_worker_client import ListenerWorkerClient
@@ -694,6 +705,19 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return None, None
         return int(match.group(1)), match.group(2)
 
+    def _parse_mt5_discovery_path(self, path: str) -> tuple[int | None, str | None]:
+        if path == "/api/mt5-terminals/discover":
+            return None, None
+        if path == "/api/mt5-terminals/discoveries":
+            return None, None
+        match = re.match(
+            r"^/api/mt5-terminals/discoveries/(\d+)(?:/(add-target|refresh))?$",
+            path,
+        )
+        if not match:
+            return None, None
+        return int(match.group(1)), match.group(2)
+
     def _mt5_targets_response(self, query: dict[str, list[str]] | None = None) -> dict[str, Any]:
         rows = self.context.database.list_targets()
         summary = build_targets_summary(rows)
@@ -762,6 +786,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                         "telegram_status": telegram["status"],
                         "features": {
                             "mt5_targets": True,
+                            "mt5_terminal_discovery": True,
                             "listener_worker": True,
                             "signal_history": True,
                         },
@@ -793,6 +818,11 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/mt5-targets":
                 query = parse_qs(urlparse(self.path).query)
                 self._send_json(self._mt5_targets_response(query))
+                return
+            if path == "/api/mt5-terminals/discoveries":
+                query = parse_qs(urlparse(self.path).query)
+                scan_id = query.get("scan_id", [None])[0]
+                self._send_json(list_discoveries(scan_id))
                 return
             mt5_target_id, mt5_subpath = self._parse_mt5_target_path(path)
             if mt5_target_id is not None and mt5_subpath == "verification":
@@ -1043,6 +1073,66 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     {"target_id": target["id"], "observer_only": 1},
                 )
                 self._send_json({"target": projected}, HTTPStatus.CREATED)
+                return
+
+            if path == "/api/mt5-terminals/discover":
+                reject_literal_credentials(payload)
+                paths = payload.get("terminal_paths")
+                if not isinstance(paths, list):
+                    text = str(payload.get("paths_text") or "").strip()
+                    paths = parse_terminal_path_lines(text)
+                else:
+                    paths = [str(item).strip() for item in paths if str(item).strip()]
+                if not paths:
+                    raise DashboardValidationError("En az bir terminal yolu gerekli.")
+                scan = discover_terminal_paths(paths, existing_targets=db.list_targets())
+                db.add_audit(
+                    "MT5_TERMINAL_DISCOVER",
+                    "INFO",
+                    "MT5 terminal discovery scan completed",
+                    {
+                        "scan_id": scan.scan_id,
+                        "path_count": len(paths),
+                        "discovery_count": len(scan.discoveries),
+                    },
+                )
+                self._send_json(project_scan(scan))
+                return
+
+            discovery_id, discovery_subpath = self._parse_mt5_discovery_path(path)
+            if discovery_id is not None and discovery_subpath == "add-target":
+                reject_literal_credentials(payload)
+                record = get_discovery_store().get_record(discovery_id)
+                if record is None:
+                    raise DashboardValidationError("Discovery not found")
+                display_name = str(payload.get("display_name") or "").strip() or None
+                source = discovery_record_target_source(record)
+                target = create_target_from_discovery(
+                    db,
+                    source,
+                    display_name=display_name,
+                )
+                db.add_audit(
+                    "MT5_TARGET_CREATE_FROM_DISCOVERY",
+                    "INFO",
+                    f"Created MT5 target from discovery {discovery_id}",
+                    {"target_id": target["id"], "discovery_id": discovery_id},
+                )
+                self._send_json({"target": target, "discovery": project_discovery(record)})
+                return
+            if discovery_id is not None and discovery_subpath == "refresh":
+                reject_literal_credentials(payload)
+                record = refresh_discovery_record(
+                    discovery_id,
+                    existing_targets=db.list_targets(),
+                )
+                db.add_audit(
+                    "MT5_TERMINAL_DISCOVERY_REFRESH",
+                    "INFO",
+                    f"Refreshed MT5 discovery {discovery_id}",
+                    {"discovery_id": discovery_id},
+                )
+                self._send_json({"discovery": project_discovery(record)})
                 return
 
             mt5_target_id, mt5_subpath = self._parse_mt5_target_path(path)

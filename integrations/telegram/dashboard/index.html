@@ -174,6 +174,20 @@
           <div class="safety-note mt5-safety-note">
             İşlem açma varsayılan olarak kapalıdır. Hesap doğrulama işlemi emir göndermez.
           </div>
+
+          <div class="mt5-discovery-panel">
+            <h4>MT5 Terminallerini Tara</h4>
+            <p class="muted">Terminal program yolunu veya klasörünü ekle. Açık terminallerdeki hesap bilgileri otomatik bulunur. Bu işlem emir göndermez.</p>
+            <label class="full">Terminal Yolları (her satıra bir yol)<textarea id="mt5-discovery-paths" rows="4" placeholder="C:\Program Files\MetaTrader 5\terminal64.exe&#10;C:\Program Files\FTMO Global Markets MT5 Terminal"></textarea></label>
+            <div class="mt5-discovery-actions">
+              <button type="button" class="btn primary" id="mt5-discovery-scan-btn">Terminalleri Tara</button>
+              <button type="button" class="btn" id="mt5-discovery-add-line-btn">Yolu Ekle</button>
+              <button type="button" class="btn" id="mt5-discovery-clear-btn">Listeyi Temizle</button>
+            </div>
+            <div id="mt5-discovery-path-errors" class="mt5-discovery-messages"></div>
+            <div id="mt5-discovery-results" class="mt5-discovery-cards"></div>
+          </div>
+
           <div id="mt5-target-summary" class="mt5-summary-grid"></div>
           <form id="target-form" class="form-grid two-col mt5-wizard">
             <h4 class="full signal-section-title">Hesap Ekle</h4>
