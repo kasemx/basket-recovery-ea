@@ -2146,6 +2146,111 @@ async function stopRouteListener(routeId) {
   await refreshAll();
 }
 
+let pendingCandidateTestRouteId = null;
+
+function isCandidateTestArmEligible(route) {
+  const ct = route.candidate_test || {};
+  return Boolean(ct.arm_eligible);
+}
+
+function candidateTestStatusLabel(status) {
+  const labels = {
+    OBSERVER_ONLY: "Yalnız İzleme",
+    CANDIDATE_TEST_ARMED: "Candidate Test Hazır",
+    CANDIDATE_TEST_CONSUMED: "Candidate Test Tüketildi",
+    CANDIDATE_TEST_EXPIRED: "Candidate Test Süresi Doldu",
+    CANDIDATE_TEST_BLOCKED: "Candidate Test Engellendi",
+  };
+  return labels[status] || status || "Yalnız İzleme";
+}
+
+function formatCandidateTestRemaining(expiresAtUtc) {
+  if (!expiresAtUtc) return "—";
+  const expiresMs = Date.parse(String(expiresAtUtc).replace("Z", "+00:00"));
+  if (Number.isNaN(expiresMs)) return "—";
+  const remainingSec = Math.max(0, Math.floor((expiresMs - Date.now()) / 1000));
+  const minutes = Math.floor(remainingSec / 60);
+  const seconds = remainingSec % 60;
+  return `${minutes} dk ${seconds} sn`;
+}
+
+function buildCandidateTestArmSummaryHtml() {
+  return `
+    <ul class="candidate-test-summary">
+      <li><strong>Hedef:</strong> Vantage Demo Altın / D0E</li>
+      <li><strong>Hesap türü:</strong> DEMO</li>
+      <li><strong>Sembol:</strong> XAUUSD</li>
+      <li><strong>Lot limiti:</strong> 0.01</li>
+      <li><strong>Magic:</strong> 91001</li>
+      <li><strong>İşlem yetkisi:</strong> Kilitli kalacak</li>
+      <li><strong>Broker emri:</strong> Bu adımda açılmayacak</li>
+      <li><strong>Test süresi:</strong> 15 dakika</li>
+      <li><strong>İzin:</strong> Yalnız bir seed/details yayını</li>
+    </ul>
+    <p class="muted">Telegram mesajı gelmeden hiçbir işlem yapılmaz. Broker emri için ayrıca authorization gerekir.</p>`;
+}
+
+function openCandidateTestArmModal(routeId) {
+  pendingCandidateTestRouteId = routeId;
+  const summary = $("#candidate-test-arm-summary");
+  if (summary) {
+    summary.innerHTML = buildCandidateTestArmSummaryHtml();
+  }
+  openMt5Modal("candidate-test-arm-modal");
+}
+
+async function confirmCandidateTestArm() {
+  if (!pendingCandidateTestRouteId) return;
+  const routeId = pendingCandidateTestRouteId;
+  try {
+    await api(`/api/routes/${routeId}/candidate-test/arm`, { method: "POST", body: JSON.stringify({}) });
+    closeMt5Modal("candidate-test-arm-modal");
+    pendingCandidateTestRouteId = null;
+    showAlert("Candidate test hazırlığı aktif. Publish hakkı: 1", "success");
+    await refreshAll();
+  } catch (error) {
+    showAlert(error.message);
+  }
+}
+
+async function disarmCandidateTestRoute(routeId) {
+  try {
+    await api(`/api/routes/${routeId}/candidate-test/disarm`, { method: "POST", body: JSON.stringify({}) });
+    showAlert("Candidate test hazırlığı iptal edildi.", "success");
+    await refreshAll();
+  } catch (error) {
+    showAlert(error.message);
+  }
+}
+
+function renderCandidateTestControls(route) {
+  const ct = route.candidate_test || {};
+  const status = ct.status || "OBSERVER_ONLY";
+  if (status === "CANDIDATE_TEST_ARMED") {
+    const remaining = formatCandidateTestRemaining(ct.expires_at_utc);
+    return `
+      <div class="candidate-test-panel">
+        <p><strong>Candidate test:</strong> ${escapeCell(candidateTestStatusLabel(status))}</p>
+        <p class="muted">Kalan süre: ${escapeCell(remaining)} · Publish hakkı: ${escapeCell(String(ct.publish_remaining ?? 0))}</p>
+        <p class="muted">Telegram mesajı gelmeden hiçbir işlem yapılmaz. Broker emri için ayrıca authorization gerekir.</p>
+        <button type="button" class="btn btn-small btn-muted" data-disarm-candidate-test="${route.id}">Test Hazırlığını İptal Et</button>
+      </div>`;
+  }
+  if (isCandidateTestArmEligible(route)) {
+    return `
+      <div class="candidate-test-panel">
+        <button type="button" class="btn btn-small" data-arm-candidate-test="${route.id}">Tek Candidate Testini Hazırla</button>
+      </div>`;
+  }
+  if (status !== "OBSERVER_ONLY") {
+    return `
+      <div class="candidate-test-panel">
+        <p class="muted"><strong>Candidate test:</strong> ${escapeCell(candidateTestStatusLabel(status))}</p>
+      </div>`;
+  }
+  return "";
+}
+
 function renderRoutes() {
   renderRoutesWorkerHint();
   const channelSelect = $("#route-channel-select");
@@ -2210,6 +2315,8 @@ function renderRoutes() {
           ${renderTechnicalTimeline(route.signal_timeline)}
         </details>
 
+        ${renderCandidateTestControls(route)}
+
         <div class="route-card-actions">
           <button type="button" class="btn btn-small" data-start-listener="${route.id}" ${startDisabled}>Takibi Başlat</button>
           <button type="button" class="btn btn-small btn-muted" data-stop-listener="${route.id}" ${stopDisabled}>Takibi Durdur</button>
@@ -2245,6 +2352,20 @@ function renderRoutes() {
         await api(`/api/routes/${routeId}`, { method: "DELETE" });
         await refreshAll();
         showAlert("Yönlendirme silindi.", "success");
+      } catch (error) {
+        showAlert(error.message);
+      }
+    });
+  });
+  container.querySelectorAll("[data-arm-candidate-test]").forEach((button) => {
+    button.addEventListener("click", () => {
+      openCandidateTestArmModal(button.getAttribute("data-arm-candidate-test"));
+    });
+  });
+  container.querySelectorAll("[data-disarm-candidate-test]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      try {
+        await disarmCandidateTestRoute(button.getAttribute("data-disarm-candidate-test"));
       } catch (error) {
         showAlert(error.message);
       }
@@ -2836,6 +2957,7 @@ function bindEvents() {
   });
   $("#mt5-add-account-confirm-btn")?.addEventListener("click", confirmAddDiscoveryAccount);
   $("#mt5-real-account-confirm-btn")?.addEventListener("click", confirmRealAccountAdd);
+  $("#candidate-test-arm-confirm-btn")?.addEventListener("click", confirmCandidateTestArm);
   $("#mt5-add-account-name-input")?.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
       event.preventDefault();

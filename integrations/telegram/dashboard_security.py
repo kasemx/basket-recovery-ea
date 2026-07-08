@@ -62,7 +62,16 @@ SECRET_SUBSTRINGS = (
     "token",
     "secret",
 )
-ROUTE_MODES = frozenset({"DISABLED", "OBSERVER_ONLY"})
+ROUTE_MODES = frozenset(
+    {
+        "DISABLED",
+        "OBSERVER_ONLY",
+        "CANDIDATE_TEST_ARMED",
+        "CANDIDATE_TEST_CONSUMED",
+        "CANDIDATE_TEST_EXPIRED",
+        "CANDIDATE_TEST_BLOCKED",
+    }
+)
 ACCOUNT_MODES = frozenset({"DEMO", "UNKNOWN"})
 EXPECTED_ACCOUNT_TYPES = frozenset({"DEMO", "REAL", "UNKNOWN"})
 EXECUTION_PERMISSIONS = frozenset({"LOCKED"})

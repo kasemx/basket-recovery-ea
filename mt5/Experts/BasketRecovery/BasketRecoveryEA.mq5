@@ -14,6 +14,7 @@
 #include <BasketRecovery/Application/Strategy/FastTrack/FastTrackAuditFileSource.mqh>
 #include <BasketRecovery/Application/Strategy/FastTrack/FastTrackDemoSubmissionBridge.mqh>
 #include <BasketRecovery/Application/Strategy/FastTrack/FastTrackDemoSubmissionEnvironmentResolver.mqh>
+#include <BasketRecovery/Application/Strategy/FastTrack/FastTrackAuditSkippedLogThrottle.mqh>
 
 input string InpProfileName               = "default";
 input string InpLogFilePath               = "BasketRecovery/logs/basket_recovery.log";
@@ -77,6 +78,7 @@ input string InpFastTrackAuditDetailsFileName = "basket_recovery_fasttrack_detai
 input long   InpFastTrackDemoSubmissionMagicOverride = 91001;
 input string InpFastTrackDemoSubmissionRouteLabel = "justgold-dashboard-route";
 input string InpFastTrackDemoSubmissionTargetLabel = "d0e-vantage-xauusd-demo";
+input int    InpFastTrackAuditFileNotFoundLogThrottleSeconds = 30;
 
 CApplicationContext *g_applicationContext=NULL;
 CMt5TradeTransactionNormalizer *g_tradeTransactionNormalizer=NULL;
@@ -86,6 +88,7 @@ bool g_manualRecoverySubmitAttempted=false;
 bool g_manualProfitCloseSubmitAttempted=false;
 CFastTrackManualTestOrchestrator g_fastTrackManualTestOrchestrator;
 CFastTrackDemoSubmissionCandidateRegistry g_fastTrackDemoSubmissionRegistry;
+CFastTrackAuditSkippedLogThrottle g_fastTrackAuditSkippedLogThrottle;
 bool g_fastTrackManualTestProcessed=false;
 
 SFastTrackManualTestInputs BuildFastTrackManualTestInputs(void)
@@ -158,12 +161,15 @@ bool ResolveFastTrackSignalText(string &seedText,string &detailsText)
                                           detailsText,
                                           reason))
      {
+      g_fastTrackAuditSkippedLogThrottle.NotifyReadSuccess();
       CFastTrackAuditFileSource::PrintReadAudit(InpFastTrackAuditSeedFileName,
                                                 InpFastTrackAuditDetailsFileName);
       return true;
      }
 
-   if(reason!="")
+   if(reason!="" &&
+      g_fastTrackAuditSkippedLogThrottle.ShouldLogSkipped(reason,TimeCurrent(),
+                                                          InpFastTrackAuditFileNotFoundLogThrottleSeconds))
       CFastTrackAuditFileSource::PrintSkippedAudit(reason);
    return false;
   }

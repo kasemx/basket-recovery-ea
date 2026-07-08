@@ -19,6 +19,17 @@ ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD_DIR = ROOT / "dashboard"
 sys.path.insert(0, str(ROOT))
 
+import candidate_test_arm_service  # noqa: E402
+from candidate_test_arm_service import (  # noqa: E402
+    D0E_TERMINAL_DATA_PATH_ID,
+    EXPECTED_DETAILS_FILENAME,
+    EXPECTED_MAGIC_NUMBER,
+    EXPECTED_SEED_FILENAME,
+    ROUTE_MODE_CANDIDATE_TEST_ARMED,
+    ROUTE_MODE_CANDIDATE_TEST_CONSUMED,
+    ROUTE_MODE_CANDIDATE_TEST_EXPIRED,
+    ROUTE_MODE_OBSERVER_ONLY,
+)
 import dashboard_api  # noqa: E402
 import dashboard_security  # noqa: E402
 import dashboard_server  # noqa: E402
@@ -3019,6 +3030,226 @@ class DashboardDataDirTests(unittest.TestCase):
         finally:
             shutil.rmtree(fixed, ignore_errors=True)
             shutil.rmtree(other, ignore_errors=True)
+
+
+class CandidateTestArmDashboardTests(DashboardServerTests):
+    D0E_TERMINAL_PATH = (
+        f"C:\\Users\\test\\AppData\\Roaming\\MetaQuotes\\Terminal\\{D0E_TERMINAL_DATA_PATH_ID}"
+    )
+
+    def _create_target(
+        self,
+        *,
+        name: str,
+        seed_filename: str,
+        details_filename: str,
+        root_suffix: str = "common",
+    ) -> dict:
+        _status, payload = self.request(
+            "POST",
+            "/api/targets",
+            {
+                "name": name,
+                "terminal_label": "D0E",
+                "broker_label": "VantageMarkets-Demo",
+                "account_mode": "DEMO",
+                "file_common_root": str(self.data_dir / root_suffix),
+                "seed_filename": seed_filename,
+                "details_filename": details_filename,
+            },
+        )
+        return payload["target"]
+
+    def _create_route(self, channel_id: int, target_id: int, name: str) -> dict:
+        _status, payload = self.request(
+            "POST",
+            "/api/routes",
+            {
+                "name": name,
+                "channel_id": channel_id,
+                "target_id": target_id,
+                "parser_profile": "FASTTRACK_GOLD_NOW",
+            },
+        )
+        return payload["route"]
+
+    def _justgold_channel(self) -> dict:
+        self.fake_adapter.list_dialogs_result = [
+            TelegramChannelInfo("justgold-001", "JustGold", "channel", "justgold"),
+        ]
+        self.configure_phone()
+        self.request("POST", "/api/telegram/request-code", {"phone": "+905551234567"})
+        self.request("POST", "/api/telegram/verify-code", {"code": "12345"})
+        self.request("POST", "/api/telegram/sync-channels", {})
+        channels = self.request("GET", "/api/channels")[1]["channels"]
+        channel = next(ch for ch in channels if ch["title"] == "JustGold")
+        self.request("PATCH", f"/api/channels/{channel['id']}", {"is_tracking": 1})
+        refreshed = self.request("GET", "/api/channels")[1]["channels"]
+        return next(ch for ch in refreshed if ch["id"] == channel["id"])
+
+    def _configure_d0e_target(self, target_id: int, *, account_mode: str = "DEMO") -> None:
+        with self.db._connect() as conn:
+            conn.execute(
+                """
+                UPDATE mt5_targets
+                SET magic_number = ?,
+                    chart_symbol = 'XAUUSD',
+                    seed_filename = ?,
+                    details_filename = ?,
+                    terminal_data_path = ?,
+                    execution_permission = 'LOCKED',
+                    account_mode = ?,
+                    expected_account_type = ?,
+                    observer_only = 1,
+                    broker_label = 'VantageMarkets-Demo'
+                WHERE id = ?
+                """,
+                (
+                    EXPECTED_MAGIC_NUMBER,
+                    EXPECTED_SEED_FILENAME,
+                    EXPECTED_DETAILS_FILENAME,
+                    self.D0E_TERMINAL_PATH,
+                    account_mode,
+                    account_mode,
+                    target_id,
+                ),
+            )
+
+    def _create_d0e_route(self) -> tuple[dict, dict, dict]:
+        channel = self._justgold_channel()
+        target = self._create_target(
+            name="D0E Demo Target",
+            seed_filename=EXPECTED_SEED_FILENAME,
+            details_filename=EXPECTED_DETAILS_FILENAME,
+        )
+        self._configure_d0e_target(target["id"])
+        route = self._create_route(channel["id"], target["id"], "JustGold D0E Demo")
+        return channel, target, route
+
+    def test_arm_d0e_demo_route_via_api(self) -> None:
+        _channel, target, route = self._create_d0e_route()
+        status, payload = self.request(
+            "POST",
+            f"/api/routes/{route['id']}/candidate-test/arm",
+            {},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["route"]["mode"], ROUTE_MODE_CANDIDATE_TEST_ARMED)
+        self.assertEqual(payload["candidate_test"]["status"], ROUTE_MODE_CANDIDATE_TEST_ARMED)
+        self.assertEqual(payload["candidate_test"]["publish_remaining"], 1)
+        self.assertEqual(payload["candidate_test"]["execution_permission"], "LOCKED")
+        refreshed_target = next(
+            item for item in self.request("GET", "/api/targets")[1]["targets"] if item["id"] == target["id"]
+        )
+        self.assertEqual(refreshed_target["execution_permission"], "LOCKED")
+
+    def test_arm_rejects_real_account(self) -> None:
+        _channel, target, route = self._create_d0e_route()
+        self._configure_d0e_target(target["id"], account_mode="REAL")
+        status, payload = self.request(
+            "POST",
+            f"/api/routes/{route['id']}/candidate-test/arm",
+            {},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("TARGET_NOT_DEMO", payload["error"])
+
+    def test_disarm_restores_observer_only(self) -> None:
+        _channel, _target, route = self._create_d0e_route()
+        self.request("POST", f"/api/routes/{route['id']}/candidate-test/arm", {})
+        status, payload = self.request(
+            "POST",
+            f"/api/routes/{route['id']}/candidate-test/disarm",
+            {},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["route"]["mode"], ROUTE_MODE_OBSERVER_ONLY)
+        self.assertEqual(payload["candidate_test"]["status"], ROUTE_MODE_OBSERVER_ONLY)
+
+    def test_routes_include_candidate_test_metadata(self) -> None:
+        _channel, _target, route = self._create_d0e_route()
+        self.request("POST", f"/api/routes/{route['id']}/candidate-test/arm", {})
+        status, payload = self.request("GET", "/api/routes")
+        self.assertEqual(status, 200)
+        item = next(item for item in payload["routes"] if item["id"] == route["id"])
+        self.assertIn("candidate_test", item)
+        self.assertTrue(item["candidate_test"]["arm_eligible"] is False)
+        self.assertEqual(item["candidate_test"]["status"], ROUTE_MODE_CANDIDATE_TEST_ARMED)
+
+    def test_second_active_arm_rejected(self) -> None:
+        channel = self._justgold_channel()
+        target_a = self._create_target(
+            name="D0E Demo Target A",
+            seed_filename=EXPECTED_SEED_FILENAME,
+            details_filename=EXPECTED_DETAILS_FILENAME,
+        )
+        self._configure_d0e_target(target_a["id"])
+        route_a = self._create_route(channel["id"], target_a["id"], "JustGold D0E Demo A")
+        target_b = self._create_target(
+            name="D0E Demo Target B",
+            seed_filename=EXPECTED_SEED_FILENAME,
+            details_filename=EXPECTED_DETAILS_FILENAME,
+            root_suffix="common_b",
+        )
+        self._configure_d0e_target(target_b["id"])
+        route_b = self._create_route(channel["id"], target_b["id"], "JustGold D0E Demo B")
+        self.request("POST", f"/api/routes/{route_a['id']}/candidate-test/arm", {})
+        status, payload = self.request(
+            "POST",
+            f"/api/routes/{route_b['id']}/candidate-test/arm",
+            {},
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("ANOTHER_ROUTE_ALREADY_ARMED", payload["error"])
+
+    def test_ttl_expiry_on_list_routes(self) -> None:
+        _channel, _target, route = self._create_d0e_route()
+        self.request("POST", f"/api/routes/{route['id']}/candidate-test/arm", {})
+        with self.db._connect() as conn:
+            conn.execute(
+                """
+                UPDATE routes
+                SET candidate_test_expires_at_utc = '2020-01-01T00:00:00Z'
+                WHERE id = ?
+                """,
+                (route["id"],),
+            )
+        status, payload = self.request("GET", "/api/routes")
+        self.assertEqual(status, 200)
+        item = next(item for item in payload["routes"] if item["id"] == route["id"])
+        self.assertEqual(item["mode"], ROUTE_MODE_CANDIDATE_TEST_EXPIRED)
+        self.assertEqual(item["candidate_test"]["status"], ROUTE_MODE_CANDIDATE_TEST_EXPIRED)
+
+    def test_consume_publish_marks_route_consumed(self) -> None:
+        _channel, _target, route = self._create_d0e_route()
+        self.request("POST", f"/api/routes/{route['id']}/candidate-test/arm", {})
+        updated = self.db.consume_candidate_test_publish(route["id"])
+        self.assertEqual(updated["mode"], ROUTE_MODE_CANDIDATE_TEST_CONSUMED)
+        self.assertEqual(int(updated["candidate_test_publish_count"]), 1)
+
+    def test_candidate_test_status_endpoint(self) -> None:
+        _channel, _target, route = self._create_d0e_route()
+        self.request("POST", f"/api/routes/{route['id']}/candidate-test/arm", {})
+        status, payload = self.request("GET", f"/api/routes/{route['id']}/candidate-test/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["candidate_test"]["status"], ROUTE_MODE_CANDIDATE_TEST_ARMED)
+        self.assertEqual(payload["candidate_test"]["publish_count"], 0)
+
+    def test_armed_route_supports_listener_start_validation(self) -> None:
+        _channel, _target, route = self._create_d0e_route()
+        self.request("POST", f"/api/routes/{route['id']}/candidate-test/arm", {})
+        with self.db._connect() as conn:
+            conn.execute("UPDATE telegram_connection SET status = 'CONNECTED' WHERE id = 1")
+        manager = route_listener_service.RouteListenerManager(
+            database=self.db,
+            data_dir=self.data_dir,
+            telethon_enabled=False,
+            dry_run=True,
+        )
+        context, error = manager.validate_start(route["id"])
+        self.assertIsNone(error)
+        self.assertIsNotNone(context)
+        self.assertEqual(context.route_mode, ROUTE_MODE_CANDIDATE_TEST_ARMED)
 
 
 class DashboardModularizationTests(unittest.TestCase):

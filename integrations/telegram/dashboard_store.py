@@ -207,6 +207,14 @@ class DashboardDatabase:
                 ("detected_terminal_path", "TEXT NULL"),
             ):
                 self._ensure_column(conn, "mt5_targets", column, definition)
+            for column, definition in (
+                ("candidate_test_armed_at_utc", "TEXT NULL"),
+                ("candidate_test_expires_at_utc", "TEXT NULL"),
+                ("candidate_test_armed_by", "TEXT NULL"),
+                ("candidate_test_publish_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("candidate_test_block_reason", "TEXT NULL"),
+            ):
+                self._ensure_column(conn, "routes", column, definition)
             row = conn.execute("SELECT id FROM telegram_connection WHERE id = 1").fetchone()
             if row is None:
                 now = utc_now_iso()
@@ -748,6 +756,7 @@ class DashboardDatabase:
                 raise DashboardValidationError("Target not found")
 
     def list_routes(self) -> list[dict[str, Any]]:
+        self.expire_candidate_test_arms()
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -830,6 +839,174 @@ class DashboardDatabase:
             cursor = conn.execute(
                 f"UPDATE routes SET {sets}, updated_at_utc = ? WHERE id = ?",
                 values,
+            )
+            if cursor.rowcount == 0:
+                raise DashboardValidationError("Route not found")
+            row = conn.execute("SELECT * FROM routes WHERE id = ?", (route_id,)).fetchone()
+        return dict(row)
+
+    def get_route_detail(self, route_id: int) -> dict[str, Any] | None:
+        self.expire_candidate_test_arms()
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT r.*,
+                       c.title AS channel_title,
+                       c.telegram_channel_id,
+                       c.is_tracking AS channel_is_tracking,
+                       t.name AS target_name,
+                       t.observer_only AS target_observer_only,
+                       t.is_enabled AS target_is_enabled,
+                       t.account_mode,
+                       t.expected_account_type,
+                       t.execution_permission,
+                       t.magic_number,
+                       t.chart_symbol,
+                       t.seed_filename,
+                       t.details_filename,
+                       t.broker_label,
+                       t.terminal_data_path,
+                       t.file_common_root
+                FROM routes r
+                JOIN tracked_channels c ON c.id = r.channel_id
+                JOIN mt5_targets t ON t.id = r.target_id
+                WHERE r.id = ?
+                """,
+                (route_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def count_active_candidate_test_arms(self, *, exclude_route_id: int | None = None) -> int:
+        with self._connect() as conn:
+            if exclude_route_id is None:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS count FROM routes WHERE mode = 'CANDIDATE_TEST_ARMED'"
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM routes
+                    WHERE mode = 'CANDIDATE_TEST_ARMED' AND id != ?
+                    """,
+                    (exclude_route_id,),
+                ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def expire_candidate_test_arms(self) -> list[int]:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM routes
+                WHERE mode = 'CANDIDATE_TEST_ARMED'
+                  AND candidate_test_expires_at_utc IS NOT NULL
+                  AND candidate_test_expires_at_utc <= ?
+                """,
+                (now,),
+            ).fetchall()
+            expired_ids = [int(row["id"]) for row in rows]
+            if not expired_ids:
+                return []
+            conn.executemany(
+                """
+                UPDATE routes
+                SET mode = 'CANDIDATE_TEST_EXPIRED',
+                    candidate_test_block_reason = 'CANDIDATE_TEST_TTL_EXPIRED',
+                    updated_at_utc = ?
+                WHERE id = ?
+                """,
+                [(now, route_id) for route_id in expired_ids],
+            )
+        return expired_ids
+
+    def arm_candidate_test_route(
+        self,
+        route_id: int,
+        *,
+        armed_at_utc: str,
+        expires_at_utc: str,
+        armed_by: str,
+    ) -> dict[str, Any]:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE routes
+                SET mode = 'CANDIDATE_TEST_ARMED',
+                    candidate_test_armed_at_utc = ?,
+                    candidate_test_expires_at_utc = ?,
+                    candidate_test_armed_by = ?,
+                    candidate_test_publish_count = 0,
+                    candidate_test_block_reason = NULL,
+                    updated_at_utc = ?
+                WHERE id = ?
+                """,
+                (armed_at_utc, expires_at_utc, armed_by, now, route_id),
+            )
+            if cursor.rowcount == 0:
+                raise DashboardValidationError("Route not found")
+            row = conn.execute("SELECT * FROM routes WHERE id = ?", (route_id,)).fetchone()
+        return dict(row)
+
+    def disarm_candidate_test_route(self, route_id: int) -> dict[str, Any]:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE routes
+                SET mode = 'OBSERVER_ONLY',
+                    candidate_test_armed_at_utc = NULL,
+                    candidate_test_expires_at_utc = NULL,
+                    candidate_test_armed_by = NULL,
+                    candidate_test_publish_count = 0,
+                    candidate_test_block_reason = NULL,
+                    updated_at_utc = ?
+                WHERE id = ?
+                """,
+                (now, route_id),
+            )
+            if cursor.rowcount == 0:
+                raise DashboardValidationError("Route not found")
+            row = conn.execute("SELECT * FROM routes WHERE id = ?", (route_id,)).fetchone()
+        return dict(row)
+
+    def consume_candidate_test_publish(self, route_id: int) -> dict[str, Any]:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM routes WHERE id = ?", (route_id,)).fetchone()
+            if row is None:
+                raise DashboardValidationError("Route not found")
+            route = dict(row)
+            publish_count = int(route.get("candidate_test_publish_count") or 0) + 1
+            mode = "CANDIDATE_TEST_CONSUMED" if publish_count >= 1 else route["mode"]
+            conn.execute(
+                """
+                UPDATE routes
+                SET candidate_test_publish_count = ?,
+                    mode = ?,
+                    candidate_test_block_reason = NULL,
+                    updated_at_utc = ?
+                WHERE id = ?
+                """,
+                (publish_count, mode, now, route_id),
+            )
+            updated = conn.execute("SELECT * FROM routes WHERE id = ?", (route_id,)).fetchone()
+        return dict(updated)
+
+    def block_candidate_test_route(self, route_id: int, *, reason: str) -> dict[str, Any]:
+        now = utc_now_iso()
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE routes
+                SET mode = 'CANDIDATE_TEST_BLOCKED',
+                    candidate_test_block_reason = ?,
+                    updated_at_utc = ?
+                WHERE id = ?
+                """,
+                (reason, now, route_id),
             )
             if cursor.rowcount == 0:
                 raise DashboardValidationError("Route not found")

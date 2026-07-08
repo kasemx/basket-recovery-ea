@@ -9,6 +9,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from candidate_test_arm_service import (
+    ROUTE_MODE_CANDIDATE_TEST_ARMED,
+    evaluate_real_publish_permission,
+    route_supports_listener_start,
+)
 from dashboard_security import utc_now_iso
 from dashboard_store import DashboardDatabase
 from fasttrack_file_bridge import (
@@ -352,7 +357,7 @@ class RouteListenerManager:
         telegram = self._database.get_telegram_status()
         if telegram.get("status") not in ("CONNECTED", "TELEGRAM_CONNECTED"):
             return None, START_ERROR_NOT_CONNECTED
-        if str(ctx_row.get("route_mode", "")).upper() != "OBSERVER_ONLY":
+        if not route_supports_listener_start(str(ctx_row.get("route_mode", ""))):
             return None, START_ERROR_INVALID_MODE
         if not ctx_row.get("is_tracking"):
             return None, START_ERROR_TRACKING_OFF
@@ -578,6 +583,25 @@ class RouteListenerManager:
                 fingerprint_short=short_fingerprint(content_hash),
                 safe_summary="Details signal detected for observer-only route.",
             )
+            if not self._dry_run:
+                route_detail = self._database.get_route_detail(route_id)
+                if route_detail is not None:
+                    allowed, block_reason = evaluate_real_publish_permission(
+                        route_detail,
+                        listener_running=True,
+                        dry_run=False,
+                    )
+                    if not allowed:
+                        if block_reason == "CANDIDATE_TEST_EXPIRED":
+                            self._database.expire_candidate_test_arms()
+                        self._record_event(
+                            route_id,
+                            target_id,
+                            LISTENER_PUBLISH_SKIPPED,
+                            block_reason or "PUBLISH_BLOCKED",
+                            "Gerçek candidate yayını engellendi.",
+                        )
+                        return
             before_count = len(runtime.publisher._published_fingerprints)
             try:
                 runtime.handler.handle(message)
@@ -608,6 +632,10 @@ class RouteListenerManager:
 
     def _record_publish_success(self, route_id: int, target_id: int, runtime: RouteRuntime) -> None:
         now = utc_now_iso()
+        if not self._dry_run:
+            route_detail = self._database.get_route_detail(route_id)
+            if route_detail is not None and str(route_detail.get("mode")) == ROUTE_MODE_CANDIDATE_TEST_ARMED:
+                self._database.consume_candidate_test_publish(route_id)
         self._database.upsert_route_listener_state(
             route_id,
             listener_status=LISTENER_PUBLISH_READY,

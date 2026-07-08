@@ -24,6 +24,11 @@ from dashboard_security import (
     resolve_static_file,
     security_headers,
 )
+from candidate_test_arm_service import (
+    build_arm_audit,
+    build_arm_schedule,
+    validate_arm_eligibility,
+)
 from dashboard_signal_history import (
     apply_history_filters,
     build_history_item,
@@ -643,6 +648,44 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return None, None
         return int(match.group(1)), match.group(2)
 
+    def _parse_route_candidate_test_path(self, path: str) -> tuple[int | None, str | None]:
+        match = re.match(r"^/api/routes/(\d+)/candidate-test/(arm|disarm|status)$", path)
+        if not match:
+            return None, None
+        return int(match.group(1)), match.group(2)
+
+    def _candidate_test_status_payload(self, route_id: int) -> dict[str, Any]:
+        detail = self.context.database.get_route_detail(route_id)
+        if detail is None:
+            raise DashboardValidationError("Route not found")
+        audit = build_arm_audit(detail, detail)
+        return {"candidate_test": audit.to_dict()}
+
+    def _arm_candidate_test_route(self, route_id: int) -> dict[str, Any]:
+        detail = self.context.database.get_route_detail(route_id)
+        if detail is None:
+            raise DashboardValidationError("Route not found")
+        active = self.context.database.count_active_candidate_test_arms(exclude_route_id=route_id)
+        ok, reason = validate_arm_eligibility(detail, detail, active_armed_route_count=active)
+        if not ok:
+            raise DashboardValidationError(f"Candidate test arming blocked: {reason}")
+        armed_at, expires_at = build_arm_schedule()
+        updated = self.context.database.arm_candidate_test_route(
+            route_id,
+            armed_at_utc=armed_at,
+            expires_at_utc=expires_at,
+            armed_by="local_operator",
+        )
+        refreshed = self.context.database.get_route_detail(route_id) or updated
+        audit = build_arm_audit(refreshed, refreshed)
+        return {"route": updated, "candidate_test": audit.to_dict()}
+
+    def _disarm_candidate_test_route(self, route_id: int) -> dict[str, Any]:
+        updated = self.context.database.disarm_candidate_test_route(route_id)
+        refreshed = self.context.database.get_route_detail(route_id) or updated
+        audit = build_arm_audit(refreshed, refreshed)
+        return {"route": updated, "candidate_test": audit.to_dict()}
+
     def _enrich_routes(self, routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         client = self._listener_client()
         dry_run = client.status_payload().get("dry_run", _listener_dry_run_enabled())
@@ -664,6 +707,22 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 dry_run=bool(dry_run),
             )
             item["signal_timeline"] = build_safe_signal_timeline(events)
+            detail = self.context.database.get_route_detail(int(route["id"]))
+            if detail is not None:
+                active_arms = self.context.database.count_active_candidate_test_arms(
+                    exclude_route_id=int(route["id"])
+                )
+                eligible, block_reason = validate_arm_eligibility(
+                    detail,
+                    detail,
+                    active_armed_route_count=active_arms,
+                )
+                audit = build_arm_audit(detail, detail)
+                audit_dict = audit.to_dict()
+                audit_dict["arm_eligible"] = eligible
+                if not eligible:
+                    audit_dict["arm_block_reason"] = block_reason
+                item["candidate_test"] = audit_dict
             enriched.append(item)
         return enriched
 
@@ -848,6 +907,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 limit = min(int(query.get("limit", ["50"])[0]), 200)
                 events = self.context.database.list_route_events(route_id, limit)
                 self._send_json({"route_id": route_id, "events": events})
+                return
+            candidate_route_id, candidate_subpath = self._parse_route_candidate_test_path(path)
+            if candidate_route_id is not None and candidate_subpath == "status":
+                self._send_json(self._candidate_test_status_payload(candidate_route_id))
                 return
             if path == "/api/routes":
                 routes = self._enrich_routes(self.context.database.list_routes())
@@ -1226,6 +1289,32 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     "INFO",
                     "Route listener stopped",
                     {"route_id": route_id},
+                )
+                self._send_json(result)
+                return
+
+            candidate_route_id, candidate_subpath = self._parse_route_candidate_test_path(path)
+            if candidate_route_id is not None and candidate_subpath == "arm":
+                result = self._arm_candidate_test_route(candidate_route_id)
+                db.add_audit(
+                    "CANDIDATE_TEST_ARM",
+                    "INFO",
+                    "Candidate test route armed",
+                    {
+                        "route_id": candidate_route_id,
+                        "target_id": result.get("route", {}).get("target_id"),
+                        "expires_at_utc": result.get("candidate_test", {}).get("expires_at_utc"),
+                    },
+                )
+                self._send_json(result)
+                return
+            if candidate_route_id is not None and candidate_subpath == "disarm":
+                result = self._disarm_candidate_test_route(candidate_route_id)
+                db.add_audit(
+                    "CANDIDATE_TEST_DISARM",
+                    "INFO",
+                    "Candidate test route disarmed",
+                    {"route_id": candidate_route_id},
                 )
                 self._send_json(result)
                 return
