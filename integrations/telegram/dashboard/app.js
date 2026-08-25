@@ -2178,16 +2178,18 @@ function buildCandidateTestArmSummaryHtml() {
   return `
     <ul class="candidate-test-summary">
       <li><strong>Hedef:</strong> Vantage Demo Altın / D0E</li>
+      <li><strong>Kaynak:</strong> JustGold / JustGoldDan</li>
       <li><strong>Hesap türü:</strong> DEMO</li>
       <li><strong>Sembol:</strong> XAUUSD</li>
       <li><strong>Lot limiti:</strong> 0.01</li>
       <li><strong>Magic:</strong> 91001</li>
       <li><strong>İşlem yetkisi:</strong> Kilitli kalacak</li>
+      <li><strong>Dosya yayını:</strong> Armed iken 1 gerçek FILE_COMMON yazımı</li>
       <li><strong>Broker emri:</strong> Bu adımda açılmayacak</li>
       <li><strong>Test süresi:</strong> 15 dakika</li>
-      <li><strong>İzin:</strong> Yalnız bir seed/details yayını</li>
+      <li><strong>İzin:</strong> Tek seed/details çifti (tek mesaj da yeterli)</li>
     </ul>
-    <p class="muted">Telegram mesajı gelmeden hiçbir işlem yapılmaz. Broker emri için ayrıca authorization gerekir.</p>`;
+    <p class="muted">Tek bir “Gold sell now … / SL:” mesajı yeter. Broker emri için EA FastTrack + authorization gerekir.</p>`;
 }
 
 function openCandidateTestArmModal(routeId) {
@@ -2232,7 +2234,7 @@ function renderCandidateTestControls(route) {
       <div class="candidate-test-panel">
         <p><strong>Candidate test:</strong> ${escapeCell(candidateTestStatusLabel(status))}</p>
         <p class="muted">Kalan süre: ${escapeCell(remaining)} · Publish hakkı: ${escapeCell(String(ct.publish_remaining ?? 0))}</p>
-        <p class="muted">Telegram mesajı gelmeden hiçbir işlem yapılmaz. Broker emri için ayrıca authorization gerekir.</p>
+        <p class="muted">Tek bir Gold buy/sell now + SL mesajı yeter. Broker emri için EA FastTrack + authorization gerekir.</p>
         <button type="button" class="btn btn-small btn-muted" data-disarm-candidate-test="${route.id}">Test Hazırlığını İptal Et</button>
       </div>`;
   }

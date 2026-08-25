@@ -700,11 +700,18 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             }
             events = self.context.database.list_route_events(int(route["id"]), 50)
             listener_status = item["listener"].get("listener_status")
+            summary_dry_run = bool(dry_run)
+            if any(
+                str(event.get("status")) == LISTENER_PUBLISH_READY
+                and "FILE_COMMON publish completed" in str(event.get("safe_summary") or "")
+                for event in events
+            ):
+                summary_dry_run = False
             item["last_signal_summary"] = build_last_signal_summary(
                 item,
                 events,
                 listener_status=listener_status,
-                dry_run=bool(dry_run),
+                dry_run=summary_dry_run,
             )
             item["signal_timeline"] = build_safe_signal_timeline(events)
             detail = self.context.database.get_route_detail(int(route["id"]))

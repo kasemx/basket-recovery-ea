@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -13,6 +14,7 @@ EXPECTED_MAGIC_NUMBER = 91001
 EXPECTED_CHART_SYMBOL = "XAUUSD"
 EXPECTED_BROKER_LABEL = "VantageMarkets-Demo"
 JUSTGOLD_CHANNEL_TITLE = "JustGold"
+JUSTGOLD_SOURCE_PREFIX = "justgold"
 CANDIDATE_TEST_TTL_SECONDS = 15 * 60
 CANDIDATE_TEST_PUBLISH_LIMIT = 1
 
@@ -69,6 +71,26 @@ def normalize_path_token(value: str | None) -> str:
 
 def path_contains_d0e(value: str | None) -> bool:
     return D0E_TERMINAL_DATA_PATH_ID in normalize_path_token(value)
+
+
+def normalize_source_key(value: str | None) -> str:
+    if not value:
+        return ""
+    return re.sub(r"[^a-z0-9]+", "", str(value).strip().lower())
+
+
+def is_justgold_source(route: dict[str, Any]) -> bool:
+    """Accept JustGold / JustGoldDan titles, usernames, and route names."""
+    for raw in (
+        route.get("channel_title"),
+        route.get("channel_username"),
+        route.get("username"),
+        route.get("name"),
+    ):
+        key = normalize_source_key(raw)
+        if key.startswith(JUSTGOLD_SOURCE_PREFIX):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -131,9 +153,7 @@ def validate_arm_eligibility(
         return False, "BROKER_MISMATCH"
     if not path_contains_d0e(str(target.get("terminal_data_path") or "")):
         return False, "TERMINAL_DATA_PATH_MISMATCH"
-    channel_title = str(route.get("channel_title") or "").strip()
-    route_name = str(route.get("name") or "").strip().lower()
-    if channel_title != JUSTGOLD_CHANNEL_TITLE and route_name != "justgold":
+    if not is_justgold_source(route):
         return False, "ROUTE_SOURCE_MISMATCH"
     if active_armed_route_count > 0:
         return False, "ANOTHER_ROUTE_ALREADY_ARMED"

@@ -112,7 +112,7 @@ public:
      {
       string normalized=Trim(alias);
       StringToLower(normalized);
-      if(normalized=="gold")
+      if(normalized=="gold" || normalized=="xauusd" || normalized=="xau/usd" || normalized=="xau")
         {
          symbolOut="XAUUSD";
          return true;

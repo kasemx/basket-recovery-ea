@@ -3073,19 +3073,30 @@ class CandidateTestArmDashboardTests(DashboardServerTests):
         )
         return payload["route"]
 
-    def _justgold_channel(self) -> dict:
-        self.fake_adapter.list_dialogs_result = [
-            TelegramChannelInfo("justgold-001", "JustGold", "channel", "justgold"),
-        ]
-        self.configure_phone()
-        self.request("POST", "/api/telegram/request-code", {"phone": "+905551234567"})
-        self.request("POST", "/api/telegram/verify-code", {"code": "12345"})
-        self.request("POST", "/api/telegram/sync-channels", {})
-        channels = self.request("GET", "/api/channels")[1]["channels"]
-        channel = next(ch for ch in channels if ch["title"] == "JustGold")
-        self.request("PATCH", f"/api/channels/{channel['id']}", {"is_tracking": 1})
-        refreshed = self.request("GET", "/api/channels")[1]["channels"]
-        return next(ch for ch in refreshed if ch["id"] == channel["id"])
+    def _insert_tracked_channel(
+        self,
+        *,
+        telegram_channel_id: str,
+        title: str,
+        username: str,
+    ) -> dict:
+        now = dashboard_security.utc_now_iso()
+        with self.db._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tracked_channels
+                (telegram_channel_id, title, channel_type, username, is_tracking,
+                 last_message_at_utc, source, created_at_utc, updated_at_utc)
+                VALUES (?, ?, 'channel', ?, 1, NULL, 'TELEGRAM', ?, ?)
+                """,
+                (telegram_channel_id, title, username, now, now),
+            )
+            return dict(
+                conn.execute(
+                    "SELECT * FROM tracked_channels WHERE telegram_channel_id = ?",
+                    (telegram_channel_id,),
+                ).fetchone()
+            )
 
     def _configure_d0e_target(self, target_id: int, *, account_mode: str = "DEMO") -> None:
         with self.db._connect() as conn:
@@ -3115,15 +3126,26 @@ class CandidateTestArmDashboardTests(DashboardServerTests):
                 ),
             )
 
-    def _create_d0e_route(self) -> tuple[dict, dict, dict]:
-        channel = self._justgold_channel()
+    def _create_d0e_route(
+        self,
+        *,
+        telegram_channel_id: str = "justgold-001",
+        title: str = "JustGold",
+        username: str = "justgold",
+        route_name: str = "JustGold D0E Demo",
+    ) -> tuple[dict, dict, dict]:
+        channel = self._insert_tracked_channel(
+            telegram_channel_id=telegram_channel_id,
+            title=title,
+            username=username,
+        )
         target = self._create_target(
             name="D0E Demo Target",
             seed_filename=EXPECTED_SEED_FILENAME,
             details_filename=EXPECTED_DETAILS_FILENAME,
         )
         self._configure_d0e_target(target["id"])
-        route = self._create_route(channel["id"], target["id"], "JustGold D0E Demo")
+        route = self._create_route(channel["id"], target["id"], route_name)
         return channel, target, route
 
     def test_arm_d0e_demo_route_via_api(self) -> None:
@@ -3177,7 +3199,11 @@ class CandidateTestArmDashboardTests(DashboardServerTests):
         self.assertEqual(item["candidate_test"]["status"], ROUTE_MODE_CANDIDATE_TEST_ARMED)
 
     def test_second_active_arm_rejected(self) -> None:
-        channel = self._justgold_channel()
+        channel = self._insert_tracked_channel(
+            telegram_channel_id="justgold-001",
+            title="JustGold",
+            username="justgold",
+        )
         target_a = self._create_target(
             name="D0E Demo Target A",
             seed_filename=EXPECTED_SEED_FILENAME,
@@ -3250,6 +3276,56 @@ class CandidateTestArmDashboardTests(DashboardServerTests):
         self.assertIsNone(error)
         self.assertIsNotNone(context)
         self.assertEqual(context.route_mode, ROUTE_MODE_CANDIDATE_TEST_ARMED)
+
+    def test_justgolddan_channel_can_arm(self) -> None:
+        _channel, _target, route = self._create_d0e_route(
+            telegram_channel_id="9100001",
+            title="JustGoldDan",
+            username="justgolddan",
+        )
+        status, payload = self.request(
+            "POST",
+            f"/api/routes/{route['id']}/candidate-test/arm",
+            {},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["route"]["mode"], ROUTE_MODE_CANDIDATE_TEST_ARMED)
+
+    def test_armed_justgolddan_single_message_writes_files_despite_dry_run(self) -> None:
+        channel, target, route = self._create_d0e_route(
+            telegram_channel_id="9100001",
+            title="JustGoldDan",
+            username="justgolddan",
+        )
+        self.request("POST", f"/api/routes/{route['id']}/candidate-test/arm", {})
+        with self.db._connect() as conn:
+            conn.execute("UPDATE telegram_connection SET status = 'CONNECTED' WHERE id = 1")
+        file_root = Path(target["file_common_root"])
+        file_root.mkdir(parents=True, exist_ok=True)
+        manager = route_listener_service.RouteListenerManager(
+            database=self.db,
+            data_dir=self.data_dir,
+            telethon_enabled=False,
+            dry_run=True,
+        )
+        start = manager.start_route(route["id"])
+        self.assertEqual(start["status"], "LISTENER_STARTED")
+        manager.inject_message(
+            fasttrack_file_bridge.TelegramInboundMessage(
+                text="Gold sell now 4014 - 4017\nSL: 4077\nTP: 4007",
+                message_id=8801,
+                channel_id=int(channel["telegram_channel_id"]),
+            )
+        )
+        seed_path = file_root / EXPECTED_SEED_FILENAME
+        details_path = file_root / EXPECTED_DETAILS_FILENAME
+        self.assertTrue(seed_path.exists(), "Armed candidate test must write seed file")
+        self.assertTrue(details_path.exists(), "Armed candidate test must write details file")
+        self.assertEqual(seed_path.read_text(encoding="utf-8").strip().lower(), "gold sell now")
+        self.assertIn("SL: 4077", details_path.read_text(encoding="utf-8"))
+        status, payload = self.request("GET", f"/api/routes/{route['id']}/candidate-test/status")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["candidate_test"]["status"], ROUTE_MODE_CANDIDATE_TEST_CONSUMED)
 
 
 class DashboardModularizationTests(unittest.TestCase):

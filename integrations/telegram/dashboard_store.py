@@ -762,6 +762,7 @@ class DashboardDatabase:
                 """
                 SELECT r.*,
                        c.title AS channel_title,
+                       c.username AS channel_username,
                        c.telegram_channel_id,
                        c.is_tracking AS channel_is_tracking,
                        t.name AS target_name,
@@ -852,6 +853,7 @@ class DashboardDatabase:
                 """
                 SELECT r.*,
                        c.title AS channel_title,
+                       c.username AS channel_username,
                        c.telegram_channel_id,
                        c.is_tracking AS channel_is_tracking,
                        t.name AS target_name,

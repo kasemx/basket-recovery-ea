@@ -3,6 +3,7 @@
 #include <BasketRecovery/Tests/TestAssert.mqh>
 #include <BasketRecovery/Application/Strategy/FastTrack/FastTrackManualTestOrchestrator.mqh>
 #include <BasketRecovery/Application/Strategy/FastTrack/FastTrackAuditFileSource.mqh>
+#include <BasketRecovery/Domain/Strategy/FastTrack/FastTrackSignalParser.mqh>
 #include <BasketRecovery/Domain/Execution/ExecutionRuntimeMode.mqh>
 
 const string SEED_TEXT="Gold sell now";
@@ -281,6 +282,17 @@ void TestDirectInputPriorityOverAuditFileSource(void)
    CleanupAuditFileFixtures();
   }
 
+void TestXauusdAliasParsesAsGold(void)
+  {
+   SFastTrackSignalParseResult seed=CFastTrackSignalParser::ParseSeed("XAUUSD sell now");
+   CTestAssert::True(seed.valid,"XAUUSD seed alias must parse");
+   CTestAssert::EqualString("XAUUSD",seed.symbol,"XAUUSD alias must resolve to XAUUSD");
+
+   SFastTrackSignalParseResult details=CFastTrackSignalParser::ParseDetails(
+      "XAUUSD sell now 4014 - 4017\nSL: 4077\nTP: 4007");
+   CTestAssert::True(details.valid,"XAUUSD details alias must parse");
+  }
+
 void OnStart(void)
   {
    CTestAssert::Reset();
@@ -297,6 +309,7 @@ void OnStart(void)
    TestAuditFileSourceRejectsOversizeContent();
    TestAuditFileSourceObserverIsolationAndIdempotency();
    TestDirectInputPriorityOverAuditFileSource();
+   TestXauusdAliasParsesAsGold();
    CleanupAuditFileFixtures();
    CTestAssert::Summary("TestSprint9bFastTrackManualTestWiring");
    if(CTestAssert::AllPassed())

@@ -28,6 +28,7 @@ from fasttrack_file_bridge import (
     normalize_telegram_event,
     raw_message_hash,
     resolve_root,
+    sanitize_signal_text,
     short_fingerprint,
 )
 from telegram_adapter import (
@@ -538,7 +539,14 @@ class RouteListenerManager:
     def _process_message(self, runtime: RouteRuntime, message: TelegramInboundMessage) -> None:
         route_id = runtime.context.route_id
         target_id = runtime.context.target_id
-        content_hash = raw_message_hash(message.text)
+        cleaned_message = TelegramInboundMessage(
+            text=sanitize_signal_text(message.text),
+            message_id=message.message_id,
+            channel_id=message.channel_id,
+            grouped_id=message.grouped_id,
+            reply_to_msg_id=message.reply_to_msg_id,
+        )
+        content_hash = raw_message_hash(cleaned_message.text)
         if content_hash in runtime.seen_raw_hashes:
             self._record_event(
                 route_id,
@@ -549,7 +557,7 @@ class RouteListenerManager:
             )
             return
 
-        classification = classify_telegram_text(message.text)
+        classification = classify_telegram_text(cleaned_message.text)
         if classification == "seed":
             runtime.seen_raw_hashes.add(content_hash)
             self._database.upsert_route_listener_state(
@@ -565,7 +573,7 @@ class RouteListenerManager:
                 fingerprint_short=short_fingerprint(content_hash),
                 safe_summary="Seed signal detected for observer-only route.",
             )
-            runtime.handler.handle(message)
+            runtime.handler.handle(cleaned_message)
             return
 
         if classification == "details":
@@ -583,34 +591,36 @@ class RouteListenerManager:
                 fingerprint_short=short_fingerprint(content_hash),
                 safe_summary="Details signal detected for observer-only route.",
             )
-            if not self._dry_run:
-                route_detail = self._database.get_route_detail(route_id)
-                if route_detail is not None:
-                    allowed, block_reason = evaluate_real_publish_permission(
-                        route_detail,
-                        listener_running=True,
-                        dry_run=False,
-                    )
-                    if not allowed:
-                        if block_reason == "CANDIDATE_TEST_EXPIRED":
-                            self._database.expire_candidate_test_arms()
-                        self._record_event(
-                            route_id,
-                            target_id,
-                            LISTENER_PUBLISH_SKIPPED,
-                            block_reason or "PUBLISH_BLOCKED",
-                            "Gerçek candidate yayını engellendi.",
-                        )
-                        return
+            real_publish, block_reason = self._evaluate_real_publish(route_id)
+            if not real_publish and not self._dry_run:
+                if block_reason == "CANDIDATE_TEST_EXPIRED":
+                    self._database.expire_candidate_test_arms()
+                self._record_event(
+                    route_id,
+                    target_id,
+                    LISTENER_PUBLISH_SKIPPED,
+                    block_reason or "PUBLISH_BLOCKED",
+                    "Gerçek candidate yayını engellendi.",
+                )
+                return
+            previous_dry_run = runtime.handler.matcher.dry_run
+            runtime.handler.matcher.dry_run = not real_publish
             before_count = len(runtime.publisher._published_fingerprints)
             try:
-                runtime.handler.handle(message)
+                runtime.handler.handle(cleaned_message)
             except Exception:
                 self._record_publish_failure(route_id, target_id)
                 return
+            finally:
+                runtime.handler.matcher.dry_run = previous_dry_run
             after_count = len(runtime.publisher._published_fingerprints)
             if after_count > before_count:
-                self._record_publish_success(route_id, target_id, runtime)
+                self._record_publish_success(
+                    route_id,
+                    target_id,
+                    runtime,
+                    real_publish=real_publish,
+                )
             else:
                 self._record_event(
                     route_id,
@@ -630,16 +640,37 @@ class RouteListenerManager:
                 "Mesaj sinyal formatına uymuyor.",
             )
 
-    def _record_publish_success(self, route_id: int, target_id: int, runtime: RouteRuntime) -> None:
+    def _evaluate_real_publish(self, route_id: int) -> tuple[bool, str | None]:
+        route_detail = self._database.get_route_detail(route_id)
+        if route_detail is None:
+            return False, "ROUTE_NOT_FOUND"
+        return evaluate_real_publish_permission(
+            route_detail,
+            listener_running=True,
+            dry_run=False,
+        )
+
+    def _record_publish_success(
+        self,
+        route_id: int,
+        target_id: int,
+        runtime: RouteRuntime,
+        *,
+        real_publish: bool,
+    ) -> None:
         now = utc_now_iso()
-        if not self._dry_run:
+        if real_publish:
             route_detail = self._database.get_route_detail(route_id)
             if route_detail is not None and str(route_detail.get("mode")) == ROUTE_MODE_CANDIDATE_TEST_ARMED:
                 self._database.consume_candidate_test_publish(route_id)
         self._database.upsert_route_listener_state(
             route_id,
             listener_status=LISTENER_PUBLISH_READY,
-            last_signal_status="Sinyal yalnız izleme modunda hazırlandı.",
+            last_signal_status=(
+                "Sinyal FILE_COMMON dosyalarına yazıldı."
+                if real_publish
+                else "Sinyal yalnız izleme modunda hazırlandı."
+            ),
             last_publish_at_utc=now,
             last_error_code=None,
         )
@@ -647,7 +678,9 @@ class RouteListenerManager:
         fingerprint = next(iter(runtime.publisher._published_fingerprints), "")
         signal_meta = runtime.publisher.last_signal_meta
         safe_summary = format_safe_summary_with_signal_meta(
-            "Observer-only publish plan completed.",
+            "Observer-only publish plan completed."
+            if not real_publish
+            else "Candidate-test FILE_COMMON publish completed.",
             signal_meta,
         )
         self._database.add_route_event(
