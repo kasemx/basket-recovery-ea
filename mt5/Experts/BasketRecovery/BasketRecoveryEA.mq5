@@ -73,8 +73,8 @@ input bool   InpFastTrackEnableRangeAdd = false;
 input bool   InpFastTrackEnableDeRisk = false;
 input bool   InpFastTrackEnableBreakEven = false;
 input bool   InpFastTrackAuditFilePollingEnabled = false;
-input string InpFastTrackAuditSeedFileName = "basket_recovery_fasttrack_seed.txt";
-input string InpFastTrackAuditDetailsFileName = "basket_recovery_fasttrack_details.txt";
+input string InpFastTrackAuditSeedFileName = "br_d0e_justgold_seed.txt";
+input string InpFastTrackAuditDetailsFileName = "br_d0e_justgold_details.txt";
 input long   InpFastTrackDemoSubmissionMagicOverride = 91001;
 input string InpFastTrackDemoSubmissionRouteLabel = "justgold-dashboard-route";
 input string InpFastTrackDemoSubmissionTargetLabel = "d0e-vantage-xauusd-demo";
@@ -89,7 +89,7 @@ bool g_manualProfitCloseSubmitAttempted=false;
 CFastTrackManualTestOrchestrator g_fastTrackManualTestOrchestrator;
 CFastTrackDemoSubmissionCandidateRegistry g_fastTrackDemoSubmissionRegistry;
 CFastTrackAuditSkippedLogThrottle g_fastTrackAuditSkippedLogThrottle;
-bool g_fastTrackManualTestProcessed=false;
+string g_fastTrackLastFingerprint="";
 
 SFastTrackManualTestInputs BuildFastTrackManualTestInputs(void)
   {
@@ -162,8 +162,6 @@ bool ResolveFastTrackSignalText(string &seedText,string &detailsText)
                                           reason))
      {
       g_fastTrackAuditSkippedLogThrottle.NotifyReadSuccess();
-      CFastTrackAuditFileSource::PrintReadAudit(InpFastTrackAuditSeedFileName,
-                                                InpFastTrackAuditDetailsFileName);
       return true;
      }
 
@@ -176,7 +174,7 @@ bool ResolveFastTrackSignalText(string &seedText,string &detailsText)
 
 void ProcessFastTrackManualTest(void)
   {
-   if(!InpFastTrackManualTestEnabled || g_fastTrackManualTestProcessed)
+   if(!InpFastTrackManualTestEnabled)
       return;
 
    string seedText="";
@@ -184,14 +182,23 @@ void ProcessFastTrackManualTest(void)
    if(!ResolveFastTrackSignalText(seedText,detailsText) || seedText=="")
       return;
 
+   string fingerprint=seedText+"|"+detailsText;
+   if(fingerprint==g_fastTrackLastFingerprint)
+      return;
+
    SFastTrackManualTestInputs inputs=BuildFastTrackManualTestInputs();
    inputs.seed_text=seedText;
    inputs.details_text=detailsText;
    SFastTrackManualTestOutcome outcome=g_fastTrackManualTestOrchestrator.Process(inputs,TimeCurrent());
    CFastTrackManualTestOrchestrator::PrintAudit(inputs,outcome);
+   if(InpFastTrackAuditFilePollingEnabled && InpFastTrackSeedSignalText=="")
+      CFastTrackAuditFileSource::PrintReadAudit(InpFastTrackAuditSeedFileName,
+                                                InpFastTrackAuditDetailsFileName);
 
    if(outcome.stage==BRE_FAST_TRACK_MANUAL_STAGE_WAIT_DETAILS)
       return;
+
+   g_fastTrackLastFingerprint=fingerprint;
 
    if(outcome.order_plan_result==BRE_FAST_TRACK_ORDER_PLAN_ALLOWED)
      {
@@ -200,8 +207,6 @@ void ProcessFastTrackManualTest(void)
          inputs,outcome,bridgeInputs,g_fastTrackDemoSubmissionRegistry,TimeCurrent());
       CFastTrackDemoSubmissionBridge::PrintAudit(bridgeOutcome);
      }
-
-   g_fastTrackManualTestProcessed=true;
   }
 
 void PrintEaInitFailureDiagnostics(const string stageOverride="",
@@ -560,7 +565,7 @@ void OnTimer()
         }
      }
 
-   if(InpFastTrackManualTestEnabled && !g_fastTrackManualTestProcessed)
+   if(InpFastTrackManualTestEnabled)
       ProcessFastTrackManualTest();
   }
 

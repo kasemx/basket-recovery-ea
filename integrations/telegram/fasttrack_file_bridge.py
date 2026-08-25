@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,7 +29,12 @@ SIGNAL_META_ALLOWLIST_KEYS = frozenset(
         "take_profits",
     }
 )
-SYMBOL_ALIASES = {"gold": "XAUUSD"}
+SYMBOL_ALIASES = {
+    "gold": "XAUUSD",
+    "xauusd": "XAUUSD",
+    "xau/usd": "XAUUSD",
+    "xau": "XAUUSD",
+}
 DETAILS_ENTRY_RANGE_PATTERN = re.compile(
     r"now\s+(?P<low>\d+(?:\.\d+)?)\s*-\s*(?P<high>\d+(?:\.\d+)?)",
     re.IGNORECASE,
@@ -36,7 +42,7 @@ DETAILS_ENTRY_RANGE_PATTERN = re.compile(
 SL_LINE_PATTERN = re.compile(r"^SL:\s*(?P<value>.+)\s*$", re.IGNORECASE)
 TP_LINE_PATTERN = re.compile(r"^TP:\s*(?P<value>.+)\s*$", re.IGNORECASE)
 SEED_PATTERN = re.compile(
-    r"^(?P<symbol>\S+)\s+(?P<direction>buy|sell)\s+now$",
+    r"^(?P<symbol>\S+)\s+(?P<direction>buy|sell)\s+now(?:\s*[.!?]*\s*)?$",
     re.IGNORECASE,
 )
 DETAILS_HEADER_PATTERN = re.compile(
@@ -44,7 +50,23 @@ DETAILS_HEADER_PATTERN = re.compile(
     re.IGNORECASE,
 )
 DETAILS_RANGE_HINT = re.compile(r"now\s+\d", re.IGNORECASE)
-SUPPORTED_SYMBOLS = {"gold"}
+SUPPORTED_SYMBOLS = frozenset(SYMBOL_ALIASES)
+_UNICODE_DASH_AND_SPACE = str.maketrans(
+    {
+        "\u2010": "-",
+        "\u2011": "-",
+        "\u2012": "-",
+        "\u2013": "-",
+        "\u2014": "-",
+        "\u2212": "-",
+        "\u00a0": " ",
+        "\u202f": " ",
+        "\u2007": " ",
+        "\u2009": " ",
+        "\u200a": " ",
+        "\u2028": "\n",
+    }
+)
 
 
 class BridgeValidationError(ValueError):
@@ -99,6 +121,22 @@ def validate_non_empty(text: str, label: str) -> str:
 
 def normalize_line_endings(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def sanitize_signal_text(text: str) -> str:
+    """Strip emoji/decoration and map unicode dashes so FastTrack ASCII parse can run."""
+    translated = normalize_line_endings(text).translate(_UNICODE_DASH_AND_SPACE)
+    kept: list[str] = []
+    for character in translated:
+        code = ord(character)
+        if character == "\n" or (code < 128 and (character.isprintable() or character in "\t")):
+            kept.append(" " if character == "\t" else character)
+    lines = [" ".join(line.split()) for line in "".join(kept).split("\n")]
+    while lines and lines[0] == "":
+        lines.pop(0)
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines)
 
 
 def validate_seed_format(text: str) -> tuple[str, str]:
@@ -281,13 +319,16 @@ def format_safe_summary_with_signal_meta(base_summary: str, meta: dict[str, Any]
 
 
 def classify_telegram_text(text: str) -> Literal["empty", "non_ascii", "seed", "details", "unrecognized"]:
-    normalized = normalize_line_endings(text).strip()
-    if not normalized:
+    original = normalize_line_endings(text).strip()
+    if not original:
         return "empty"
-    try:
-        validate_ascii(normalized, "Message")
-    except BridgeValidationError:
-        return "non_ascii"
+    normalized = sanitize_signal_text(original)
+    if not normalized:
+        try:
+            validate_ascii(original, "Message")
+        except BridgeValidationError:
+            return "non_ascii"
+        return "empty"
 
     lines = [line.strip() for line in normalized.split("\n") if line.strip()]
     if not lines:
@@ -560,8 +601,6 @@ class PairMatcher:
     pending_seed: PendingSeed | None = None
 
     def _now(self) -> float:
-        import time
-
         return time.monotonic()
 
     def _expire_pending_seed_if_needed(self) -> None:
@@ -586,6 +625,30 @@ class PairMatcher:
     def _clear_pending_seed(self, seed: PendingSeed) -> None:
         if self.pending_seed is seed:
             self.pending_seed = None
+
+    def _synthetic_seed_from_details(
+        self,
+        details: str,
+        *,
+        message_id: str,
+        channel_id: str = "",
+        grouped_id: int | None = None,
+        telegram_message_id: int | None = None,
+    ) -> PendingSeed | None:
+        header = parse_details_header_symbol_direction(details)
+        if header is None:
+            return None
+        symbol, direction = header
+        return PendingSeed(
+            text=f"{symbol} {direction} now",
+            message_id=message_id or "synthetic-seed",
+            symbol=symbol,
+            direction=direction,
+            received_at=self._now(),
+            channel_id=channel_id,
+            grouped_id=str(grouped_id) if grouped_id is not None else None,
+            telegram_message_id=telegram_message_id,
+        )
 
     def ingest_seed(self, text: str, message_id: str) -> None:
         self._expire_pending_seed_if_needed()
@@ -614,17 +677,18 @@ class PairMatcher:
     def ingest_details(self, text: str, message_id: str) -> None:
         self._expire_pending_seed_if_needed()
         details = validate_details_text(text)
-        if self.pending_seed is None:
-            self.logger.log(
-                "SKIPPED",
-                reason="details_without_seed",
-                message_id=message_id or "unknown-details",
-                mode=self.mode,
-                timestamp_utc=utc_now_iso(),
-            )
-            return
-
         seed = self.pending_seed
+        if seed is None:
+            seed = self._synthetic_seed_from_details(details, message_id=message_id)
+            if seed is None:
+                self.logger.log(
+                    "SKIPPED",
+                    reason="details_without_seed",
+                    message_id=message_id or "unknown-details",
+                    mode=self.mode,
+                    timestamp_utc=utc_now_iso(),
+                )
+                return
         correlation_key = build_correlation_key(
             seed.symbol,
             seed.direction,
@@ -766,6 +830,14 @@ class TelegramPairMatcher(PairMatcher):
             reply_to_msg_id=reply_to_msg_id,
         )
         if seed is None:
+            seed = self._synthetic_seed_from_details(
+                details,
+                message_id=message_id,
+                channel_id=channel_id,
+                grouped_id=grouped_id,
+                telegram_message_id=int(message_id) if str(message_id).isdigit() else None,
+            )
+        if seed is None:
             self.logger.log(
                 "SKIPPED",
                 reason="details_without_seed",
@@ -833,6 +905,7 @@ class TelegramMessageHandler:
         self._seen_raw_hashes: set[str] = set()
 
     def handle(self, message: TelegramInboundMessage) -> None:
+        cleaned_text = sanitize_signal_text(message.text)
         message_key = f"{message.channel_id}:{message.message_id}"
         if message_key in self._seen_message_keys:
             self.logger.log(
@@ -845,7 +918,7 @@ class TelegramMessageHandler:
             )
             return
 
-        classification = classify_telegram_text(message.text)
+        classification = classify_telegram_text(cleaned_text)
         if classification == "empty":
             self.logger.log(
                 "SKIPPED",
@@ -867,7 +940,7 @@ class TelegramMessageHandler:
             )
             return
 
-        content_hash = raw_message_hash(message.text)
+        content_hash = raw_message_hash(cleaned_text)
         if content_hash in self._seen_raw_hashes:
             self.logger.log(
                 "SKIPPED",
@@ -884,7 +957,7 @@ class TelegramMessageHandler:
 
         if classification == "seed":
             self.matcher.ingest_telegram_seed(
-                message.text,
+                cleaned_text,
                 message_id=str(message.message_id),
                 channel_id=str(message.channel_id),
                 grouped_id=message.grouped_id,
@@ -894,7 +967,7 @@ class TelegramMessageHandler:
 
         if classification == "details":
             self.matcher.ingest_telegram_details(
-                message.text,
+                cleaned_text,
                 message_id=str(message.message_id),
                 channel_id=str(message.channel_id),
                 grouped_id=message.grouped_id,
@@ -1029,11 +1102,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--file-common-root", required=True)
     parser.add_argument(
         "--seed-filename",
-        default="basket_recovery_fasttrack_seed.txt",
+        default="br_d0e_justgold_seed.txt",
     )
     parser.add_argument(
         "--details-filename",
-        default="basket_recovery_fasttrack_details.txt",
+        default="br_d0e_justgold_details.txt",
     )
     parser.add_argument("--pair-timeout-seconds", type=int, default=900)
     parser.add_argument("--simulate-stdin", action="store_true")

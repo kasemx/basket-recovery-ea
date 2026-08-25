@@ -123,7 +123,7 @@ class AtomicPublishTests(unittest.TestCase):
             mode="test",
         )
         with mock.patch.object(self.logger, "log") as log_mock:
-            matcher.ingest_details(VALID_DETAILS, "details-001")
+            matcher.ingest_details("SL: 4077\nTP: 4007", "details-001")
             log_mock.assert_any_call(
                 "SKIPPED",
                 reason="details_without_seed",
@@ -133,6 +133,21 @@ class AtomicPublishTests(unittest.TestCase):
             )
         self.assertFalse((self.root / SEED_NAME).exists())
         self.assertFalse((self.root / DETAILS_NAME).exists())
+
+    def test_self_contained_details_publishes_pair(self) -> None:
+        matcher = bridge.PairMatcher(
+            publisher=self.publisher,
+            root=self.root,
+            seed_filename=SEED_NAME,
+            details_filename=DETAILS_NAME,
+            pair_timeout_seconds=900,
+            logger=self.logger,
+            mode="test",
+        )
+        matcher.ingest_details(VALID_DETAILS, "details-001")
+        seed, details = self.read_finals()
+        self.assertEqual(seed, "gold sell now")
+        self.assertEqual(details, VALID_DETAILS)
 
     def test_new_seed_replaces_stale_unmatched_seed(self) -> None:
         matcher = bridge.PairMatcher(
@@ -219,6 +234,21 @@ class ValidationHelperTests(unittest.TestCase):
     def test_invalid_seed_format(self) -> None:
         with self.assertRaises(bridge.BridgeValidationError):
             bridge.validate_seed_format("Gold sell later")
+
+    def test_xauusd_seed_alias(self) -> None:
+        symbol, direction = bridge.validate_seed_format("XAUUSD sell now")
+        self.assertEqual(symbol, "xauusd")
+        self.assertEqual(direction, "sell")
+
+    def test_classify_complete_test_signal_as_details(self) -> None:
+        self.assertEqual(bridge.classify_telegram_text(VALID_DETAILS), "details")
+
+    def test_classify_strips_emoji_and_en_dash(self) -> None:
+        text = "Gold sell now 4014 – 4017\nSL: 4077\nTP: 4007 🔥"
+        self.assertEqual(bridge.classify_telegram_text(text), "details")
+        sanitized = bridge.sanitize_signal_text(text)
+        self.assertIn("4014 - 4017", sanitized)
+        self.assertNotIn("🔥", sanitized)
 
 
 class TelegramListenerTests(unittest.TestCase):
@@ -341,17 +371,34 @@ class TelegramListenerTests(unittest.TestCase):
             timestamp_utc=mock.ANY,
         )
 
-    def test_non_ascii_message_skipped(self) -> None:
-        with mock.patch.object(self.logger, "log") as log_mock:
+    def test_non_ascii_decoration_is_stripped_from_seed(self) -> None:
+        with mock.patch.object(self.matcher, "ingest_telegram_seed") as ingest_mock:
             self.handler.handle(self.msg("Gold sell now €", message_id=11))
-        log_mock.assert_any_call(
-            "SKIPPED",
-            reason="non_ascii_message",
-            message_id=11,
-            channel_id=-100123,
+        ingest_mock.assert_called_once()
+        self.assertEqual(ingest_mock.call_args.args[0], "Gold sell now")
+
+    def test_self_contained_details_message_publishes(self) -> None:
+        matcher = bridge.TelegramPairMatcher(
+            publisher=self.publisher,
+            root=self.root,
+            seed_filename=SEED_NAME,
+            details_filename=DETAILS_NAME,
+            pair_timeout_seconds=900,
+            logger=self.logger,
             mode="telegram-listen",
-            timestamp_utc=mock.ANY,
+            dry_run=False,
         )
+        handler = bridge.TelegramMessageHandler(matcher, self.logger)
+        handler.handle(
+            self.msg(
+                "Gold sell now 4014 - 4017\nSL: 4077\nTP: 4007",
+                message_id=70,
+            )
+        )
+        seed = (self.root / SEED_NAME).read_text(encoding="utf-8")
+        details = (self.root / DETAILS_NAME).read_text(encoding="utf-8")
+        self.assertEqual(seed, "gold sell now")
+        self.assertIn("SL: 4077", details)
 
     def test_duplicate_message_id_skipped(self) -> None:
         first = self.msg(VALID_SEED, message_id=12)

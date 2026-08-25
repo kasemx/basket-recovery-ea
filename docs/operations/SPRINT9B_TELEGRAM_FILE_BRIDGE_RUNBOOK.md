@@ -1,6 +1,14 @@
 # Sprint 9B — Offline FastTrack File Bridge Runbook
 
-Phase 1 delivers a **stdin simulator** and **atomic FILE_COMMON publisher** with no Telegram, Telethon, network, EA attach, or broker interaction.
+**Preferred local test (Telegram yok):** EA’nın okuduğu FILE_COMMON klasörüne JustGoldDan test çiftini yazmak için:
+
+```text
+python integrations/telegram/run_justgolddan_local_test.py --out <FILE_COMMON>
+```
+
+Dosyalar: `br_d0e_justgold_seed.txt` ve `br_d0e_justgold_details.txt`. Broker emri açılmaz.
+
+Aşağıdaki stdin / publish-pair komutları aynı köprüyü düşük seviye test etmek içindir.
 
 ## Requirements
 
@@ -12,6 +20,7 @@ Phase 1 delivers a **stdin simulator** and **atomic FILE_COMMON publisher** with
 
 | Artifact | Path |
 |----------|------|
+| Local JustGoldDan test | `integrations/telegram/run_justgolddan_local_test.py` |
 | Bridge CLI | `integrations/telegram/fasttrack_file_bridge.py` |
 | Env template | `integrations/telegram/.env.example` |
 | Tests | `integrations/telegram/tests/test_atomic_publish.py` |

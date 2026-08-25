@@ -55,6 +55,37 @@ class CandidateTestArmServiceTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIsNone(reason)
 
+    def test_justgolddan_title_is_arm_eligible(self) -> None:
+        ok, reason = ctas.validate_arm_eligibility(
+            _d0e_route(channel_title="JustGoldDan", name="JustGold D0E Demo"),
+            _d0e_target(),
+            active_armed_route_count=0,
+        )
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+
+    def test_justgolddan_username_is_arm_eligible(self) -> None:
+        ok, reason = ctas.validate_arm_eligibility(
+            _d0e_route(
+                channel_title="VIP Gold",
+                name="D0E Demo",
+                channel_username="justgolddan",
+            ),
+            _d0e_target(),
+            active_armed_route_count=0,
+        )
+        self.assertTrue(ok)
+        self.assertIsNone(reason)
+
+    def test_unrelated_channel_is_not_arm_eligible(self) -> None:
+        ok, reason = ctas.validate_arm_eligibility(
+            _d0e_route(channel_title="Gold Signals VIP", name="VIP Route"),
+            _d0e_target(),
+            active_armed_route_count=0,
+        )
+        self.assertFalse(ok)
+        self.assertEqual(reason, "ROUTE_SOURCE_MISMATCH")
+
     def test_real_account_cannot_arm(self) -> None:
         ok, reason = ctas.validate_arm_eligibility(
             _d0e_route(),

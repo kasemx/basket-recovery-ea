@@ -17,27 +17,6 @@ from dashboard_security import (
     validate_basename_safe,
 )
 
-DEMO_CHANNEL_SPECS = (
-    {
-        "telegram_channel_id": "demo-gold-vip-001",
-        "title": "Gold Signals VIP",
-        "channel_type": "channel",
-        "username": "gold_signals_vip_demo",
-    },
-    {
-        "telegram_channel_id": "demo-xauusd-ideas-002",
-        "title": "XAUUSD Ideas",
-        "channel_type": "channel",
-        "username": "xauusd_ideas_demo",
-    },
-    {
-        "telegram_channel_id": "demo-forex-chat-003",
-        "title": "General Forex Chat",
-        "channel_type": "group",
-        "username": None,
-    },
-)
-
 
 class DashboardDatabase:
     def __init__(self, db_path: Path) -> None:
@@ -485,39 +464,6 @@ class DashboardDatabase:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def import_demo_channels(self) -> tuple[int, str]:
-        inserted = 0
-        now = utc_now_iso()
-        with self._connect() as conn:
-            for spec in DEMO_CHANNEL_SPECS:
-                cursor = conn.execute(
-                    """
-                    INSERT OR IGNORE INTO tracked_channels
-                    (telegram_channel_id, title, channel_type, username, is_tracking,
-                     last_message_at_utc, source, created_at_utc, updated_at_utc)
-                    VALUES (?, ?, ?, ?, 0, NULL, 'LOCAL_DEMO_DATA', ?, ?)
-                    """,
-                    (
-                        spec["telegram_channel_id"],
-                        spec["title"],
-                        spec["channel_type"],
-                        spec["username"],
-                        now,
-                        now,
-                    ),
-                )
-                inserted += cursor.rowcount
-            conn.execute(
-                """
-                UPDATE telegram_connection
-                SET channel_count = (SELECT COUNT(*) FROM tracked_channels),
-                    updated_at_utc = ?
-                WHERE id = 1
-                """,
-                (now,),
-            )
-        return inserted, "LOCAL_DEMO_DATA"
-
     def update_channel(self, channel_id: int, updates: dict[str, Any]) -> dict[str, Any]:
         allowed = {key: updates[key] for key in ("is_tracking", "title") if key in updates}
         if not allowed:
@@ -762,6 +708,7 @@ class DashboardDatabase:
                 """
                 SELECT r.*,
                        c.title AS channel_title,
+                       c.username AS channel_username,
                        c.telegram_channel_id,
                        c.is_tracking AS channel_is_tracking,
                        t.name AS target_name,
@@ -852,6 +799,7 @@ class DashboardDatabase:
                 """
                 SELECT r.*,
                        c.title AS channel_title,
+                       c.username AS channel_username,
                        c.telegram_channel_id,
                        c.is_tracking AS channel_is_tracking,
                        t.name AS target_name,
@@ -1251,15 +1199,6 @@ class DashboardDatabase:
             events.append(item)
         return events
 
-    def add_demo_audit_event(self) -> dict[str, Any]:
-        self.add_audit(
-            "ROUTE_SIMULATION",
-            "INFO",
-            "route_event=SIMULATED_OBSERVER_BLOCKED",
-            {"note": "UI demo only; no broker or EA action"},
-        )
-        return self.list_audit(1)[0]
-
     def overview(self) -> dict[str, Any]:
         telegram = self.get_telegram_status()
         with self._connect() as conn:
@@ -1279,7 +1218,7 @@ class DashboardDatabase:
             },
             "safety": {
                 "broker_execution": "DISABLED_BY_DESIGN",
-                "file_common_write": "NOT_IMPLEMENTED_IN_DASHBOARD",
+                "file_common_write": "CANDIDATE_TEST_ARMED_ONLY",
                 "ea_control": "NOT_IMPLEMENTED",
                 "telegram_login": "IMPLEMENTED_LOCAL_ONLY",
                 "channel_live_sync": "IMPLEMENTED_ON_DEMAND",
