@@ -31,3 +31,5 @@ build/
 *.bak
 *.obj
 *.pch
+__pycache__/
+*.py[cod]

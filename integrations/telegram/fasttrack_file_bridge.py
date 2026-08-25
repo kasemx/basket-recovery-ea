@@ -1102,11 +1102,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--file-common-root", required=True)
     parser.add_argument(
         "--seed-filename",
-        default="basket_recovery_fasttrack_seed.txt",
+        default="br_d0e_justgold_seed.txt",
     )
     parser.add_argument(
         "--details-filename",
-        default="basket_recovery_fasttrack_details.txt",
+        default="br_d0e_justgold_details.txt",
     )
     parser.add_argument("--pair-timeout-seconds", type=int, default=900)
     parser.add_argument("--simulate-stdin", action="store_true")

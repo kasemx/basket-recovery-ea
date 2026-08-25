@@ -2614,7 +2614,7 @@ function renderSafetyMatrix() {
   const rows = [
     ["Telegram girişi", "Yalnız bu bilgisayarda"],
     ["Kanal senkronu", "İstek üzerine"],
-    ["MT5'e sinyal gönderme", "Henüz kapalı"],
+    ["MT5'e sinyal gönderme", "Candidate test armed iken 1 dosya yazımı"],
     ["EA kontrolü", "Henüz kapalı"],
     ["Broker emri", "Kapalı"],
     ["Token üretimi", "Kapalı"],
@@ -2923,16 +2923,6 @@ function bindEvents() {
     });
   }
 
-  $("#import-demo-channels").addEventListener("click", async () => {
-    try {
-      await api("/api/channels/import-demo", { method: "POST", body: "{}" });
-      await refreshAll();
-      showAlert("Örnek kanallar eklendi.", "success");
-    } catch (error) {
-      showAlert(error.message);
-    }
-  });
-
   const discoveryPaths = $("#mt5-discovery-paths");
   $("#mt5-discovery-add-path-btn")?.addEventListener("click", () => {
     const input = $("#mt5-path-modal-input");
@@ -3134,16 +3124,6 @@ function bindEvents() {
     button.addEventListener("click", () => {
       setSignalHistoryView(button.getAttribute("data-history-view"));
     });
-  });
-
-  $("#demo-audit").addEventListener("click", async () => {
-    try {
-      await api("/api/audit/demo-event", { method: "POST", body: "{}" });
-      await refreshAll();
-      showAlert("Örnek kayıt eklendi.", "success");
-    } catch (error) {
-      showAlert(error.message);
-    }
   });
 }
 

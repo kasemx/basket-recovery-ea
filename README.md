@@ -1,8 +1,26 @@
 # Basket Recovery Trading Engine
 
-Production-grade MetaTrader 5 Expert Advisor — basket strategy, dynamic risk management, recovery candidate planning, and **controlled demo-only** manual execution.
+MetaTrader 5 Expert Advisor: basket stratejisi, risk, recovery planı ve **kontrollü demo** emir.
 
-> **Not ready for live-money use.** Automatic order submission and automatic recovery execution are disabled. Demo manual routes can open real demo positions when explicitly enabled.
+> Canlı para hesabında denemeyin. Otomatik emir ve otomatik recovery kapalıdır. Broker emri yalnız açıkça yetkilendirilmiş demo yolda gider.
+
+## JustGoldDan sinyalini hemen dene
+
+Telegram girişi, dashboard ve sahte “örnek kanal” gerekmez. Python 3 yeter:
+
+```text
+python integrations/telegram/run_justgolddan_local_test.py --out <FILE_COMMON>
+```
+
+`<FILE_COMMON>` EA’nın okuduğu MetaTrader **Common Files** klasörüdür. Komut `br_d0e_justgold_seed.txt` ve `br_d0e_justgold_details.txt` yazar.
+
+EA’de FastTrack + dosya polling açık olsun; dosya adları bu iki isimle aynı olsun. Broker emri bu adımda açılmaz — aday sonrası manuel authorization gerekir.
+
+Aynı kontrolü otomatik test olarak:
+
+```text
+python -m unittest integrations.telegram.tests.test_run_justgolddan_local_test integrations.telegram.tests.test_candidate_test_arm_service integrations.telegram.tests.test_atomic_publish -v
+```
 
 ## Project Status
 

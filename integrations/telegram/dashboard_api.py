@@ -1104,17 +1104,6 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(result)
                 return
 
-            if path == "/api/channels/import-demo":
-                inserted, source = db.import_demo_channels()
-                db.add_audit(
-                    "CHANNELS_IMPORT_DEMO",
-                    "INFO",
-                    "Imported local demo channels",
-                    {"inserted": inserted, "source": source},
-                )
-                self._send_json({"inserted": inserted, "source": source})
-                return
-
             if path == "/api/targets":
                 reject_literal_credentials(payload)
                 target = db.create_target(payload)
@@ -1324,11 +1313,6 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                     {"route_id": candidate_route_id},
                 )
                 self._send_json(result)
-                return
-
-            if path == "/api/audit/demo-event":
-                event = db.add_demo_audit_event()
-                self._send_json({"event": event}, HTTPStatus.CREATED)
                 return
 
             self._send_error_json(HTTPStatus.NOT_FOUND, "Not found")

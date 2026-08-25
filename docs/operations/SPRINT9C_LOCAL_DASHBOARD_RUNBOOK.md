@@ -132,7 +132,7 @@ http://127.0.0.1:8787
 7. If 2FA enabled, enter password → **Verify 2FA**.
 8. When status is `CONNECTED`, click **Sync Channels**.
 9. Channels page shows synced records with `source=TELEGRAM`.
-10. Toggle tracking as needed. Demo import remains available (`source=LOCAL_DEMO_DATA`).
+10. Toggle tracking for JustGoldDan. Fake “örnek kanal” import is not available.
 
 ## Diagnostics (secret-safe)
 
@@ -162,15 +162,14 @@ No API ID/hash, phone, code, password, session content, or raw filesystem paths 
 | Telegram configure (masked phone, DPAPI/env credentials) | Available |
 | Telegram login (code + 2FA) | Available (local Telethon) |
 | Channel sync from Telegram | Available (on-demand) |
-| Local demo channel import | Available |
 | Channel tracking toggle | Available |
 | MT5 target CRUD (observer-only) | Available |
 | Route CRUD (OBSERVER_ONLY only) | Available |
 | Audit log (redacted) | Available |
-| FILE_COMMON publish | **NOT_IMPLEMENTED_IN_DASHBOARD** |
+| FILE_COMMON publish | Candidate test armed: one real write; otherwise dry-run |
 | EA attach/control | **NOT_IMPLEMENTED** |
-| Telegram message listener | **OBSERVER_ONLY foundation** (dry-run default; Telethon hook opt-in via `DASHBOARD_ROUTE_LISTENER_TELETHON=1`) |
-| Route publish to FILE_COMMON | **Dry-run by default** (`DASHBOARD_ROUTE_LISTENER_DRY_RUN=1`); no broker execution |
+| Telegram message listener | Observer + candidate-test arm (`DASHBOARD_ROUTE_LISTENER_TELETHON=1` for live Telegram) |
+| Route publish to FILE_COMMON | Dry-run by default; armed candidate test writes `br_d0e_justgold_*.txt` once |
 
 ## Route listener (Sprint 9C-C)
 
